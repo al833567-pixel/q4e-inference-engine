@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+_testtmp/
+
+# 沙箱殘留/探查目錄（top-level 底線開頭＝temp 產物）
+/_*
 
 # 未來 P0.2 之後：q4e C++ build 輸出（build/ 等）
 engine/build/

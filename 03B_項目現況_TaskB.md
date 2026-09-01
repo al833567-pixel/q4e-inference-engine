@@ -62,6 +62,7 @@
 | 約束 | 決定 |
 |---|---|
 | **ngl=10 固定** | **使用者紅線**（永不 auto/999/48） |
+| **build 旗標紅線** | CMake 必帶 `-DGGML_CPU_REPACK=OFF`（ngl=10 仍留 ~75 GB 專家在 CPU 側；REPACK 預設預留 44.35 GB RAM > 20 GB→載入必失敗，A 端已實測）；且 build 環境＝`vcvars64`＋cl（PATH 上的 MinGW 會搶編譯器） |
 | **並行** | 永不過兩個模型實例同時載入；先 kill server 再 in-process 載 |
 | **零判斷** | 照 RUNBOOK_B v2 執行；每步＝指令＋預期輸出＋備案 |
 | **失敗回報** | **錯誤原文＋證據**（不猜、不繞） |
