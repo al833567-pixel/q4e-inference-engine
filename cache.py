@@ -2,8 +2,9 @@
 """兩層快取決策邏輯（A-2）：LRU 取代 + 需求分頁 + 確定性預取 + 命中統計。
 
 純 Python、不碰 GPU/模型：專家 id 是抽象 int（0..n_experts_per_layer-1）。
-B（Track B）繼承 `TieredCache`，**只覆寫 place()/evict()** 接真實 placement
-（pinned H2D / D2H / SSD），簽章不改（見 interfaces.CacheManager）。
+v2：q4e 核心（C++）繼承 `TieredCache`，**只覆寫 place()/evict()** 接真實 placement
+（pinned H2D / D2H / SSD），簽章不改（見 interfaces.CacheManager）；
+tests/test_cache.py 的 14 個測試向量＝核心單測驗收 oracle。
 
 層級（interfaces.TIERS）：
   - vram (L1)：每層容量 `vram_capacity_per_layer` 個 routed 專家；

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""`/v1` API server（A-1）：OpenAI 相容子集 + API key + 串流/非串流。
+"""`/v1` API 合約參考實作（v2：合約 oracle）。
+
+> v2 定位：生產引擎為 C++ `q4e-server`（engine/ 目錄，P0–P2）。
+> 本檔＋tests/test_server.py＝`/v1` API 的**合約 oracle**（200/401/400 形狀、
+> SSE 格式、[DONE]、usage 字段）— q4e-server 驗收對照此。
+> v1 wheel 路線（llama-cpp-python）已退役 → 見 legacy_v1/。
 
 端點：
   GET  /health                免驗 key
@@ -7,10 +12,8 @@
   POST /v1/chat/completions   stream=true → SSE；false → JSON
   POST /v1/completions        純文字補全
 
-引擎（BaseEngine）：
-  - StubEngine  預設，**不載模型、不需 GPU**（A 的 curl/測試用；回應確定性、可重放）。
-  - LlamaEngine llama-cpp-python 適配器（Track B 用）；**lazy load**：第一次請求才載 GGUF。
-    B 設 `config.yaml server.engine: llama` 或 env `DSH_ENGINE=llama`。
+引擎：
+  - StubEngine  **不載模型、不需 GPU**（確定性、可重放；合約測試用）。
 
 啟動：
   py -3.14 -m uvicorn server:app --host 127.0.0.1 --port 8080
@@ -18,8 +21,6 @@
 from __future__ import annotations
 
 import json
-import os
-import threading
 import time
 import uuid
 from typing import Iterator, Optional
@@ -113,106 +114,6 @@ class StubEngine(BaseEngine):
             toks = toks[:max_tokens]
         for i in range(0, len(toks), 2):
             yield "".join(toks[i : i + 2])
-
-
-def _resolve_ngl(ngl: int | str) -> int:
-    """`auto` → 999（llama.cpp 慣例：能放幾層放幾層）；B 建議改具體數字。"""
-    if isinstance(ngl, int):
-        return ngl
-    return 999
-
-
-class LlamaEngine(BaseEngine):
-    """llama-cpp-python 適配器（Track B）。lazy load：首次請求才載 GGUF（thread-safe）。
-
-    B 可直接用；若要 router_experts/快取接線，改實作 interfaces.InferenceEngine
-    並在 tools/wire_cache.py 的 RealEngine 掛上（見 RUNBOOK_B §4）。
-    """
-
-    kind = "llama"
-
-    def __init__(
-        self,
-        cfg: interfaces.EngineConfig,
-        model_name: str = "qwen3.8-flash-next",
-        lib_path: str | None = None,
-    ) -> None:
-        self.cfg = cfg
-        self.model_name = model_name
-        self.lib_path = lib_path or r"D:\llama"
-        self._llm = None
-        self._lock = threading.Lock()
-        self.last_load_error: str | None = None
-
-    def is_loaded(self) -> bool:
-        return self._llm is not None
-
-    def _first_shard(self) -> str:
-        """llama-cpp-python 的 Llama() 不解析目錄 → 傳第一片 .gguf，其餘分片由 llama.cpp 自發現。"""
-        d = self.cfg.gguf_dir
-        if os.path.isfile(d):
-            return d
-        cands = sorted(f for f in os.listdir(d) if f.endswith(".gguf"))
-        if not cands:
-            raise FileNotFoundError(f"{d} 內沒有 .gguf")
-        return os.path.join(d, cands[0])
-
-    def _ensure_loaded(self) -> None:
-        if self._llm is not None:
-            return
-        with self._lock:
-            if self._llm is not None:
-                return
-            # B：import 前設定 backend（wheel 自帶 llama.cpp 載不了 qwen4exp；
-            # fork D:\llama\llama.dll + fork_compat 72B→80B 相容層，根因見 fork_compat.py）
-            os.environ.setdefault("LLAMA_CPP_LIB_PATH", self.lib_path)
-            os.chdir(self.lib_path)  # backend 預設掃描 CWD（CUDA/RPC/haswell）
-            import fork_compat
-
-            fork_compat.install()
-            from llama_cpp import Llama  # 0.3.x 高層類（小寫 llama 是 C 模組，不能當類用）
-
-            try:
-                kwargs = dict(
-                    model_path=self._first_shard(),
-                    n_ctx=self.cfg.max_ctx,
-                    n_batch=self.cfg.n_batch,
-                    n_gpu_layers=_resolve_ngl(self.cfg.ngl),
-                    verbose=False,
-                )
-                if self.cfg.n_threads:
-                    kwargs["n_threads"] = self.cfg.n_threads
-                self._llm = Llama(**kwargs)
-            except Exception as e:  # OOM / 找不到檔案 / 編譯缺
-                self.last_load_error = str(e)
-                raise RuntimeError(
-                    f"GGUF 載入失敗：{e} → 見 RUNBOOK_B.md §備案 B（OOM 調小 ngl）"
-                ) from e
-
-    def stream_chat(self, messages, max_tokens, temperature) -> Iterator[str]:
-        self._ensure_loaded()
-        for chunk in self._llm.create_chat_completion(
-            messages=messages,
-            max_tokens=max_tokens or 256,
-            temperature=temperature,
-            stream=True,
-        ):
-            choice = (chunk.get("choices") or [{}])[0]
-            delta = choice.get("delta") or {}
-            if delta.get("content"):
-                yield delta["content"]
-
-    def stream_complete(self, prompt, max_tokens, temperature) -> Iterator[str]:
-        self._ensure_loaded()
-        for chunk in self._llm.create_completion(
-            prompt=prompt,
-            max_tokens=max_tokens or 256,
-            temperature=temperature,
-            stream=True,
-        ):
-            choice = (chunk.get("choices") or [{}])[0]
-            if choice.get("text"):
-                yield choice["text"]
 
 
 # --------------------------------------------------------------------------- #
@@ -376,11 +277,7 @@ def _sse_complete(engine: BaseEngine, prompt: str, model: str, max_tokens: int, 
 # App
 # --------------------------------------------------------------------------- #
 def _default_engine(scfg: interfaces.ServerConfig) -> BaseEngine:
-    mode = (os.environ.get("DSH_ENGINE") or scfg.engine or "stub").lower()
-    if mode == "llama":
-        raw = cfgmod.load_config()
-        lib_path = str((raw.get("engine") or {}).get("lib_path") or r"D:\llama")
-        return LlamaEngine(cfgmod.engine_config(raw), model_name=scfg.model_name, lib_path=lib_path)
+    """v2：只有合約 stub；生產引擎＝q4e-server（C++，engine/ 目錄）。"""
     return StubEngine(model_name=scfg.model_name)
 
 

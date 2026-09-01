@@ -1,5 +1,7 @@
-# 推理工具 — 設定（A 定簽章，B 用）
-# 對應 interfaces.py 的 ServerConfig / EngineConfig / CacheConfig。
+# 推理工具 — 設定（v2）
+# server 段＝合約參考（server.py/auth.py）
+# cache/ngram 段＝**q4e 核心的 spec**（P1.1/P1.5 語義參數）
+# engine 段＝參考參數（生產引擎 q4e-server 會有自己的 config）
 
 server:
   host: 127.0.0.1
@@ -8,17 +10,16 @@ server:
   # API key：留空 = 讀環境變數 DSH_API_KEY（可多 key，以空白分隔）
   api_keys: []            # 例：["sk-abc123", "sk-def456"]
   stream_default: false
-  engine: llama           # "stub"（A，不載模型）| "llama"（B 改：lazy load GGUF）；env DSH_ENGINE 可覆蓋
+  engine: stub            # 合約參考（確定性、不載模型）；生產引擎＝q4e-server
 
-engine:                   # Track B（有 GPU）用
+engine:                   # 參考參數（ngl 紅線：固定 10）
   gguf_dir: D:\AI_Model\Qwen3.8-Flash-Next
-  ngl: 10                 # VRAM 層（B 設定）：10 層 × ~1.69 GB ≈ 17 GB + KV/緩衝 < 24 GB；其餘 38 層 mmap 在 CPU（RAM/SSD 分頁）
+  ngl: 10                 # 10 層 × ~1.69 GB ≈ 17 GB + KV/緩衝 < 24 GB；其餘 38 層 mmap 在 CPU（RAM/SSD 分頁）
   max_ctx: 2048
   n_batch: 512
   n_threads: 0            # 0 = 自動
-  lib_path: D:\llama      # B：fork llama.dll（wheel 自帶版載不了 qwen4exp）；fork_compat 72B→80B
 
-cache:                    # 兩層快取（A 寫邏輯，B 接 placement）
+cache:                    # q4e 動態快取核心 spec（語義＝cache.py，14 測試向量）
   n_layers: 48
   n_experts_per_layer: 512
   active_routed: 10
@@ -32,5 +33,5 @@ cache:                    # 兩層快取（A 寫邏輯，B 接 placement）
 
 ngram:
   # N-gram 表（per_layer_token_embd，51.2B，4.5 bit/value，28.8 GB）
-  on_ssd: true             # B-7：離到 host/SSD + 非同步預取
-  bench_reads: 1000        # A-3：隨機讀次數
+  on_ssd: true             # PLE 離載（SSD）+ 非同步預取
+  bench_reads: 1000        # bench_ngram.py 隨機讀次數

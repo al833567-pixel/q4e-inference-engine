@@ -1,12 +1,12 @@
-"""介面合約（A 定義簽章 → B 填入實作）。
+"""介面合約（v2：spec → q4e 核心）。
 
-這是聰明 AI（Track A）與略笨 AI（Track B）之間的**契約**：
-- `InferenceEngine`：B 實作（載 GGUF + 推理 + 暴露 router 選擇）。
-- `CacheManager`：A 實作**決策邏輯**（LRU + 確定性預取），B 接**真實 placement**（GPU offload）。
-- `NgramTable`：A 實作**解析**（CPU-only），B 接 **offload**（host/SSD + 非同步預取）。
+這是 spec 層（Python，本 repo）與 **q4e 核心**（C++）之間的**契約**：
+- `InferenceEngine`：q4e-server 實作（載 GGUF + 推理 + 暴露**真實** router 選擇）。
+- `CacheManager`：本 repo 實作**決策邏輯**（LRU + 確定性預取）；q4e 核心接**真實 placement**（GPU offload）。
+- `NgramTable`：本 repo 實作**解析**（CPU-only）；q4e 核心接 **offload**（host/SSD + 非同步預取）。
 
-B 實作時：`class MyEngine(InferenceEngine)` 照下面簽章填方法即可，簽章不改。
-A 的邏輯（CacheManager/NgramTable）用 fake placement 測，不碰 GPU。
+實作時：照下面簽章填方法即可，簽章不改。
+本 repo 的邏輯（CacheManager/NgramTable）用 fake placement 測（tests/），不碰 GPU。
 """
 from __future__ import annotations
 

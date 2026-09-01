@@ -14,8 +14,8 @@
   d = f16 (2 B)；qs[16] 每 byte 裝 2 個 4-bit 量化值（低 nibble＝偶數索引）
   x[i] = (q[i] - 8) * d
 
-B（Track B）繼承 `NgramTable` 覆寫 `offload()` / `prefetch()` 接真實 host/SSD
-offload + 非同步預取（簽章見 interfaces.NgramTable；A 的 fake 版只記路徑/同步讀）。
+v2：q4e 核心（C++）依此合約實作 `offload()` / `prefetch()` 接真實 host/SSD
+offload + 非同步預取（簽章見 interfaces.NgramTable；本檔 fake 版只記路徑/同步讀，供合約測試）。
 """
 from __future__ import annotations
 
