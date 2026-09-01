@@ -17,6 +17,7 @@
 | **MSVC（VS 2022 BuildTools）** | ✓ | vcvars64.bat 在位（cl 不在 PATH→build 時 invoke） |
 | **CMake** | ✓ | 4.4.2 |
 | **Ninja** | ✓ | 1.13.2 |
+| **MinGW g++（WinGet WinLibs）** | ⚠ | **在 PATH 上，會搶 CMake 的編譯器**→ MinGW headers 缺 `CreateFile2`（httplib 0.54.1 編不過）。**對策：build 必須包在 `vcvars64.bat` 環境＋`-DCMAKE_C(XX)_COMPILER=cl`**（已實測 MSVC 14.44.35207 選中）；B 端同理 |
 | **CUDA toolkit** | ◐ | v13.3（nvcc 在 PATH）—**A 端不使用**（無 GPU）；B 端 build 用（B-0 確認版本） |
 | **CPU / RAM** | ✓ | i7-9700 8C/8T（無 HT）；RAM 可用 ~20 GB |
 | **SSD（D 槽）** | ✓ | SATA 0.31–0.44 GB/s（GGUF 所在） |
@@ -45,8 +46,8 @@
 | 項目 | 名稱 | 狀態 | 說明 |
 |---|---|---|---|
 | **A-0** | 規劃/合約（02 v3＋03A/03B） | **✓ 本輪** | 分工、合約、路線、基底紀律 |
-| **A-1** | source 準備：clone 最新 llama.cpp→`engine/`（`q4e`）→CPU build | **✗ 下一步** | 前置全綠（CMake/ninja/MSVC）；驗收＝CPU 版可執行 |
-| **A-2** | qwen4exp：grep 上游→CPU 冒煙；上游沒有→照規格在 clone 樹內實作（fork＝oracle only） | ✗ | 真 GGUF 載入＋≥1 token（CPU，預算 ~10 min/token） |
+| **A-1** | source 準備：clone 最新 llama.cpp→`engine/`（`q4e`）→CPU build | **✓ 完成** | clone b10729（458681e；`engine/PROVENANCE.md`）；改名（project→`q4e`、exe→`q4e-server`）；**MSVC 14.44 static Release 385/385 全過**（job pwsh-44，`engine/build_A1.log`）；**`q4e-server.exe --version` 可執行**（version: 0.3.0-dev，MSVC 19.44.35228 Windows AMD64）；`llama-cli.exe` 亦在（A-2 冒煙用）；**坑**：PATH 的 MinGW 會搶 CMake 編譯器→必須 vcvars64＋cl |
+| **A-2** | qwen4exp：grep 上游→CPU 冒煙 | **◐ 第一步完成** | **上游原生收 qwen4exp**（b10729：`src/models/qwen4exp.cpp` 完整實作＋`LLM_ARCH_QWEN4EXP`＋PLE/QSA；gguf-py 已映射 `Qwen4ExpForCausalLM→qwen4exp`）→ A-2 縮小為 **CPU 冒煙：真 GGUF 載入＋≥1 token**（預算 ~10 min/token） |
 | **A-3** | 動態快取核心（C++）：cache.py 合約＋14 向量單測 | ✗ | touch() 接真實 router（真實 M） |
 | **A-4** | PLE 離載（C++）：ngram.py 合約＋CPU live | ✗ | SSD 表讀＋預取 |
 | **A-5** | q4e-server（C++）：/v1＋auth＋metrics＋**CPU e2e** | ✗ | 200/401/SSE＋真 GGUF 1 token |
@@ -54,8 +55,8 @@
 
 ## 四、Task A 缺口／風險
 
-1. **上游最新是否收 qwen4exp**＝A-2 第一步 grep 才知道；沒有→照規格實作（研究文件＋GGUF audit；fork 只對答案不搬碼）。
-2. PLE 注入點依賴研究文件（`../QwenQwen3.8-Flash-Next/` 尚未通讀＝A-2 前置閱讀）。
+1. ~~上游最新是否收 qwen4exp~~ **已解**：b10729 原生收（2026-09-01 grep 確認）→ 不需自實作架構。
+2. PLE 注入點＋MoE dispatch hook 點＝偵察中（subagent 報告→`docs_A2_insertion_points.md`）。
 3. CPU e2e（A-5）1 token 慢（秒~十秒級）→ 預算 ~10 min，超時＝回報。
 4. 上游 build 系統版本差異（CMake 4.x 相容性）→ A-1 內處理。
 
