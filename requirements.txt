@@ -1,0 +1,19 @@
+# 推理工具 — 相依（Python 3.14, py -3.14）
+# 安裝：py -3.14 -m pip install -r requirements.txt
+# 注意：llama-cpp-python 在 Windows/無 MSVC 可能需預編 wheel；若失敗見 RUNBOOK_B.md 備案。
+
+# API 層（Track A，純 Python，無 GPU）
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+
+# 推理引擎（Track B，需 GPU；Track A 只用 stub/fake，不強制裝）
+# llama-cpp-python 包 llama.cpp C++，載 GGUF + 推理
+llama-cpp-python>=0.3
+
+# 測試（Track A，GPU-free）
+pytest>=8.0
+httpx2                # starlette TestClient 所需（本機實測需要，非 httpx）
+
+# 設定
+PyYAML>=6.0

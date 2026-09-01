@@ -1,0 +1,8 @@
+{
+  "model": "qwen3.8-flash-next",
+  "messages": [
+    {"role": "user", "content": "你好"}
+  ],
+  "max_tokens": 16,
+  "stream": false
+}

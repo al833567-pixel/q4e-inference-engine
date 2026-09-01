@@ -1,0 +1,5 @@
+﻿T1_nonly   rc=0 2s
+T0_wheel   rc=0 1s
+T2_mmap    rc=0 1s
+T3_split   rc=0 1s
+T4_main    rc=0 1s

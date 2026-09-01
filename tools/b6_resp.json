@@ -1,0 +1,1 @@
+{"id":"chatcmpl-39438512ab564d3e826d30a3","object":"chat.completion","created":1788211245,"model":"qwen3.8-flash-next","choices":[{"index":0,"message":{"role":"assistant","content":"我們需要回答用戶：「用一句話解釋什麼是快取。」需要用中文"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":28,"total_tokens":40}}

@@ -1,0 +1,8 @@
+# 可再生產物（不進版控）
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 未來 P0.2 之後：q4e C++ build 輸出（build/ 等）
+engine/build/
+engine/build*/
