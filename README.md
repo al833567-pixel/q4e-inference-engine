@@ -1,16 +1,18 @@
 # 推理工具 — Qwen3.8-Flash-Next（qwen4exp）推理
 
-> **v2（2026-09-01）**：自有引擎 **`q4e`** ＝ clone llama.cpp 最新 source → 改名 → **改核心**（專家級動態快取＋PLE 離載）→ 砍到單模型（只留 qwen4exp）。
-> Python 端只保留**合約參考＋spec 測試**：/v1 API 合約（server.py+auth.py+tests）、快取狀態機（cache.py）、PLE 合約（ngram.py）。
-> 生產引擎＝C++ `q4e-server`。v1（llama-cpp-python wheel）路線已退役 → [`legacy_v1/`](legacy_v1/)。
+> **v3（2026-09-01）**：自有引擎 **`q4e`** ＝ clone llama.cpp 最新 source → 改名 → **改核心**（專家級動態快取＋PLE 離載）。
+> **目標（紅線）**：Qwen3.8-Flash-Next **可完整載入使用**（載入＋推理＋/v1＋快取）；不為乾淨砍功能（砍其他架構＝選項，預設不做）。
+> **分工**：**Task A**（無 GPU，較聰明 AI）寫碼＋CPU build；**Task B**（GPU，較笨 AI）照 RUNBOOK 真機驗收。`D:\llama` fork＝**oracle only**（代碼不進產品）。
+> Python 端只保留**合約參考＋spec 測試**（= q4e 核心的驗收 oracle）：/v1（server.py+auth.py）、快取（cache.py）、PLE（ngram.py）。v1 路線封存 → [`legacy_v1/`](legacy_v1/)。
 
 ## 文件
 
 | 文件 | 說明 |
 |---|---|
 | [01_架構系統資料.md](01_架構系統資料.md) | 架構、記憶體佈局、/v1 設計、效能目標（仍有效） |
-| [02_實作項目工作規劃.md](02_實作項目工作規劃.md) | **v2 工作規劃**：路線決策＋P0 可行性門→P1 快取核心→P2 server+驗收→P3 收口 |
-| [03_項目現況.md](03_項目現況.md) | 環境、已驗證基準數字、項目現況 |
+| [02_實作項目工作規劃.md](02_實作項目工作規劃.md) | **v3 工作規劃**：Task A（A-0～A-6）/ Task B（B-0～B-6）＋介面合約＋驗收基準 |
+| [03A_項目現況_TaskA.md](03A_項目現況_TaskA.md) | 項目現況 · Task A（無 GPU，較聰明 AI） |
+| [03B_項目現況_TaskB.md](03B_項目現況_TaskB.md) | 項目現況 · Task B（有 GPU，較笨 AI） |
 | [legacy_v1/](legacy_v1/) | v1（A/B 兩軌）RUNBOOK＋驗收報告＋工具＋36 份證據（封存） |
 
 ## 目錄結構
@@ -42,5 +44,5 @@ py -3.14 tools\bench_ngram.py --n 1000          # PLE 表 SSD 隨機讀
 ## 狀態
 
 - **v1（A/B 兩軌）：全數完成並驗收**（M-A、M-B）；證據＝`legacy_v1/evidence/`（36 檔）＋`legacy_v1/B9_report.md`
-- **v2：未動工**；工具鏈已確認（VS 2022 BuildTools 在位）；下一步＝P0.2（clone 最新 llama.cpp→改名 `q4e`→base build）
-- 紅線：ngl=10 固定；永不過兩個模型實例並行；單模型（qwen4exp）
+- **v3：A-0 完成（本輪）**；A-1 前置全綠（VS 2022 BuildTools＋CMake 4.4.2＋ninja 1.13.2）；下一步＝**A-1**（clone 最新 llama.cpp→改名 `q4e`→CPU build）
+- 紅線：ngl=10 固定；永不過兩個模型實例並行；目標＝本模型完整載入使用（非砍多模型）
