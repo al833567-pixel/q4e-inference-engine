@@ -96,6 +96,8 @@ add_library(${TARGET}
     peg-parser.h
     preset.cpp
     preset.h
+    q4e-expert-cache.cpp
+    q4e-expert-cache.h
     reasoning-budget.cpp
     reasoning-budget.h
     sampling.cpp

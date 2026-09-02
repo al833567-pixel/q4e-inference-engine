@@ -49,7 +49,7 @@
 | **A-0** | 規劃/合約（02 v3＋03A/03B） | **✓ 本輪** | 分工、合約、路線、基底紀律 |
 | **A-1** | source 準備：clone 最新 llama.cpp→`engine/`（`q4e`）→CPU build | **✓ 完成** | clone b10729（458681e；`engine/PROVENANCE.md`）；改名（project→`q4e`、exe→`q4e-server`）；**MSVC 14.44 static Release 385/385 全過**（job pwsh-44，`engine/build_A1.log`）；**`q4e-server.exe --version` 可執行**（version: 0.3.0-dev，MSVC 19.44.35228 Windows AMD64）；`llama-cli.exe` 亦在（A-2 冒煙用）；**坑**：PATH 的 MinGW 會搶 CMake 編譯器→必須 vcvars64＋cl |
 | **A-2** | qwen4exp：grep 上游→CPU 冒煙 | **✓ 完成（續作輪驗收）** | **上游原生收 qwen4exp**（b10729：`src/models/qwen4exp.cpp` 完整實作＋`LLM_ARCH_QWEN4EXP`＋PLE/QSA）→ **CPU 冒煙 PASS**：真 GGUF（4 片 Q4_K_XL；arch=qwen4exp；48 blocks；**512 experts / 10 used**；PLE layer[1]、ngram_size=3、16 heads）載入＋**16 tokens 產生**（prompt 59 tok 0.42 t/s；generation **0.69 t/s**；161.9 s；`finish_reason=length`；clean terminate）。證據 `engine/smoke_A2_cpu.log`（12:49，晚於舊表更新→舊表仍 ◐） |
-| **A-3** | 動態快取核心（C++）：cache.py 合約＋14 向量單測 | ✗ | touch() 接真實 router（真實 M） |
+| **A-3** | 動態快取核心（C++）：cache.py 合約＋14 向量單測 | **◐ 續作輪動工中** | 核心＋hook＋16 向量單測已寫（`common/q4e-expert-cache.{h,cpp}`＋`tests/test-q4e-expert-cache.cpp`）；build 驗證中 |
 | **A-4** | PLE 離載（C++）：ngram.py 合約＋CPU live | ✗ | SSD 表讀＋預取 |
 | **A-5** | q4e-server（C++）：/v1＋auth＋metrics＋**CPU e2e** | ✗ | 200/401/SSE＋真 GGUF 1 token |
 | **A-6** | 交付包：RUNBOOK_B v2＋README＋03A/03B 更新＋commit | ✗ | B 可獨立執行 |
@@ -57,12 +57,14 @@
 ## 四、Task A 缺口／風險
 
 1. ~~上游最新是否收 qwen4exp~~ **已解**：b10729 原生收（2026-09-01 grep 確認）→ 不需自實作架構。
-2. PLE 注入點＋MoE dispatch hook 點＝偵察結果在（subagent 報告）但 **`docs_A2_insertion_points.md` 未落檔**→A-3/A-4 動工前須補（重做偵察＋落檔）。
+2. ~~PLE 注入點＋MoE dispatch hook 點未落檔~~ **已解**：[docs_A2_insertion_points.md](docs_A2_insertion_points.md) 已補（2026-09-02：MoE dispatch 路徑＋cb_eval hook＋專家佈局＋PLE 路徑＋server 端點＋build 紀律）。
 3. CPU e2e（A-5）1 token 慢（秒~十秒級）→ 預算 ~10 min，超時＝回報。
 4. ~~上游 build 系統版本差異（CMake 4.x 相容性）~~ 已解（A-1 通過）。
 5. ~~ggml-cpu `GGML_CPU_REPACK`（預設 ON）~~ **A 端已解**：現行 build-msvc＝`GGML_CPU_REPACK=OFF`（CMakeCache 可查）＋冒煙載入 PASS（先前 44.35 GB > 20 GB RAM 載入失敗即此因）。**B 端同須**（ngl=10 仍留 ~75 GB 專家在 CPU 側）。
 6. **同目錄 in-place reconfigure 陷阱**：build 參數改變後增量 build 撞 ninja 路徑編碼錯（`FindFirstFileExA(...AI研究/推理工具...)` 亂碼；chcp 65001 無效＝process ANSI codepage 跟著系統 locale）→ **規則：改 CMake 參數＝刪 build 目錄重來**（pwsh-46/47 敗、全新目錄 pwsh-44 成功）。
-7. **沙箱 tmp_path 紀律（2026-09-01 實測）**：本環境沙箱拒 pytest 預設 temp 機制（系統 temp、`--basetemp` 建後 scandir/rmtree 全 PermissionError；跨 invocation 目錄被封鎖不可讀刪）→ **`conftest.py` 已把 `tmp_path` 改指 repo 內 `_testtmp/`**（同進程建＋用＋刪＝實測通過；47/47 重跑 PASS）。**pytest 執行約定**：`py -3.14 -X utf8 -m pytest tests -q -p no:cacheprovider`（workspace 內 cwd）。殘留：5 個被封鎖的 pytest temp 目錄（`_pytest_tmp*`/`_ptmp`/`_fresh1`/`_direct1`，~50 KB，無害，`/_*` gitignore 屏蔽）。
+7. **`BUILD_SHARED_LIBS` 陷阱（2026-09-02 實測）**：llama.cpp 對 **MSVC（非 MinGW）Windows 預設 `BUILD_SHARED_LIBS=ON`**（`engine/CMakeLists.txt:71-76`）→ WIN32＋shared 時 `tests/CMakeLists.txt:154` 的 `if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)` **整塊跳過**（test-unicode/sampling/reasoning-budget/…＋q4e 全缺，build 仍「成功」）。A-1 cache＝OFF（當時有傳）→ **紀律：configure 必顯式 `-DBUILD_SHARED_LIBS=OFF`**（＋`LLAMA_BUILD_TESTS=ON`）。
+8. **沙箱擋 grandchild process（2026-09-02 實測）**：本 session 沙箱（workspace-write）下 **cmake/ninja 啟動的 `cl` 子程序被殺、父程序永久等待**（ninja 卡 6.5h CPU≈0；空專案 cmake ABI 測試 90s 超時；pwsh 直啟 `cl` 正常）→ 診斷法：`Get-Process` 看父程序 CPU≈0＋子程序不存在；**解法**：用户已將本 session 改為 `danger-full-access`（無沙箱限制）＋approval=never→build 正常（510/510）。
+9. **沙箱 tmp_path 紀律（2026-09-01 實測）**：本環境沙箱拒 pytest 預設 temp 機制（系統 temp、`--basetemp` 建後 scandir/rmtree 全 PermissionError；跨 invocation 目錄被封鎖不可讀刪）→ **`conftest.py` 已把 `tmp_path` 改指 repo 內 `_testtmp/`**（同進程建＋用＋刪＝實測通過；47/47 重跑 PASS）。**pytest 執行約定**：`py -3.14 -X utf8 -m pytest tests -q -p no:cacheprovider`（workspace 內 cwd）。殘留：5 個被封鎖的 pytest temp 目錄（`_pytest_tmp*`/`_ptmp`/`_fresh1`/`_direct1`，~50 KB，無害，`/_*` gitignore 屏蔽）。
 
 ## 五、約束（A 端）
 
