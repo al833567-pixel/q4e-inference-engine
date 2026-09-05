@@ -1,6 +1,6 @@
 # 推理工具 — 項目現況 · Task B（有 GPU，較笨 AI）
 
-> 更新：2026-09-02（v4：C++ 唯一實現；**Task B 角色與步驟不變**；A→B 順序更新為 A-4→A-7→A-5→A-6）
+> 更新：2026-09-02（v4：C++ 唯一實現；**Task A 全數完成（A-0～A-6）→ Task B = READY / 待執行**；零判斷手冊＝[RUNBOOK_B_v2.md](RUNBOOK_B_v2.md)）
 > 姊妹檔：[03A_項目現況_TaskA.md](03A_項目現況_TaskA.md)
 > 關聯：[02_實作項目工作規劃.md](02_實作項目工作規劃.md)（Task B 項目＝§五）
 
@@ -39,7 +39,7 @@
 
 | 資產 | 位置 | 角色 |
 |---|---|---|
-| **C++ 產品**（q4e 樹） | `engine/` | **B-1～B-6 的被測對象**（CUDA build＋真機） |
+| **C++ 產品**（q4e 樹） | `engine/` | **B-1～B-7 的被測對象**（CUDA build＋真機） |
 | oracle（fork 二進位） | `D:\llama\` | B-2 輸出對答案（token 序列）；**只對答案，代碼不進產品** |
 | v1 證據（36 檔） | `legacy_v1/evidence/` | 基準數＋方法學實證 |
 | v1 驗收報告 | `legacy_v1/B9_report.md` | §9 回報格式範本 |
@@ -51,15 +51,16 @@
 
 | 項目 | 名稱 | 狀態 | 說明 |
 |---|---|---|---|
-| **B-0** | 前置：VRAM 空出＋CUDA toolkit 版本＋A 交付包（A-6）＋無並行模型實例 | **✗（待 A-6）** | 前置清單逐項 ✓ |
-| **B-1** | q4e **CUDA build**（用 A 的 build 指令） | ✗ | `q4e-server`（CUDA）可執行 |
-| **B-2** | 真 GGUF 載入（**ngl=10**）＋冒煙 ≥1 token＋**oracle 對答案**（vs `D:\llama\llama-server.exe`） | ✗ | SMOKE OK＋輸出一致（diff 原文回報） |
-| **B-3** | 動態快取 live：**真實 M**（`q4e-expert-cache` C++）＋命中 vram/ram/ssd＋**開快取 ≥ 關快取**（t/s） | ✗ | 真實 M 可測 |
-| **B-4** | PLE 離載 live：28.8 GB SSD 表（`q4e-ngram` C++）＋16 row/token＋預取 | ✗ | 統計端點有數 |
-| **B-5** | 驗收：t/s ≥ `estimate_tps(M_real)`×0.7＋重疊 ≥80%（交錯 A B A' B'）＋N-gram 掉幅 <1% | ✗ | 基準參照 1.95 t/s 暖 |
-| **B-6** | e2e `/v1`（200/401/SSE）＋冷載入 ≤~250 s＋VRAM snapshot＋**§9 回報** | ✗ | 報告格式＝`legacy_v1/B9_report.md` |
+| **B-0** | 前置：VRAM 空出＋CUDA 13.3（nvcc）＋GGUF 4 片＋無並行實例 | **READY / 待執行** | 前置清單逐項 ✓ |
+| **B-1** | q4e **CUDA build**（vcvars64＋`GGML_CUDA=ON`＋`BUILD_SHARED_LIBS=OFF`＋`GGML_CPU_REPACK=OFF`） | **READY / 待執行** | `engine\build-cuda\bin\q4e-server.exe` |
+| **B-2** | 真 GGUF 載入（**ngl=10**）＋`/health` 200（≤~250 s）＋VRAM 占用 | **READY / 待執行** | v1 參考 226.4 s／16,750 MiB |
+| **B-3** | `/v1` e2e 5 閘（200／≥1 token／401／SSE）＋`/q4e/stats` 活數據 | **READY / 待執行** | 同 A-5 閘（CPU e2e 已綠） |
+| **B-4** | 快取驗 **開 vs 關硬線**：暖 t/s（ON）≥（OFF，oracle 無 hook 基線） | **READY / 待執行** | 02 §八硬線；ON<OFF→回報不調參 |
+| **B-5** | **oracle 對答案**（vs `D:\llama\llama-server.exe`，同 prompt＋temp=0） | **READY / 待執行** | 一致或可解釋差異；diff 原文回報 |
+| **B-6** | 性能基準（02 §六）：暖 t/s ≥ `estimate_tps(M_real)`×0.7＋重疊 ≥80%＋N-gram 掉幅 <1% | **READY / 待執行** | 基準參照 1.95 t/s 暖；不及→profile＋回報 |
+| **B-7** | 收尾：VRAM 歸零＋PLE 28.8 GB 留 SSD＋程序退出 | **READY / 待執行** | 未歸零→回報原文 |
 
-> A 側順序（B 端只需等 A-6 交付包）：**A-4 收尾 → A-7 重整 → A-5 → A-6**。
+> **Task A 全數完成（A-0～A-6）→ B 端照 [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md) 依 B-0→B-7 零判斷執行**；每步＝指令＋預期輸出＋備案。驗收＝02 §六 M-C 8 項。
 
 ## 五、Task B 約束
 
@@ -77,5 +78,7 @@
 ## 六、現況總結
 
 - **v1 B-0～B-6：全數完成並驗收**（M-B 達標；§9 回報＋36 證據在 `legacy_v1/`）。
-- **v4：待 A 交付包（A-6；A 側剩 A-4 收尾＋A-7 重整＋A-5）**→ 然後 B-0→B-6 依序。
+- **v4：Task A 全數完成（A-0～A-6）→ Task B = READY / 待執行**。照 [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md) 依 **B-0→B-7** 零判斷執行（每步＝指令＋預期輸出＋備案）。
+- **驗收**＝02 §六 M-C 8 項（ngl=10 紅線、`/v1` e2e 綠、真實 M 可測、暖 t/s×0.7、重疊 ≥80%、N-gram <1%、命中報告、A 側測試全綠、冷載入 ≤~250 s＋VRAM 歸零）。
+- **紅線**：ngl=10 固定（不 999/48/auto）；oracle `D:\llama` 只對答案、代碼不進產品；不為乾淨砍功能。
 - 卡住規則：任一门失敗→停下回報（步驟、錯誤原文、已試事項），不猜。

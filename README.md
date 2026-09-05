@@ -13,6 +13,7 @@
 | [02_實作項目工作規劃.md](02_實作項目工作規劃.md) | **v4 工作規劃**：Task A（A-0～A-7）/ Task B（B-0～B-6）＋介面合約＋驗收基準 |
 | [03A_項目現況_TaskA.md](03A_項目現況_TaskA.md) | 項目現況 · Task A（無 GPU，較聰明 AI） |
 | [03B_項目現況_TaskB.md](03B_項目現況_TaskB.md) | 項目現況 · Task B（有 GPU，較笨 AI） |
+| [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md) | **Task B 零判斷執行手冊**（B-0～B-7：指令＋預期輸出＋備案） |
 | [docs_A2_insertion_points.md](docs_A2_insertion_points.md) | qwen4exp 插入點分析（MoE dispatch＋cb_eval hook＋專家佈局＋PLE 路徑） |
 | [legacy_v1/](legacy_v1/) | v1（A/B 兩軌）RUNBOOK＋驗收報告＋工具＋36 份證據（封存） |
 
@@ -47,9 +48,20 @@ engine\build-msvc\bin\test-q4e-expert-cache.exe   # 82 checks
 engine\build-msvc\bin\test-q4e-ngram.exe          # 2957 checks（fake GGUF；$env:Q4E_NGRAM_REAL_DIR 指向 4 片目錄＝真檔）
 ```
 
+## 交付包（Task A → Task B）
+
+> **Task A 全數完成（A-0～A-6）→ Task B 解鎖**。B 端（GPU、零判斷 AI）照下面執行：
+
+| 文件 | 說明 |
+|---|---|
+| **[RUNBOOK_B_v2.md](RUNBOOK_B_v2.md)** | **B 端零判斷手冊**：B-0～B-7（前置確認→CUDA build→ngl=10 真機→/v1 e2e＋/q4e/stats→快取硬線→oracle 對答案→性能基準→收尾），每步＝指令＋預期輸出＋備案（失敗→回報原文，不猜） |
+| [config.yaml](config.yaml) | B 側設定紅線：`ngl: 10`、GGUF 4 片（~103.7 GB）、C++ 模組＋`/q4e/stats` 端點指標 |
+| [evidence_A5_cpu_e2e.md](evidence_A5_cpu_e2e.md) | A 側 CPU e2e 證據：真 GGUF＋200/401/SSE＋16 tokens＋`/q4e/stats` 活數據（`cb_eval` hook 真觸發） |
+| [02_實作項目工作規劃.md](02_實作項目工作規劃.md) §六 | **驗收基準（M-C 8 項）**：ngl=10＋/v1 綠＋真實 M＋暖 t/s×0.7＋重疊 ≥80%＋N-gram <1%＋命中報告＋A 側測試全綠＋冷載入 ≤~250 s／VRAM 歸零 |
+
 ## 狀態
 
 - **v1（A/B 兩軌）：全數完成並驗收**（M-A、M-B）；證據＝`legacy_v1/evidence/`（36 檔）＋`legacy_v1/B9_report.md`
-- **v4：A-0 ✓、A-1 ✓、A-2 ✓（冒煙 16 tokens）、A-3 ✓（82 checks，commit `86b572a`）、A-4 ◐（單元 2957 checks 全綠；真檔收尾中）**
-- **下一步：A-4 收尾 → A-7（C++ 化重整：移 Python＋清目錄）→ A-5（server e2e）→ A-6（交付包）→ Task B**
+- **v4：Task A 全數完成**——A-0 ✓、A-1 ✓、A-2 ✓（冒煙 16 tokens）、A-3 ✓（82 checks，`86b572a`）、A-4 ✓（2957 checks，`85907f6`）、A-7 ✓（`01f9202`）、A-5 ✓（CPU e2e 全綠，`5d98d54`）、A-6 ✓（交付包）
+- **下一步：Task B 照 [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md) 執行（READY）**
 - 紅線：ngl=10 固定；永不過兩個模型實例並行；目標＝本模型完整載入使用（非砍多模型）

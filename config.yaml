@@ -1,7 +1,8 @@
-# 推理工具 — 設定（v4：C++ 唯一實現）
+# 推理工具 — 設定（v4：C++ 唯一實現；A-6 交付包版）
 # 合約＝C++ 實作：cache＝engine/common/q4e-expert-cache.{h,cpp}；ngram＝engine/common/q4e-ngram.{h,cpp}；/v1＝上游 q4e-server
 # 本檔為 human-readable SPEC（ngl=10、cache 容量、gguf_dir），非執行設定
 # engine 段＝參考參數（生產引擎 q4e-server 會有自己的 config）
+# 交付包：RUNBOOK_B_v2.md（B 端零判斷手冊）＋evidence_A5_cpu_e2e.md（A-5 CPU e2e 證據）＋02 §六（驗收 M-C 8 項）
 
 server:
   host: 127.0.0.1
@@ -14,10 +15,21 @@ server:
 
 engine:                   # 參考參數（ngl 紅線：固定 10）
   gguf_dir: D:\AI_Model\Qwen3.8-Flash-Next
+  shards: 4               # Qwen3.8-Flash-Next-UD-Q4_K_XL-0000{1..4}-of-00004.gguf（≈103.7 GB，自動全載）
   ngl: 10                 # 10 層 × ~1.69 GB ≈ 17 GB + KV/緩衝 < 24 GB；其餘 38 層 mmap 在 CPU（RAM/SSD 分頁）
   max_ctx: 2048
   n_batch: 512
   n_threads: 0            # 0 = 自動
+
+modules:                  # C++ 核心模組（engine/，唯一實現；B 端不修改）
+  expert_cache: engine/common/q4e-expert-cache.{h,cpp}   # A-3：狀態機＋cb_eval hook（82 checks）
+  ngram_ple: engine/common/q4e-ngram.{h,cpp}             # A-4：PLE 離載（2957 checks）
+  server: engine/tools/server/q4e-server                 # A-5：cb_eval 接線＋/q4e/stats（commit 5d98d54）
+
+endpoints:                # q4e-server 端點（Bearer key）
+  health: GET /health
+  chat: POST /v1/chat/completions     # OpenAI 相容（串流 SSE＋非串流 JSON；401 無 key）
+  q4e_stats: GET /q4e/stats           # hits vram/ram/ssd、hit_rate_*、io_bytes_estimate（A-5）
 
 cache:                    # q4e 動態快取核心 spec（語義＝q4e-expert-cache (C++)，14 測試向量（test-q4e-expert-cache.cpp））
   n_layers: 48
