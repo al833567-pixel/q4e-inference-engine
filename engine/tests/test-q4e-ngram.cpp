@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -391,6 +392,7 @@ int main(int argc, char ** argv) {
     std::string fake = dir + "\\fake.gguf";
     std::string empty = dir + "\\empty.gguf";
 
+    std::filesystem::create_directories(dir);
     write_fake_gguf(fake);
 
     test_decode_reference();
