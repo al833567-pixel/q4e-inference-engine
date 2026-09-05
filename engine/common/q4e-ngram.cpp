@@ -242,7 +242,8 @@ void q4e_ngram_table::ensure_mapped() const {
         return;
     }
 #ifdef _WIN32
-    file_handle = CreateFileA(file_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    const std::wstring wpath = std::filesystem::path(file_path).wstring();
+    file_handle = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (file_handle == INVALID_HANDLE_VALUE) {
         throw std::runtime_error("open failed: " + file_path);
     }
@@ -251,7 +252,7 @@ void q4e_ngram_table::ensure_mapped() const {
         throw std::runtime_error("GetFileSizeEx failed: " + file_path);
     }
     // PAGE_READONLY: handle opened with GENERIC_READ only
-    map_handle = CreateFileMappingA((HANDLE)file_handle, nullptr, PAGE_READONLY,
+    map_handle = CreateFileMappingW((HANDLE)file_handle, nullptr, PAGE_READONLY,
         (DWORD)(sz.QuadPart >> 32), (DWORD)(sz.QuadPart & 0xFFFFFFFF), nullptr);
     if (map_handle == nullptr) {
         throw std::runtime_error("CreateFileMapping failed: " + file_path);

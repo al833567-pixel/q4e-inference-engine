@@ -10,7 +10,7 @@
 | 文件 | 說明 |
 |---|---|
 | [01_架構系統資料.md](01_架構系統資料.md) | 架構、記憶體佈局、/v1 設計、效能目標（v4：架構不變；技術基底已更新為 C++） |
-| [02_實作項目工作規劃.md](02_實作項目工作規劃.md) | **v4 工作規劃**：Task A（A-0～A-7）/ Task B（B-0～B-6）＋介面合約＋驗收基準 |
+| [02_實作項目工作規劃.md](02_實作項目工作規劃.md) | **v4 工作規劃**：Task A（A-0～A-7）/ Task B（B-0～B-7）＋介面合約＋驗收基準 |
 | [03A_項目現況_TaskA.md](03A_項目現況_TaskA.md) | 項目現況 · Task A（無 GPU，較聰明 AI） |
 | [03B_項目現況_TaskB.md](03B_項目現況_TaskB.md) | 項目現況 · Task B（有 GPU，較笨 AI） |
 | [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md) | **Task B 零判斷執行手冊**（B-0～B-7：指令＋預期輸出＋備案） |
@@ -27,11 +27,11 @@
 │   │   ├── q4e-expert-cache.{h,cpp}   # A-3：專家級動態快取核心（vram/ram/ssd LRU＋place/evict/touch/prefetch）
 │   │   └── q4e-ngram.{h,cpp}          # A-4：PLE 離載（GGUF 解析＋FNV row-id＋4.5-bit 解碼＋mmap＋預取＋bench）
 │   ├── tests/
-│   │   ├── test-q4e-expert-cache.cpp  # 82 checks（向量凍結）
-│   │   └── test-q4e-ngram.cpp         # 2957 checks（FNV/RNG/解碼向量凍結）
+│   │   ├── test-q4e-expert-cache.cpp  # 90 checks（向量凍結）
+│   │   └── test-q4e-ngram.cpp         # 2989 checks（FNV/RNG/解碼向量凍結）
 │   └── build-msvc/                   # MSVC Release build（bin/*.exe）
 ├── tools/
-│   └── b5_body.json                  # e2e 請求體（B-6 用）
+│   └── b5_body.json                  # e2e 請求體（B-3 用）
 └── legacy_v1/                        # v1 封存（tools / evidence / RUNBOOK / B9 報告）
 ```
 

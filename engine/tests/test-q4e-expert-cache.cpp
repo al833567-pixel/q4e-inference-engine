@@ -1,6 +1,7 @@
 // Unit tests for the tiered MoE expert cache (common/q4e-expert-cache.{h,cpp}).
 // Vectors frozen in this C++ test (v3 provenance: 推理工具/tests/test_cache.py, removed v4; oracle green in both).
 #include "q4e-expert-cache.h"
+#include "ggml.h"
 
 #include <algorithm>
 #include <cmath>
@@ -352,6 +353,56 @@ static void test_layer_from_name() {
     CHECK_EQ_I64(q4e_expert_layer_from_name(nullptr, 48), -1);
 }
 
+// test_occupancy_bounded_by_capacity: evict-then-insert keeps each tier within capacity
+static void test_occupancy_bounded_by_capacity() {
+    q4e_expert_cache_config cfg;
+    cfg.n_layers                = 2;
+    cfg.n_experts_per_layer     = 16;
+    cfg.vram_capacity_per_layer = 4;
+    cfg.ram_capacity_per_layer  = 6;
+    cfg.has_shared              = false;
+    q4e_expert_cache c(cfg);
+    for (int l = 0; l < 2; ++l) {
+        for (int e = 0; e < 16; ++e) { // more distinct experts than any capacity -> force eviction
+            const int id = e;
+            c.touch(l, &id, 1);
+        }
+    }
+    const q4e_expert_cache_stats s = c.stats();
+    CHECK(s.occ_vram.max <= cfg.vram_capacity_per_layer);
+    CHECK(s.occ_ram.max  <= cfg.ram_capacity_per_layer);
+    CHECK(s.occ_vram.min >= 0);
+    CHECK(s.occ_ram.min  >= 0);
+}
+
+// test_cb_eval_rejects_non_moe: hook filter rejects non-MoE tensors (no touch)
+static void test_cb_eval_rejects_non_moe() {
+    q4e_expert_cache c(make_cfg(4, 6, 2, false));
+    const int64_t before = c.stats().touches;
+
+    // case A: op is not MUL_MAT_ID -> filter rejects
+    {
+        struct ggml_tensor src0 = {};
+        struct ggml_tensor t = {};
+        std::snprintf(src0.name, sizeof(src0.name), "blk.0.ffn_up_exps.weight");
+        t.op     = GGML_OP_ADD; // not MUL_MAT_ID
+        t.src[0] = &src0;
+        CHECK(q4e_expert_cache_cb_eval(&t, /*ask=*/false, &c));
+        CHECK_EQ_I64(c.stats().touches, before);
+    }
+
+    // case B: MUL_MAT_ID but expert name has no "up" -> filter rejects
+    {
+        struct ggml_tensor src0 = {};
+        struct ggml_tensor t = {};
+        std::snprintf(src0.name, sizeof(src0.name), "blk.0.ffn_down_exps.weight");
+        t.op     = GGML_OP_MUL_MAT_ID;
+        t.src[0] = &src0;
+        CHECK(q4e_expert_cache_cb_eval(&t, /*ask=*/false, &c));
+        CHECK_EQ_I64(c.stats().touches, before);
+    }
+}
+
 int main(int argc, char ** argv) {
     (void) argc;
     (void) argv;
@@ -371,6 +422,8 @@ int main(int argc, char ** argv) {
     test_reset();
     test_subclass_override_place_evict();
     test_layer_from_name();
+    test_occupancy_bounded_by_capacity();
+    test_cb_eval_rejects_non_moe();
     if (g_failures) {
         fprintf(stderr, "q4e-expert-cache: %d/%d checks FAILED\n", g_failures, g_checks);
         return 1;

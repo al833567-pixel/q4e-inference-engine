@@ -300,8 +300,8 @@ bool q4e_expert_cache_cb_eval(struct ggml_tensor * t, bool ask, void * user_data
         try {
             self->touch(il, exps.data(), n_ids);
         } catch (...) {
-            // bad id / config mismatch: skip this layer instead of aborting eval
-            return false;
+            // A-8c: skip bad expert id; do not break the graph
+            return true;
         }
     }
     return true;

@@ -144,6 +144,29 @@ static void test_decode_reference() {
     }
 }
 
+// test_decode_d15 (non-power-of-2 scale d = 1.5, mirrors test_decode_reference)
+static void test_decode_d15() {
+    uint8_t block[18];
+    block[0] = 0x00; block[1] = 0x3E; // d = 1.5 f16 LE
+    for (int i = 2; i < 18; i++) {
+        block[i] = 0;
+    }
+    block[2] = 0x00;
+    block[3] = 0xFF;
+    block[4] = 0x53;
+    float v[32];
+    q4e_ngram_decode_block_45(block, 18, v);
+    CHECK_EQ_F(v[0], (0 - 8) * 1.5f);
+    CHECK_EQ_F(v[1], (0 - 8) * 1.5f);
+    CHECK_EQ_F(v[2], (15 - 8) * 1.5f);
+    CHECK_EQ_F(v[3], (15 - 8) * 1.5f);
+    CHECK_EQ_F(v[4], (3 - 8) * 1.5f);
+    CHECK_EQ_F(v[5], (5 - 8) * 1.5f);
+    for (int i = 6; i < 32; i++) {
+        CHECK_EQ_F(v[i], (-8.0f) * 1.5f);
+    }
+}
+
 // test_decode_d1_range
 static void test_decode_d1_range() {
     uint8_t block[18];
@@ -396,6 +419,7 @@ int main(int argc, char ** argv) {
     write_fake_gguf(fake);
 
     test_decode_reference();
+    test_decode_d15();
     test_decode_d1_range();
     test_decode_short_raises();
     test_fnv_vectors();
