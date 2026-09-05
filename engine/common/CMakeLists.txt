@@ -98,6 +98,8 @@ add_library(${TARGET}
     preset.h
     q4e-expert-cache.cpp
     q4e-expert-cache.h
+    q4e-ngram.cpp
+    q4e-ngram.h
     reasoning-budget.cpp
     reasoning-budget.h
     sampling.cpp
