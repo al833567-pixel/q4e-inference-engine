@@ -3,6 +3,7 @@
 #include "server-http.h"
 #include "server-task.h"
 #include "server-queue.h"
+#include "q4e-expert-cache.h"
 
 #include "json.h"
 
@@ -108,6 +109,9 @@ struct server_context {
     // not thread-safe, should only be used from the main thread
     server_context_meta get_meta() const;
 
+    // A-5: q4e expert-cache stats
+    q4e_expert_cache_stats q4e_stats() const;
+
     // note: must be set before load_model() is called
     void set_state_callback(server_state_callback_t callback);
 };
@@ -130,6 +134,7 @@ struct server_routes {
     // they won't be called until ctx_http.is_ready is set to true
     server_http_context::handler_t get_health;
     server_http_context::handler_t get_metrics;
+    server_http_context::handler_t get_q4e_stats;
     server_http_context::handler_t get_slots;
     server_http_context::handler_t post_slots;
     server_http_context::handler_t get_props;

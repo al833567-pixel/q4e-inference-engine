@@ -16,6 +16,7 @@
 #include "speculative.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "q4e-expert-cache.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -832,6 +833,7 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
 
 struct server_context_impl {
     friend struct server_context;
+    friend struct server_routes;
 
 public:
     // only use these pointers outside of this class:
@@ -880,6 +882,8 @@ private:
 
     // note: keep these alive - they determine the lifetime of the model, context, etc.
     common_init_result_ptr llama_init;
+
+    q4e_expert_cache q4e_cache; // A-5: persistent expert-cache (cb_eval hook target)
 
     llama_context * ctx_tgt = nullptr;
 
@@ -1095,6 +1099,9 @@ private:
             params_base.load_progress_callback = load_progress_callback;
             params_base.load_progress_callback_user_data = &load_progress_text;
         }
+
+        params_base.cb_eval           = q4e_expert_cache_cb_eval;
+        params_base.cb_eval_user_data = &q4e_cache;
 
         llama_init = common_init_from_params(params_base);
 
@@ -4147,6 +4154,10 @@ llama_context * server_context::get_llama_context() const {
     return impl->ctx_tgt;
 }
 
+q4e_expert_cache_stats server_context::q4e_stats() const {
+    return impl->q4e_cache.stats();
+}
+
 server_response_reader server_context::get_response_reader() {
     return impl->get_response_reader();
 }
@@ -4634,6 +4645,28 @@ void server_routes::init_routes() {
         GGML_UNUSED(ctx_server);
 
         res->ok({{"status", "ok"}});
+        return res;
+    };
+
+    this->get_q4e_stats = [this](const server_http_req & req) {
+        auto res = create_response(true);
+
+        const auto s = ctx_server.q4e_cache.stats();
+        res->ok({
+            { "layers",            s.layers },
+            { "touches",           s.touches },
+            { "hits_vram",         s.hits.vram },
+            { "hits_ram",          s.hits.ram },
+            { "hits_ssd",          s.hits.ssd },
+            { "hit_rate_vram",     s.hit_rate_vram },
+            { "hit_rate_ram",      s.hit_rate_ram },
+            { "hit_rate_ssd",      s.hit_rate_ssd },
+            { "prefetch_issued",   s.prefetch.issued },
+            { "occ_vram_avg",      s.occ_vram.avg },
+            { "occ_ram_avg",       s.occ_ram.avg },
+            { "placement_events",  s.placement_events },
+            { "io_bytes_estimate", (int64_t)s.placement_events * 3072000 },
+        });
         return res;
     };
 
