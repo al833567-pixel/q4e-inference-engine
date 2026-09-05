@@ -57,7 +57,7 @@
   （ggml 沒有 int64/xor → 引擎在 host 側算 row id，再 `ggml_get_rows` 取行。）
 - 每 token 取 16 行 × 160 值 × 4.5 bit ＝ **1,440 B**（≈1.4 KB）。
 
-### 2. A 側合約（`ngram.py`＋`tests/test_ngram.py`＝9+2 向量）
+### 2. A 側合約（`engine/tests/test-q4e-ngram.cpp`＝FNV/RNG/解碼向量凍結；原 ngram.py/test_ngram.py 已於 v4 移除）
 - 解碼：`d = f16 LE (2B)`＋`qs[16]`（byte j 低 nibble＝元素 2j、高 nibble＝2j+1）；`x[i] = (q[i]-8)*d`。
 - row 長＝5 blocks × 18 B＝**90 B**；entry＝16 subrows；n_entries＝n_rows/16。
 - A 側測試 hash＝FNV-1a64(head salt, ids) % n_entries × 16 + head（確定性、可重放；**測試用**，

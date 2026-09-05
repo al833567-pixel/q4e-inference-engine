@@ -19,7 +19,7 @@ engine:                   # 參考參數（ngl 紅線：固定 10）
   n_batch: 512
   n_threads: 0            # 0 = 自動
 
-cache:                    # q4e 動態快取核心 spec（語義＝cache.py，14 測試向量）
+cache:                    # q4e 動態快取核心 spec（語義＝q4e-expert-cache (C++)，14 測試向量（test-q4e-expert-cache.cpp））
   n_layers: 48
   n_experts_per_layer: 512
   active_routed: 10
@@ -34,4 +34,4 @@ cache:                    # q4e 動態快取核心 spec（語義＝cache.py，14
 ngram:
   # N-gram 表（per_layer_token_embd，51.2B，4.5 bit/value，28.8 GB）
   on_ssd: true             # PLE 離載（SSD）+ 非同步預取
-  bench_reads: 1000        # bench_ngram.py 隨機讀次數
+  bench_reads: 1000        # q4e-ngram bench (C++) 隨機讀次數
