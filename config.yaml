@@ -1,6 +1,6 @@
-# 推理工具 — 設定（v2）
-# server 段＝合約參考（server.py/auth.py）
-# cache/ngram 段＝**q4e 核心的 spec**（P1.1/P1.5 語義參數）
+# 推理工具 — 設定（v4：C++ 唯一實現）
+# 合約＝C++ 實作：cache＝engine/common/q4e-expert-cache.{h,cpp}；ngram＝engine/common/q4e-ngram.{h,cpp}；/v1＝上游 q4e-server
+# 本檔為 human-readable SPEC（ngl=10、cache 容量、gguf_dir），非執行設定
 # engine 段＝參考參數（生產引擎 q4e-server 會有自己的 config）
 
 server:

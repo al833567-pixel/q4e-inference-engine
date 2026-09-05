@@ -1,6 +1,6 @@
 # 推理工具 — 項目現況 · Task A（無 GPU，較聰明 AI）
 
-> 更新：2026-09-02（v4：**C++ 唯一實現**；A-3 ✓、A-4 收尾中、A-7 重整動工）
+> 更新：2026-09-02（v4：**C++ 唯一實現**；A-3 ✓、A-4 ✓（`85907f6`）、A-7 重整動工）
 > 姊妹檔：[03B_項目現況_TaskB.md](03B_項目現況_TaskB.md)（GPU 側）
 > 關聯：[02_實作項目工作規劃.md](02_實作項目工作規劃.md)；[01_架構系統資料.md](01_架構系統資料.md)
 
@@ -49,7 +49,7 @@
 | **A-1** | source 準備：clone 最新 llama.cpp→`engine/`（`q4e`）→CPU build | **✓ 完成** | clone b10729（`engine/PROVENANCE.md`）；**MSVC 14.44 static Release 385/385 全過**；`q4e-server.exe --version` 可執行 |
 | **A-2** | qwen4exp：grep 上游（原生收）→CPU 冒煙 | **✓ 完成** | b10729 `src/models/qwen4exp.cpp` 完整實作；**CPU 冒煙 PASS：16 tokens**（prompt 0.42 t/s；gen **0.69 t/s**；`engine/smoke_A2_cpu.log`） |
 | **A-3** | 動態快取核心（C++）：狀態機＋cb_eval hook＋單測 | **✓ 完成（commit `86b572a`）** | `q4e-expert-cache.{h,cpp}`＋`llama_context_params::cb_eval` hook；**82 checks 全綠** |
-| **A-4** | PLE 離載（C++）：q4e-ngram（GGUF 解析＋FNV row-id＋4.5-bit 解碼＋mmap 讀＋預取＋bench） | **◐ 收尾** | 單元 **2957 checks 全綠**（本輪修 3 bug：CreateFileMapping 權限、MT19937 twist OOB、CPython seeding；見 §四 #10–12）；**待辦**：真檔 row0 oracle 常數嵌入→真檔測試＋bench→清診斷碼→commit |
+| **A-4** | PLE 離載（C++）：q4e-ngram（GGUF 解析＋FNV row-id＋4.5-bit 解碼＋mmap 讀＋預取＋bench） | **✓ 完成（commit `85907f6`）** | C++ 單元 **2957 checks 全綠**＋真檔 **3126 checks 全綠**＋expert-cache **82 checks 全綠**（本輪修 3 bug：CreateFileMapping 權限、MT19937 twist OOB、CPython seeding；見 §四 #10–12） |
 | **A-7** | **C++ 化重整（初始化）**：移除 Python 合約層＋temp 目錄；README/02/03A/03B 更新；git 清理 | ✗ | **先於 A-5**（使用者指定順序：先文件→再清 Python） |
 | **A-5** | q4e-server（C++）：註冊 cb_eval hook＋q4e 統計端點＋**CPU e2e**（200/401/SSE＋真 GGUF ≥1 token） | ✗ | `/v1` 合約＝上游 server 既有（見 02 §三） |
 | **A-6** | 交付包：RUNBOOK_B v2＋README＋03A/03B＋commit | ✗ | B 可獨立執行 |
@@ -88,7 +88,7 @@
 ## 六、現況總結
 
 - **v1 A-0～A-5：全數完成並驗收**（M-A）。
-- **v4：A-0 ✓、A-1 ✓、A-2 ✓、A-3 ✓（`86b572a`）、A-4 ◐（單元 2957 checks 全綠；真檔收尾中）**。
+- **v4：A-0 ✓、A-1 ✓、A-2 ✓、A-3 ✓（`86b572a`）、A-4 ✓（`85907f6`；單元 2957＋真檔 3126＋expert-cache 82 全綠）**。
 - **本輪修 3 個 C++ bug**（#10–12）→ 單元測試由 crash（0xC0000409）轉 2957/2957 全綠。
-- **下一步**：A-4 收尾（真檔 oracle＋commit）→ **A-7 重整（移 Python＋清目錄）** → A-5 → A-6 → Task B 解鎖。
+- **下一步**：A-4 ✓（已 commit `85907f6`）→ **A-7 重整（移 Python＋清目錄）** → A-5 → A-6 → Task B 解鎖。
 - 卡住規則：任一门失敗→停下回報（步驟、錯誤原文、已試事項），不猜。
