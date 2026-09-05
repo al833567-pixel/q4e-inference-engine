@@ -8,7 +8,7 @@
 #include <vector>
 
 // tiered MoE expert cache (q4e addition)
-// spec: 推理工具/cache.py TieredCache (v2 contract, signatures unchanged)
+// spec: v2 contract (v3 cache.py, removed v4); frozen in test-q4e-expert-cache.cpp
 // tiers: vram (L1 hot) / ram (L2) / ssd (L3, untracked, infinite)
 // expert ids: 0..n_experts-1 routed; Q4E_EXPERT_SHARED_ID = per-layer shared expert
 
@@ -22,7 +22,7 @@ struct q4e_expert_cache_config {
     bool has_shared = true;
 };
 
-// hit breakdown of one touch() call (spec: cache.py touch return)
+// spec: touch return (v2 contract); frozen in test-q4e-expert-cache.cpp
 struct q4e_expert_hits {
     int64_t vram = 0;
     int64_t ram  = 0;

@@ -15,6 +15,9 @@
 
 namespace {
 
+// observed sink for bench reads, so the compiler cannot eliminate them
+static volatile uint64_t g_q4e_bench_sink;
+
 float f16_to_f32(uint16_t h) {
     const uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
     uint32_t exp = (h & 0x7C00u) >> 10;
@@ -417,11 +420,11 @@ q4e_ngram_bench_result q4e_ngram_table::bench_random_reads(int64_t n, int64_t se
     auto touch = [this](int64_t rid, int64_t rb) {
         const uint8_t * p = view + data_off + rid * rb;
         const uint8_t * end = p + rb;
-        uint8_t sink = 0;
+        uint64_t sum = 0;
         for (; p < end; p++) {
-            sink ^= *p;
+            sum += (uint64_t)*p;
         }
-        (void)sink;
+        g_q4e_bench_sink += sum;
     };
 
     for (int64_t i = 0; i < warmup; i++) {

@@ -1,6 +1,6 @@
 // Unit tests for the PLE ngram table (common/q4e-ngram.{h,cpp}).
-// Vectors ported 1:1 from 推理工具/tests/test_ngram.py (spec oracle, green in Python).
-// Cross-language oracles (FNV, row ids, RNG sequences) generated from ngram.py / random.Random.
+// Vectors frozen in this C++ test (v3 provenance: 推理工具/tests/test_ngram.py, removed v4; oracle green in both).
+// Cross-language oracles (FNV, row ids, RNG sequences); v3 provenance: ngram.py / random.Random (removed v4).
 #include "q4e-ngram.h"
 
 #include <algorithm>
@@ -74,7 +74,7 @@ static void put_u64(std::vector<uint8_t> & out, uint64_t v) {
     }
 }
 
-// byte-identical to tests/test_ngram.py write_fake_gguf (n_rows=128, row_len=160, d=1.0, quants=0)
+// byte-identical to write_fake_gguf (v3 provenance: tests/test_ngram.py, removed v4); n_rows=128, row_len=160, d=1.0, quants=0
 static void write_fake_gguf(const std::string & path) {
     std::vector<uint8_t> out;
     out.insert(out.end(), (const uint8_t *)"GGUF", (const uint8_t *)"GGUF" + 4);

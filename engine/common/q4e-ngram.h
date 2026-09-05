@@ -84,7 +84,7 @@ public:
     void prefetch(const std::vector<int64_t> & token_ids);
 
     q4e_ngram_bench_result bench_random_reads(int64_t n, int64_t seed, int64_t warmup = 10) const;
-    // replayable: same seed -> same row id sequence (parity with python read_sequence)
+    // replayable: same seed -> same row id sequence; CPython-random parity (v3 provenance); frozen in test-q4e-ngram.cpp
     std::vector<int64_t> read_sequence(int64_t n, int64_t seed, int64_t warmup = 10) const;
 
     void close();

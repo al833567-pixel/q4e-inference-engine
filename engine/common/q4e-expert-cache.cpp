@@ -9,7 +9,7 @@
 #include <stdexcept>
 
 //
-// deterministic tiered MoE expert cache (spec: 推理工具/cache.py TieredCache)
+// deterministic tiered MoE expert cache; spec: v2 contract (v3 cache.py, removed v4); frozen in test-q4e-expert-cache.cpp
 //
 
 namespace {
@@ -297,7 +297,12 @@ bool q4e_expert_cache_cb_eval(struct ggml_tensor * t, bool ask, void * user_data
         for (int64_t k = 0; k < n_ids; ++k) {
             exps[k] = (int) ids_data[k * n_tok + t_i];
         }
-        self->touch(il, exps.data(), n_ids);
+        try {
+            self->touch(il, exps.data(), n_ids);
+        } catch (...) {
+            // bad id / config mismatch: skip this layer instead of aborting eval
+            return false;
+        }
     }
     return true;
 }

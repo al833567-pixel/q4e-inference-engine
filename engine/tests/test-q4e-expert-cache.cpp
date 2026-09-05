@@ -1,5 +1,5 @@
 // Unit tests for the tiered MoE expert cache (common/q4e-expert-cache.{h,cpp}).
-// Vectors ported 1:1 from 推理工具/tests/test_cache.py (spec oracle, 47/47 green in Python).
+// Vectors frozen in this C++ test (v3 provenance: 推理工具/tests/test_cache.py, removed v4; oracle green in both).
 #include "q4e-expert-cache.h"
 
 #include <algorithm>
