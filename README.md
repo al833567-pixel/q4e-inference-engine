@@ -1,6 +1,7 @@
 # 推理工具 — Qwen3.8-Flash-Next（qwen4exp）推理
 
 > **v4（2026-09-02）**：自有引擎 **`q4e`** ＝ clone llama.cpp 最新 source → 改名 → **改核心**（專家級動態快取＋PLE 離載）。**C++ 唯一實現**（`engine/`）；v3 Python 合約層已移除，合約 oracle 常數凍結於 C++ 測試。
+> **A-14 全 C++ 化（2026-09-06 拍板）**：交付鏈（工具＋測試＋e2e＋bench）100% C++、我們的工作範圍零 .py/.ps1（上游 `engine/*.py` 不納入；`legacy_v1/*.py` 於 C++ 替代全綠後刪除、證據保留）。
 > **目標（紅線）**：Qwen3.8-Flash-Next **可完整載入使用**（載入＋推理＋/v1＋快取）；不為乾淨砍功能（砍其他架構＝選項，預設不做）。
 > **分工**：**Task A**（無 GPU，較聰明 AI）設計＋寫碼（C++）＋CPU build＋交付包；**Task B**（GPU，較笨 AI）照 RUNBOOK 真機驗收。`D:\llama` fork＝**oracle only**（代碼不進產品）。
 > v1 路線封存 → [`legacy_v1/`](legacy_v1/)。
@@ -13,6 +14,7 @@
 | [02_實作項目工作規劃.md](02_實作項目工作規劃.md) | **v4 工作規劃**：Task A（A-0～A-7）/ Task B（B-0～B-7）＋介面合約＋驗收基準 |
 | [03A_項目現況_TaskA.md](03A_項目現況_TaskA.md) | 項目現況 · Task A（無 GPU，較聰明 AI） |
 | [03B_項目現況_TaskB.md](03B_項目現況_TaskB.md) | 項目現況 · Task B（有 GPU，較笨 AI） |
+| [已完成工作.md](已完成工作.md) | **已完成工作彙整**（v1 基準＋Task A＋Task B＋根因核實＋決策紀錄）；03A/03B 只留未完成 |
 | [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md) | Task B 零判斷執行手冊 v4（B-0～B-7；**已執行完畢**，2026-09-06） |
 | [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) | **Task B 復驗手冊 v4.1（B-8）**：重驗硬線/t/s/重疊三門＋回歸門（待 A-12 交付後執行） |
 | [docs_A2_insertion_points.md](docs_A2_insertion_points.md) | qwen4exp 插入點分析（MoE dispatch＋cb_eval hook＋專家佈局＋PLE 路徑） |
@@ -52,7 +54,7 @@ engine\build-msvc\bin\test-q4e-ngram.exe          # 2957 checks（fake GGUF；$e
 ## 交付包（Task A → Task B）
 
 > **v4 交付包：Task A（A-0～A-6）✓ → Task B（B-0～B-7）✓（2026-09-06 執行完畢）**；結果＝[B9_report_v4.md](B9_report_v4.md)（M-C 8 項：5 PASS／1 FAIL／2 不可量；B-4 硬線 FAIL）。
-> **v4.1 第二輪（進行中）**：A-9（熱路徑開銷移除）→ A-11（#3 驗收線拍板）→ A-10（live 預取接線）→ A-12（交付包 v4.1）→ **B-8 復驗＝[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)**。
+> **v4.1 第二輪（進行中）**：A-9 ✓（熱路徑開銷移除）→ A-11 ✓（#3′ 拍板 Option A）→ **A-14 全 C++ 化**（A-14.1 live 預取＋real backend → A-14.2 `q4e-e2e` → A-14.3 `q4e-bench`）→ A-12（交付包 v4.1）→ **B-8 復驗＝[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)** → A-14.4（ngram live）→ A-14.5（清理）→ A-14.6（終門）。
 
 | 文件 | 說明 |
 |---|---|
@@ -66,5 +68,5 @@ engine\build-msvc\bin\test-q4e-ngram.exe          # 2957 checks（fake GGUF；$e
 - **v1（A/B 兩軌）：全數完成並驗收**（M-A、M-B）；證據＝`legacy_v1/evidence/`（36 檔）＋`legacy_v1/B9_report.md`
 - **v4：Task A 全數完成**——A-0 ✓、A-1 ✓、A-2 ✓（冒煙 16 tokens）、A-3 ✓（82 checks，`86b572a`）、A-4 ✓（2957 checks，`85907f6`）、A-7 ✓（`01f9202`）、A-5 ✓（CPU e2e 全綠，`5d98d54`）、A-6 ✓（交付包 `e3fa9b4`）
 - **v4：Task B（B-0～B-7）全數完成（2026-09-06）**——§9＝[B9_report_v4.md](B9_report_v4.md)；**M-C 8 項＝5 PASS／1 FAIL（#3 暖 t/s 1.5692 < 10.773）／2 本 build 不可量（#4/#5，`prefetch_issued=0`）**；B-4 硬線 FAIL（ON 1.5692 < OFF 1.7700，−11.3%）
-- **v4.1 第二輪（進行中，見 [02 §十](02_實作項目工作規劃.md)）**：**A-9 ✓ 完成**（`cb_eval` sync D2H 移除；測試 98/98＋2989/2989；CPU e2e `A9_E2E_ALL_PASS`；stats 新欄位 `layers_touched`/`hook_skips_device_ids`）→ **A-11 ✓ 拍板 Option A**（#3′＝ON≥OFF 且 ≥1.95 t/s）→ **A-10 下一動工**（live 預取接線＋real backend→#4 可量）→ A-12（交付包 v4.1）→ **B-8 復驗（[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)）**
+- **v4.1 第二輪（進行中，見 [02 §十](02_實作項目工作規劃.md)）**：**A-9 ✓**（`8413022`；sync D2H 移除；98/98＋2989/2989；`A9_E2E_ALL_PASS`）→ **A-11 ✓ 拍板 Option A**（#3′＝ON≥OFF 且 ≥1.95 t/s）→ **A-14 全 C++ 化（下一動工＝A-14.1）**：A-14.1 live 預取接線＋real backend（`q4e-expert-warm`；`prefetch_io_issued`/`prefetch_overlap_ratio`→#4 可量）→ A-14.2 `q4e-e2e`（取代 `a9_e2e.ps1`）→ A-14.3 `q4e-bench`（取代 `bench_tps.py`＋手動 curl）→ A-12（交付包 v4.1）→ **B-8 復驗（[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)）** → A-14.4（ngram live，解鎖 #5）→ A-14.5（清理 .py/.ps1）→ A-14.6（終門）
 - 紅線：ngl=10 固定；永不過兩個模型實例並行；目標＝本模型完整載入使用（非砍多模型）

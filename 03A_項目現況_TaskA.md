@@ -1,84 +1,53 @@
 # 推理工具 — 項目現況 · Task A（無 GPU，較聰明 AI）
 
-> 更新：2026-09-06（v4.1：**A-9 ✓ 完成**（sync D2H 移除＋stats 新欄位，build/測試/e2e 全綠，§七.2）；A-11 ✓ 拍板 Option A；**下一動工＝A-10**（live 預取＋real backend）；詳見 [02 §十](02_實作項目工作規劃.md)）
-> v4 歷史：2026-09-02（**C++ 唯一實現**；**A-0～A-6 全數完成**（A-5 `5d98d54`、A-6＝交付包 RUNBOOK_B v2））
+> 更新：2026-09-06（**本檔只留未完成項目**；已完成工作→[已完成工作.md](已完成工作.md)；commit 全錄→`git log --oneline`）
+> **新策略（2026-09-06 拍板）＝A-14 全 C++ 化**：交付鏈（工具＋測試＋e2e＋bench）100% C++，我們的工作範圍零 .py/.ps1（上游 `engine/*.py` 不納入；`legacy_v1/*.py` 於 C++ 替代全綠後刪除、證據保留）。
 > 姊妹檔：[03B_項目現況_TaskB.md](03B_項目現況_TaskB.md)（GPU 側）
 > 關聯：[02_實作項目工作規劃.md](02_實作項目工作規劃.md)；[01_架構系統資料.md](01_架構系統資料.md)
 
 ## 〇、Task A 的角色
 
-**無 GPU 可用、較聰明 AI**：設計＋寫碼（**q4e 核心 C++**）＋CPU build＋C++ 測試＋交付包。
-**v4 新增**：C++ 化初始化（A-7）＝把進行到一半的有效工作全部落到 C++、移除 Python 合約層、整理目錄。
-全部工作可在無 GPU 環境完成。判斷權全在 A 側。
+**無 GPU 可用、較聰明 AI**：設計＋寫碼（**q4e 核心 C++**）＋CPU build＋C++ 測試＋交付包。全部工作可在無 GPU 環境完成。判斷權全在 A 側。
 
-## 一、Task A 環境（已實測）
+## 一、未完成項目（A-14 全 C++ 化；子項含原 A-10/A-13）
+
+| 子項 | 名稱 | 狀態 | 內容／驗收 |
+|---|---|---|---|
+| **A-14.1**（＝A-10） | live 預取接線＋real backend（`q4e-expert-warm`） | **✗ 待辦（下一動工）** | server 以上一 token 各層選擇→`prefetch()`（簿記）＋`warm_hint()`（真實 page-warm）；GGUF 專家切片索引（gguf.h）＋`CreateFileMappingW` 唯讀映射（與引擎 mmap 共享 OS page cache）＋background worker＋雙緩衝＋dedup＋有界佇列；GPU 層零 I/O；evict no-op；stats 加 `prefetch.io_issued/io_bytes/io_completed/io_dropped`＋`prefetch_overlap_ratio`（定義＝觸碰前已完成預取的 touches 佔比）；`--q4e-prefetch on/off` 旗標；**驗收**：既有測試全綠＋CPU e2e `prefetch_io_issued>0`＋`prefetch_overlap_hits>0`（issued 定義＝2026-09-06 拍板 Option A，凍結契約不動） |
+| **A-14.2**（新） | **`q4e-e2e` C++ e2e 客戶端**（取代 `a9_e2e.ps1`） | **✗ 待辦** | G0 無殘留→G1 health→G2 401→G3 completion→G4 SSE→G5 `/q4e/stats` 門→G6 kill；重用既有 vendored **cpp-httplib**（不引入新依賴）；**驗收**：C++ e2e 全門綠→PS1 出交付範圍 |
+| **A-14.3**（新） | **`q4e-bench` C++ bench 客戶端**（取代 `bench_tps.py --measure/--prefetch`＋B 側手動 curl） | **✗ 待辦** | 暖機＋N tokens（temp=0 固定 prime prompt）＋t/s＋prefetch on/off 對照＋重疊度（讀 stats）＋JSON 報告；**驗收**：B-8 直接跑 `q4e-bench` 取 ON/OFF t/s＋JSON |
+| **A-12** | 交付包 v4.1（C++ 工具鏈入包） | **✗ 待 A-14.3** | README/03A/03B＋[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)（改跑 `q4e-bench`/`q4e-e2e`）；B 側證據已 commit（`24f11f7`） |
+| **A-14.4**（＝A-13） | ngram live 接線＋diag 4 階段／accept P1–P4 C++ 化 | **✗ 未排程（B-8 後）** | ngram 預測 hint→prefetch；解鎖 M-C #5（N-gram 預取 t/s 掉 <1%） |
+| **A-14.5** | 清理：刪 `legacy_v1/*.py`（8）＋`config.yaml`＋`a9_e2e.ps1`；**保留** `legacy_v1/evidence/`＋B9 報告 | **✗ 待 A-14.4** | 交付樹零 .py/.ps1（上游 `engine/` 除外，文件註明） |
+| **A-14.6** | 終門：交付包宣告「全 C++」＋README/02 落地 | **✗ 最後** | A-12 交付條件 |
+
+> **執行順序**：A-14.1 → A-14.2 → A-14.3 → **A-12（交付 v4.1）** → **B-8 復驗（[03B](03B_項目現況_TaskB.md)）** → A-14.4 → A-14.5 → A-14.6
+> **範圍拍板（2026-09-06）**：上游 `engine/*.py` 218 檔（conversion/gguf-py/scripts/server tests/examples）＝**不納入**；`legacy_v1/*.py` C++ 替代全綠後**刪除**（evidence 保留）；`config.yaml` 隨 CLI flags 化移除。
+
+## 二、Task A 環境（已實測；build/e2e 用）
 
 | 項目 | 狀態 | 說明 |
 |---|---|---|
 | **MSVC（VS 2022 BuildTools）** | ✓ | vcvars64.bat 在位（cl 不在 PATH→build 時 invoke） |
 | **CMake** | ✓ | 4.4.2 |
-| **Ninja** | ✓ | 1.13.2 |
-| **MinGW g++（WinGet WinLibs）** | ⚠ | **在 PATH 上，會搶 CMake 的編譯器**→ **紀律：build 必包在 `vcvars64.bat` 環境**（MSVC 14.44.35207 選中） |
+| **Ninja** | ✓ | 1.13.2（CJK 路徑增量陷阱→刪 `.ninja_log` 備案，見 `evidence_b1/root_cause_b1.md`） |
+| **MinGW g++（WinGet WinLibs）** | ⚠ | **在 PATH 上，會搶 CMake 的編譯器**→**紀律：build 必包在 `vcvars64.bat` 環境** |
 | **CUDA toolkit** | ◐ | v13.3（nvcc 在 PATH）—**A 端不使用**（無 GPU）；B 端 build 用 |
 | **CPU / RAM** | ✓ | i7-9700 8C/8T（無 HT）；RAM 可用 ~20 GB |
 | **SSD（D 槽）** | ✓ | SATA 0.31–0.44 GB/s（GGUF 所在） |
-| **GPU** | **✗（A 端）** | GPU 工作全歸 Task B（見 03B） |
-| **GGUF（檔案在）** | ✓ | `D:\AI_Model\Qwen3.8-Flash-Next\` 4 片 ≈103.7 GB Q4_K_XL（A 端 CPU 冒煙＋PLE 真檔驗證） |
+| **GPU** | **✗（A 端）** | GPU 工作全歸 Task B |
+| **GGUF（檔案在）** | ✓ | `D:\AI_Model\Qwen3.8-Flash-Next\` 4 片 ≈103.7 GB Q4_K_XL |
 | **D:\llama fork** | ◐ | build 10685 **僅二進位**；＝**oracle**（輸出對答案），代碼不進產品 |
-| **模型研究文件** | ✓ | [../QwenQwen3.8-Flash-Next/](../QwenQwen3.8-Flash-Next/)＝A-2/A-4 規格來源 |
+| **模型研究文件** | ✓ | [../QwenQwen3.8-Flash-Next/](../QwenQwen3.8-Flash-Next/) |
 | **t/s 基準** | ✓ | [../冷熱架構與t_s估算/](../冷熱架構與t_s估算/)（repo 外，保留） |
-| **Python** | ◐ | `py -3.14` 仍在（**僅** repo 外工具/legacy_v1 用；**v3 合約層已移除（A-7）**） |
-| **git** | ✓ | main；HEAD `5d98d54`（A-5）；A-6 交付包 commit 由使用者執行；每步 commit |
+| **git** | ✓ | main；每步 commit（engine 變更）；HEAD 見 `git log` |
 
-## 二、Task A 資產（v4：C++ 唯一）
-
-| 資產 | 位置 | 角色 |
-|---|---|---|
-| **q4e 引擎樹（C++）** | `engine/`（b10729 clone＋改名＋改核心） | **唯一實現** |
-| A-3 快取核心＋單測 | `engine/common/q4e-expert-cache.{h,cpp}`＋`engine/tests/test-q4e-expert-cache.cpp` | 82 checks 全綠；14+2 向量凍結於測試（原 cache.py 已移除） |
-| A-4 PLE 核心＋單測 | `engine/common/q4e-ngram.{h,cpp}`＋`engine/tests/test-q4e-ngram.cpp` | 2957 checks 全綠；FNV/RNG/解碼向量凍結於測試（原 ngram.py 已移除） |
-| A-2 插入點分析 | [docs_A2_insertion_points.md](docs_A2_insertion_points.md) | MoE dispatch＋cb_eval hook＋專家佈局＋PLE 路徑＋server 端點 |
-| 專家佈局實測常數 | `legacy_v1/tools/live_common.py`（ExpertStore） | stride 921,600/1,228,800 B；專家 3,072,000 B；shared 5,222,400 B |
-| v1 封存 | `legacy_v1/`（spec 工具＋36 證據＋RUNBOOK＋B9 報告） | 基準數字＋方法學（不受 A-7 影響） |
-| e2e 請求體 | `tools/b5_body.json` | B-6 用（保留） |
-
-## 三、Task A 項目（v4）
-
-| 項目 | 名稱 | 狀態 | 說明 |
-|---|---|---|---|
-| **A-0** | 規劃/合約（02 v4＋03A/03B） | **✓ 本輪** | 分工、合約、路線、基底紀律、**C++ 唯一決策** |
-| **A-1** | source 準備：clone 最新 llama.cpp→`engine/`（`q4e`）→CPU build | **✓ 完成** | clone b10729（`engine/PROVENANCE.md`）；**MSVC 14.44 static Release 385/385 全過**；`q4e-server.exe --version` 可執行 |
-| **A-2** | qwen4exp：grep 上游（原生收）→CPU 冒煙 | **✓ 完成** | b10729 `src/models/qwen4exp.cpp` 完整實作；**CPU 冒煙 PASS：16 tokens**（prompt 0.42 t/s；gen **0.69 t/s**；`engine/smoke_A2_cpu.log`） |
-| **A-3** | 動態快取核心（C++）：狀態機＋cb_eval hook＋單測 | **✓ 完成（commit `86b572a`）** | `q4e-expert-cache.{h,cpp}`＋`llama_context_params::cb_eval` hook；**82 checks 全綠** |
-| **A-4** | PLE 離載（C++）：q4e-ngram（GGUF 解析＋FNV row-id＋4.5-bit 解碼＋mmap 讀＋預取＋bench） | **✓ 完成（commit `85907f6`）** | C++ 單元 **2957 checks 全綠**＋真檔 **3126 checks 全綠**＋expert-cache **82 checks 全綠**（本輪修 3 bug：CreateFileMapping 權限、MT19937 twist OOB、CPython seeding；見 §四 #10–12） |
-| **A-7** | **C++ 化重整（初始化）**：移除 Python 合約層＋temp 目錄；README/02/03A/03B 更新；git 清理 | **✓ 完成（commit `01f9202`）** | v3 Python 合約層移除乾淨；C++ 唯一 |
-| **A-5** | q4e-server（C++）：註冊 cb_eval hook＋q4e 統計端點＋**CPU e2e**（200/401/SSE＋真 GGUF ≥1 token） | **✓ 完成（commit `5d98d54`）** | CPU e2e 全綠：真 GGUF 103.7 GB、16 tokens、`/q4e/stats` 活數據（見 [evidence_A5_cpu_e2e.md](evidence_A5_cpu_e2e.md)）；`/v1` 合約＝上游 server 既有 |
-| **A-6** | 交付包：RUNBOOK_B v2＋README＋03A/03B＋config | **✓ 完成（本輪）** | [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md)（B-0～B-7 零判斷手冊）＋README/03A/03B/config.yaml 更新；commit 由使用者執行 |
-
-> 執行順序：**A-4 收尾 → A-7 → A-5 → A-6**（已全數完成）。
-
-## 四、Task A 缺口／風險／陷阱
-
-1. ~~上游最新是否收 qwen4exp~~ **已解**：b10729 原生收。
-2. ~~PLE 注入點未落檔~~ **已解**：[docs_A2_insertion_points.md](docs_A2_insertion_points.md)。
-3. CPU e2e（A-5）1 token 慢 → 預算 ~10 min，超時＝回報。
-4. ~~CMake 4.x 相容性~~ 已解（A-1）。
-5. ~~`GGML_CPU_REPACK`~~ **紀律**：build 必 `GGML_CPU_REPACK=OFF`（44.35 GB > 20 GB RAM）。**B 端同須**。
-6. **同目錄 in-place reconfigure 陷阱**：改 CMake 參數＝刪 build 目錄重來。
-7. **`BUILD_SHARED_LIBS` 陷阱**：MSVC Windows 預設 ON→test 整塊跳過。**紀律：configure 必顯式 `-DBUILD_SHARED_LIBS=OFF`＋`-DLLAMA_BUILD_TESTS=ON`**。
-8. **沙箱擋 grandchild process**：已改 `danger-full-access`＋approval=never→build 正常。
-9. ~~pytest tmp_path 紀律~~ **不適用**（v3 Python 層移除後；C++ 測試用 repo 內 `_testtmp/` 或直寫 temp 檔案）。
-10. **CreateFileMapping 權限（2026-09-02 實測，已修）**：檔案 handle 以 `GENERIC_READ` 開啟時，`CreateFileMappingA(..., PAGE_READWRITE, ...)` → **ERROR_ACCESS_DENIED**（→ uncaught `std::runtime_error` → `std::terminate` → **0xC0000409 BEX64**，WER 指 `ucrtbase.dll abort()`）。**修法＝`PAGE_READONLY`**（本表只讀）。
-11. **MT19937 第二 twist loop OOB（2026-09-02 實測，已修）**：`mt[k] = mt[k+251]`（k∈[227,623)）→ **讀越界最多 264 words**（stack/heap 垃圾→RNG 序列錯；layout 不同時直接 crash）。正確＝`mt[k-227]`（＝`mt[k+(M-N)]`）。
-12. **CPython `random.Random(int)` seeding（2026-09-02 確認，已修）**：int seed 走 **`init_by_array`**（seed 拆 **32-bit little-endian chunks**、key 長度＝chunk 數、seed=0→key=[0]）；**不是** `init_genrand`、也不是固定 8-chunk key。RNG parity 目標＝CPython 3.14 `random`。
-13. **0xC0000409 診斷法（可重用）**：`Get-WinEvent`（WER）＋`Report.wer` 看 BEX 偏移→objdump `ucrtbase.dll` 確認 crash 指令＝`abort()` 內的 `int $0x29`（SIGABRT trap）→**加 `std::set_terminate` 處理器**即可判定「uncaught exception」（本輪實證）。
-
-## 五、約束（A 端）
+## 三、約束（A 端）
 
 | 約束 | 決定 |
 |---|---|
 | **目標紅線** | **Qwen3.8-Flash-Next 可完整載入使用**；**不為乾淨砍功能** |
-| **C++ 唯一（v4）** | 產品實現＝C++（`engine/`）；Python 僅 legacy_v1/repo 外；合約 oracle 凍結於 C++ 測試 |
+| **全 C++（2026-09-06 拍板）** | 交付鏈＝C++ 唯一（A-14）；上游 `engine/*.py` 不納入；`legacy_v1/*.py` 替代後刪 |
 | **基底紀律** | 產品代碼只進 `engine/`；`D:\llama` fork＝oracle，代碼不進產品 |
 | **無 GPU** | A 端全部＝CPU build＋CPU 跑；GPU 事→Task B |
 | **ngl=10** | B 端設定紅線（A 端 config 預設同值） |
@@ -86,35 +55,18 @@
 | **git** | 每步 commit；可回滾 |
 | **引擎代碼風格** | ASCII only；註解 1–2 行（ASD-STE100）；复用上游基建 |
 
-## 六、現況總結
+## 四、build 陷阱（仍適用）
 
-- **v1 A-0～A-5：全數完成並驗收**（M-A）。
-- **v4：A-0 ✓、A-1 ✓、A-2 ✓、A-3 ✓（`86b572a`）、A-4 ✓（`85907f6`；單元 2957＋真檔 3126＋expert-cache 82 全綠）、A-7 ✓（`01f9202`）、A-5 ✓（`5d98d54`；CPU e2e 全綠，見 [evidence_A5_cpu_e2e.md](evidence_A5_cpu_e2e.md)）、A-6 ✓（本輪交付包）**。
-- **本輪修 3 個 C++ bug**（#10–12）→ 單元測試由 crash（0xC0000409）轉 2957/2957 全綠。
-- **Task A 全數完成，待 Task B**：交付包＝[RUNBOOK_B_v2.md](RUNBOOK_B_v2.md)（B-0～B-7 零判斷手冊）＋README/03A/03B/config.yaml（ngl=10 紅線）。commit 由使用者執行。
-- 卡住規則：任一门失敗→停下回報（步驟、錯誤原文、已試事項），不猜。
+1. **`GGML_CPU_REPACK`**：build 必 `GGML_CPU_REPACK=OFF`（44.35 GB > 20 GB RAM）。**B 端同須**。
+2. **同目錄 in-place reconfigure 陷阱**：改 CMake 參數＝刪 build 目錄重來。
+3. **`BUILD_SHARED_LIBS` 陷阱**：MSVC Windows 預設 ON→test 整塊跳過。**紀律：configure 必顯式 `-DBUILD_SHARED_LIBS=OFF`＋`-DLLAMA_BUILD_TESTS=ON`**。
+4. **MinGW 搶編譯器**：PATH 上的 g++ 會蓋過 MSVC→build 必包 `vcvars64.bat`。
+5. **CJK 路徑 ninja 增量**：偶發 stale→刪 `.ninja_log` 重跑（A-9 本輪未觸發；B-1 曾觸發）。
+6. **CreateFileMapping 權限**（A-14.1 backend 適用）：handle 以 `GENERIC_READ` 開啟時 mapping 必 **`PAGE_READONLY`**（`PAGE_READWRITE`→ERROR_ACCESS_DENIED→0xC0000409）。
+7. **沙箱**：本 session＝danger-full-access＋approval disabled；build 正常。
 
-## 七、v4.1 第二輪（2026-09-06：B9-v4 → 根因核實 → A 端任務）
+## 五、指針
 
-### 7.1 根因事實（本輪於 `engine/` source 核實）
-
-| # | 事實 | 位置 |
-|---|---|---|
-| 1 | `cb_eval` 對 **device-resident ids 做同步 `ggml_backend_tensor_get`（D2H＋裝置同步）**；CUDA build 下＝10 個 GPU 層 × 每 decode 步一次；功能收益＝零（backend=no-op）→ **B-4 ON<OFF（−11.3%）主嫌疑** | `engine/common/q4e-expert-cache.cpp:253`（`q4e_expert_cache_cb_eval`） |
-| 2 | server 端 `q4e_expert_cache q4e_cache;`＝**預設 ctor、backend＝nullptr（no-op）**：`place()/evict()` 永不執行；`/q4e/stats` hits/io＝**LRU 簿記**，非物理搬移 | `engine/tools/server/server-context.cpp:886` |
-| 3 | **`prefetch()` 未被 server 呼叫**→ `prefetch_issued=0`→ M-C #4/#5 不可量 | `server-context.cpp`（無呼叫點） |
-| 4 | q4e-ngram（PLE 離載）＝standalone 模組，**未接 decode 路徑**（native qwen4exp 原生處理 PLE，B-2/B-7 已驗正常） | `engine/common/q4e-ngram.{h,cpp}` |
-| 5 | M-C #3 線（10.773 t/s）＝estimate_tps 兩層模型（**48 層全 GPU 計算**）vs 本部署 ngl=10（38 層 CPU 計算）→ **架構矛盾，非 bug**（B9-v4 §4.2 已回報） | `../冷熱架構與t_s估算/estimate_tps.py` |
-
-### 7.2 Task A 第二輪項目
-
-| 項目 | 名稱 | 狀態 | 說明 |
-|---|---|---|---|
-| **A-9** | 熱路徑開銷移除（B-4 FAIL 根因） | **✓ 完成（2026-09-06）** | `cb_eval`：跳過 device-resident ids（不做 sync D2H，計入 `hook_skips_device_ids`）；只簿記 CPU 層；stats 加 `layers_touched`＋`hook_skips_device_ids`；**全綠證據**：CPU build（`a9_build2.log` [9/9]）、測試 **98/98**（+16 A-9 checks）＋**2989/2989**、CPU e2e **`A9_E2E_ALL_PASS`**（`a9_e2e.log`：`layers_touched=48`、`hook_skips_device_ids=0`、touches=64,620、16 tokens 200、401、SSE 52 行）；硬線翻綠待 B-8 實測 |
-| **A-11** | 驗收線決策（#3 重定基線） | **✓ 已拍板（2026-09-06）：Option A** | **#3′＝ON ≥ OFF 且 ≥ 1.95 t/s**（v1 暖基準）；Option B（兩層全 GPU 引擎）記錄在案、預設不做；02 §六＋RUNBOOK_B_v3 已落地 |
-| **A-10** | live 預取接線＋real backend | **✗ 待辦（下一動工；A-11 已拍板解鎖）** | 上一 token 選擇→`prefetch()`；GGUF 專家切片 page-warm（背景緒＋雙緩衝、只入 RAM）；stats `prefetch.issued/hits/overlap_ratio`；`--q4e-prefetch off` 旗標；CPU e2e `prefetch_issued>0` |
-| **A-12** | 交付包 v4.1 | **✗ 待辦** | README/03A/03B＋[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)＋B 側證據檔 commit 整理 |
-| **A-13**（候選） | PLE/N-gram live 接線→解鎖 M-C #5 | **✗ 未排程** | 另輪次；不阻塞 B-8 |
-
-> 執行順序：**A-9 → A-11（拍板）→ A-10 → A-12 → B-8（[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)）**。
-> 紀律不變：build 必包 vcvars64＋`GGML_CPU_REPACK=OFF`＋`BUILD_SHARED_LIBS=OFF`；ASCII only 註解 1–2 行；每步 commit（engine 變更）；卡住＝停下回報原文。
+- 已完成工作（A-0～A-9、A-11、B-0～B-7、v1 基準、決策紀錄）：[已完成工作.md](已完成工作.md)
+- A-14.1 設計（issued 定義、雙緩衝、warm 語義、v1 對照）：[02 §十](02_實作項目工作規劃.md)
+- B-4 FAIL 根因與核實：[已完成工作.md §四](已完成工作.md)
