@@ -13,7 +13,8 @@
 | [02_實作項目工作規劃.md](02_實作項目工作規劃.md) | **v4 工作規劃**：Task A（A-0～A-7）/ Task B（B-0～B-7）＋介面合約＋驗收基準 |
 | [03A_項目現況_TaskA.md](03A_項目現況_TaskA.md) | 項目現況 · Task A（無 GPU，較聰明 AI） |
 | [03B_項目現況_TaskB.md](03B_項目現況_TaskB.md) | 項目現況 · Task B（有 GPU，較笨 AI） |
-| [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md) | **Task B 零判斷執行手冊**（B-0～B-7：指令＋預期輸出＋備案） |
+| [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md) | Task B 零判斷執行手冊 v4（B-0～B-7；**已執行完畢**，2026-09-06） |
+| [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) | **Task B 復驗手冊 v4.1（B-8）**：重驗硬線/t/s/重疊三門＋回歸門（待 A-12 交付後執行） |
 | [docs_A2_insertion_points.md](docs_A2_insertion_points.md) | qwen4exp 插入點分析（MoE dispatch＋cb_eval hook＋專家佈局＋PLE 路徑） |
 | [legacy_v1/](legacy_v1/) | v1（A/B 兩軌）RUNBOOK＋驗收報告＋工具＋36 份證據（封存） |
 
@@ -50,7 +51,8 @@ engine\build-msvc\bin\test-q4e-ngram.exe          # 2957 checks（fake GGUF；$e
 
 ## 交付包（Task A → Task B）
 
-> **Task A 全數完成（A-0～A-6）→ Task B 解鎖**。B 端（GPU、零判斷 AI）照下面執行：
+> **v4 交付包：Task A（A-0～A-6）✓ → Task B（B-0～B-7）✓（2026-09-06 執行完畢）**；結果＝[B9_report_v4.md](B9_report_v4.md)（M-C 8 項：5 PASS／1 FAIL／2 不可量；B-4 硬線 FAIL）。
+> **v4.1 第二輪（進行中）**：A-9（熱路徑開銷移除）→ A-11（#3 驗收線拍板）→ A-10（live 預取接線）→ A-12（交付包 v4.1）→ **B-8 復驗＝[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)**。
 
 | 文件 | 說明 |
 |---|---|
@@ -62,6 +64,7 @@ engine\build-msvc\bin\test-q4e-ngram.exe          # 2957 checks（fake GGUF；$e
 ## 狀態
 
 - **v1（A/B 兩軌）：全數完成並驗收**（M-A、M-B）；證據＝`legacy_v1/evidence/`（36 檔）＋`legacy_v1/B9_report.md`
-- **v4：Task A 全數完成**——A-0 ✓、A-1 ✓、A-2 ✓（冒煙 16 tokens）、A-3 ✓（82 checks，`86b572a`）、A-4 ✓（2957 checks，`85907f6`）、A-7 ✓（`01f9202`）、A-5 ✓（CPU e2e 全綠，`5d98d54`）、A-6 ✓（交付包）
-- **下一步：Task B 照 [RUNBOOK_B_v2.md](RUNBOOK_B_v2.md) 執行（READY）**
+- **v4：Task A 全數完成**——A-0 ✓、A-1 ✓、A-2 ✓（冒煙 16 tokens）、A-3 ✓（82 checks，`86b572a`）、A-4 ✓（2957 checks，`85907f6`）、A-7 ✓（`01f9202`）、A-5 ✓（CPU e2e 全綠，`5d98d54`）、A-6 ✓（交付包 `e3fa9b4`）
+- **v4：Task B（B-0～B-7）全數完成（2026-09-06）**——§9＝[B9_report_v4.md](B9_report_v4.md)；**M-C 8 項＝5 PASS／1 FAIL（#3 暖 t/s 1.5692 < 10.773）／2 本 build 不可量（#4/#5，`prefetch_issued=0`）**；B-4 硬線 FAIL（ON 1.5692 < OFF 1.7700，−11.3%）
+- **v4.1 第二輪（進行中，見 [02 §十](02_實作項目工作規劃.md)）**：**A-9 ✓ 完成**（`cb_eval` sync D2H 移除；測試 98/98＋2989/2989；CPU e2e `A9_E2E_ALL_PASS`；stats 新欄位 `layers_touched`/`hook_skips_device_ids`）→ **A-11 ✓ 拍板 Option A**（#3′＝ON≥OFF 且 ≥1.95 t/s）→ **A-10 下一動工**（live 預取接線＋real backend→#4 可量）→ A-12（交付包 v4.1）→ **B-8 復驗（[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)）**
 - 紅線：ngl=10 固定；永不過兩個模型實例並行；目標＝本模型完整載入使用（非砍多模型）

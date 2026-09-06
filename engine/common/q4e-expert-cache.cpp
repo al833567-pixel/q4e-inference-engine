@@ -41,7 +41,8 @@ q4e_expert_cache::q4e_expert_cache(const q4e_expert_cache_config & cfg) :
 q4e_expert_cache::q4e_expert_cache(const q4e_expert_cache_config & cfg, q4e_expert_cache_backend * backend) :
     cfg_(cfg),
     backend_(backend),
-    layers_(cfg.n_layers) {
+    layers_(cfg.n_layers),
+    layer_touched_(cfg.n_layers, 0) {
 }
 
 void q4e_expert_cache::check_layer(int layer) const {
@@ -93,6 +94,9 @@ void q4e_expert_cache::vram_insert(int layer, int expert) {
 q4e_expert_hits q4e_expert_cache::touch(int layer, const int * expert_ids, int64_t n_ids) {
     check_layer(layer);
     layer_state & ls = layers_[layer];
+    if (!layer_touched_[layer]) {
+        layer_touched_[layer] = 1;
+    }
     q4e_expert_hits b;
     for (int64_t i = 0; i < n_ids; ++i) {
         const int e = expert_ids[i];
@@ -187,6 +191,10 @@ q4e_expert_cache_stats q4e_expert_cache::stats() const {
     s.occ_vram = occ(true);
     s.occ_ram  = occ(false);
     s.placement_events = (int64_t) placement_log_.size();
+    for (const char v : layer_touched_) {
+        s.layers_touched += (v != 0) ? 1 : 0;
+    }
+    s.hook_skips_device_ids = hook_skips_device_;
     return s;
 }
 
@@ -219,6 +227,8 @@ void q4e_expert_cache::reset() {
     hits_ = q4e_expert_hits();
     pref_ = q4e_expert_prefetch_stats();
     placement_log_.clear();
+    std::fill(layer_touched_.begin(), layer_touched_.end(), (char) 0);
+    hook_skips_device_ = 0;
 }
 
 //
@@ -276,19 +286,15 @@ bool q4e_expert_cache_cb_eval(struct ggml_tensor * t, bool ask, void * user_data
     if (ids == nullptr || ids->ne[0] <= 0 || ids->ne[1] <= 0) {
         return true;
     }
+    // A-9: no sync D2H in the eval hot path; bookkeeping only for host-resident ids (CPU layers)
+    // GPU layers keep all experts resident, so tiering does not apply to them
+    if (ids->buffer == nullptr || !ggml_backend_buffer_is_host(ids->buffer)) {
+        self->note_hook_skip();
+        return true;
+    }
     const int64_t n_ids = ids->ne[0];
     const int64_t n_tok = ids->ne[1];
-
-    bool is_host = ids->buffer != nullptr && ggml_backend_buffer_is_host(ids->buffer);
-    std::vector<int32_t> ids_host;
-    const int32_t * ids_data = nullptr;
-    if (is_host) {
-        ids_data = (const int32_t *) ids->data;
-    } else {
-        ids_host.resize((std::size_t) (n_ids * n_tok));
-        ggml_backend_tensor_get(ids, ids_host.data(), 0, ids_host.size() * sizeof(int32_t));
-        ids_data = ids_host.data();
-    }
+    const int32_t * ids_data = (const int32_t *) ids->data;
 
     // ids is column-major: expert k of token t is ids_data[k * n_tok + t]
     std::vector<int> exps;

@@ -60,6 +60,8 @@ struct q4e_expert_cache_stats {
     q4e_expert_occupancy occ_vram;
     q4e_expert_occupancy occ_ram;
     int64_t placement_events = 0;
+    int64_t layers_touched = 0;        // A-9: distinct layers touched (M proxy denominator)
+    int64_t hook_skips_device_ids = 0; // A-9: cb_eval skips of non-host-resident ids tensors
 };
 
 // placement hook; default is no-op (fake). real backends do SSD<->RAM<->VRAM moves
@@ -83,6 +85,9 @@ struct q4e_expert_cache {
     const char * tier_of(int layer, int expert) const; // "vram" | "ram" | "ssd"
     void reset();
 
+    // A-9: cb_eval hot path never syncs D2H; this counts skipped non-host-resident ids tensors
+    void note_hook_skip() { ++hook_skips_device_; }
+
     const q4e_expert_cache_config & cfg() const { return cfg_; }
     const std::vector<q4e_expert_placement_event> & placement_log() const { return placement_log_; }
 
@@ -105,6 +110,8 @@ private:
     q4e_expert_hits hits_;
     q4e_expert_prefetch_stats pref_;
     std::vector<q4e_expert_placement_event> placement_log_;
+    std::vector<char> layer_touched_;
+    int64_t hook_skips_device_ = 0;
 };
 
 struct ggml_tensor;
@@ -114,5 +121,6 @@ int q4e_expert_layer_from_name(const char * name, int n_layers);
 
 // llama_context_params.cb_eval hook: on MoE expert matmul (MUL_MAT_ID, gate/up path),
 // reads the selected expert ids [n_expert_used, n_tokens] and touches the cache per token
+// A-9: only host-resident ids are touched (no sync D2H); non-host ids are skipped and counted
 // user_data must be a q4e_expert_cache * (or nullptr to no-op)
 bool q4e_expert_cache_cb_eval(struct ggml_tensor * t, bool ask, void * user_data);

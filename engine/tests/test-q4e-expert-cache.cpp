@@ -1,6 +1,8 @@
 // Unit tests for the tiered MoE expert cache (common/q4e-expert-cache.{h,cpp}).
 // Vectors frozen in this C++ test (v3 provenance: 推理工具/tests/test_cache.py, removed v4; oracle green in both).
 #include "q4e-expert-cache.h"
+#include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "ggml.h"
 
 #include <algorithm>
@@ -403,6 +405,58 @@ static void test_cb_eval_rejects_non_moe() {
     }
 }
 
+// test_cb_eval_host_only: A-9 - hook touches only host-resident ids (no sync D2H);
+// non-host ids tensors are skipped and counted (old code did sync D2H here)
+static void test_cb_eval_host_only() {
+    q4e_expert_cache c(make_cfg(4, 6, 2, false));
+    const int64_t n_ids = 2;
+    const int64_t n_tok = 1;
+
+    struct ggml_tensor src0 = {};
+    struct ggml_tensor t = {};
+    std::snprintf(src0.name, sizeof(src0.name), "blk.0.ffn_up_exps.weight");
+    t.op     = GGML_OP_MUL_MAT_ID;
+    t.src[0] = &src0;
+
+    // case A: host-resident ids -> touched (legacy behavior)
+    {
+        ggml_backend_t cpu = ggml_backend_cpu_init();
+        ggml_backend_buffer_t buf = ggml_backend_alloc_buffer(cpu, (size_t) (n_ids * n_tok) * sizeof(int32_t));
+        int32_t * ids_data = (int32_t *) ggml_backend_buffer_get_base(buf);
+        ids_data[0] = 5;
+        ids_data[1] = 7;
+
+        struct ggml_tensor ids_t = {};
+        ids_t.buffer = buf;
+        ids_t.data   = ids_data;
+        ids_t.ne[0]  = n_ids;
+        ids_t.ne[1]  = n_tok;
+        t.src[2] = &ids_t;
+
+        CHECK(q4e_expert_cache_cb_eval(&t, /*ask=*/false, &c));
+        CHECK_EQ_I64(c.stats().touches, 2);
+        CHECK_EQ_STR(c.tier_of(0, 5), "vram");
+        CHECK_EQ_I64(c.stats().layers_touched, 1);
+
+        ggml_backend_buffer_free(buf);
+        ggml_backend_free(cpu);
+    }
+
+    // case B: non-host-resident ids (unknown buffer) -> skipped, no touch, counted
+    {
+        struct ggml_tensor ids_dev = {};
+        ids_dev.buffer = nullptr;
+        ids_dev.ne[0]  = n_ids;
+        ids_dev.ne[1]  = n_tok;
+        t.src[2] = &ids_dev;
+
+        CHECK(q4e_expert_cache_cb_eval(&t, /*ask=*/false, &c));
+        CHECK_EQ_I64(c.stats().touches, 2);
+        CHECK_EQ_I64(c.stats().hook_skips_device_ids, 1);
+        CHECK_EQ_I64(c.stats().layers_touched, 1);
+    }
+}
+
 int main(int argc, char ** argv) {
     (void) argc;
     (void) argv;
@@ -424,6 +478,7 @@ int main(int argc, char ** argv) {
     test_layer_from_name();
     test_occupancy_bounded_by_capacity();
     test_cb_eval_rejects_non_moe();
+    test_cb_eval_host_only();
     if (g_failures) {
         fprintf(stderr, "q4e-expert-cache: %d/%d checks FAILED\n", g_failures, g_checks);
         return 1;

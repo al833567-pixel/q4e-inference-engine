@@ -1,6 +1,7 @@
 # 推理工具 — 項目現況 · Task A（無 GPU，較聰明 AI）
 
-> 更新：2026-09-02（v4：**C++ 唯一實現**；**A-0～A-6 全數完成**（A-5 `5d98d54`、A-6＝交付包 RUNBOOK_B v2）；**Task A 全數完成，待 Task B**）
+> 更新：2026-09-06（v4.1：**A-9 ✓ 完成**（sync D2H 移除＋stats 新欄位，build/測試/e2e 全綠，§七.2）；A-11 ✓ 拍板 Option A；**下一動工＝A-10**（live 預取＋real backend）；詳見 [02 §十](02_實作項目工作規劃.md)）
+> v4 歷史：2026-09-02（**C++ 唯一實現**；**A-0～A-6 全數完成**（A-5 `5d98d54`、A-6＝交付包 RUNBOOK_B v2））
 > 姊妹檔：[03B_項目現況_TaskB.md](03B_項目現況_TaskB.md)（GPU 側）
 > 關聯：[02_實作項目工作規劃.md](02_實作項目工作規劃.md)；[01_架構系統資料.md](01_架構系統資料.md)
 
@@ -92,3 +93,28 @@
 - **本輪修 3 個 C++ bug**（#10–12）→ 單元測試由 crash（0xC0000409）轉 2957/2957 全綠。
 - **Task A 全數完成，待 Task B**：交付包＝[RUNBOOK_B_v2.md](RUNBOOK_B_v2.md)（B-0～B-7 零判斷手冊）＋README/03A/03B/config.yaml（ngl=10 紅線）。commit 由使用者執行。
 - 卡住規則：任一门失敗→停下回報（步驟、錯誤原文、已試事項），不猜。
+
+## 七、v4.1 第二輪（2026-09-06：B9-v4 → 根因核實 → A 端任務）
+
+### 7.1 根因事實（本輪於 `engine/` source 核實）
+
+| # | 事實 | 位置 |
+|---|---|---|
+| 1 | `cb_eval` 對 **device-resident ids 做同步 `ggml_backend_tensor_get`（D2H＋裝置同步）**；CUDA build 下＝10 個 GPU 層 × 每 decode 步一次；功能收益＝零（backend=no-op）→ **B-4 ON<OFF（−11.3%）主嫌疑** | `engine/common/q4e-expert-cache.cpp:253`（`q4e_expert_cache_cb_eval`） |
+| 2 | server 端 `q4e_expert_cache q4e_cache;`＝**預設 ctor、backend＝nullptr（no-op）**：`place()/evict()` 永不執行；`/q4e/stats` hits/io＝**LRU 簿記**，非物理搬移 | `engine/tools/server/server-context.cpp:886` |
+| 3 | **`prefetch()` 未被 server 呼叫**→ `prefetch_issued=0`→ M-C #4/#5 不可量 | `server-context.cpp`（無呼叫點） |
+| 4 | q4e-ngram（PLE 離載）＝standalone 模組，**未接 decode 路徑**（native qwen4exp 原生處理 PLE，B-2/B-7 已驗正常） | `engine/common/q4e-ngram.{h,cpp}` |
+| 5 | M-C #3 線（10.773 t/s）＝estimate_tps 兩層模型（**48 層全 GPU 計算**）vs 本部署 ngl=10（38 層 CPU 計算）→ **架構矛盾，非 bug**（B9-v4 §4.2 已回報） | `../冷熱架構與t_s估算/estimate_tps.py` |
+
+### 7.2 Task A 第二輪項目
+
+| 項目 | 名稱 | 狀態 | 說明 |
+|---|---|---|---|
+| **A-9** | 熱路徑開銷移除（B-4 FAIL 根因） | **✓ 完成（2026-09-06）** | `cb_eval`：跳過 device-resident ids（不做 sync D2H，計入 `hook_skips_device_ids`）；只簿記 CPU 層；stats 加 `layers_touched`＋`hook_skips_device_ids`；**全綠證據**：CPU build（`a9_build2.log` [9/9]）、測試 **98/98**（+16 A-9 checks）＋**2989/2989**、CPU e2e **`A9_E2E_ALL_PASS`**（`a9_e2e.log`：`layers_touched=48`、`hook_skips_device_ids=0`、touches=64,620、16 tokens 200、401、SSE 52 行）；硬線翻綠待 B-8 實測 |
+| **A-11** | 驗收線決策（#3 重定基線） | **✓ 已拍板（2026-09-06）：Option A** | **#3′＝ON ≥ OFF 且 ≥ 1.95 t/s**（v1 暖基準）；Option B（兩層全 GPU 引擎）記錄在案、預設不做；02 §六＋RUNBOOK_B_v3 已落地 |
+| **A-10** | live 預取接線＋real backend | **✗ 待辦（下一動工；A-11 已拍板解鎖）** | 上一 token 選擇→`prefetch()`；GGUF 專家切片 page-warm（背景緒＋雙緩衝、只入 RAM）；stats `prefetch.issued/hits/overlap_ratio`；`--q4e-prefetch off` 旗標；CPU e2e `prefetch_issued>0` |
+| **A-12** | 交付包 v4.1 | **✗ 待辦** | README/03A/03B＋[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)＋B 側證據檔 commit 整理 |
+| **A-13**（候選） | PLE/N-gram live 接線→解鎖 M-C #5 | **✗ 未排程** | 另輪次；不阻塞 B-8 |
+
+> 執行順序：**A-9 → A-11（拍板）→ A-10 → A-12 → B-8（[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)）**。
+> 紀律不變：build 必包 vcvars64＋`GGML_CPU_REPACK=OFF`＋`BUILD_SHARED_LIBS=OFF`；ASCII only 註解 1–2 行；每步 commit（engine 變更）；卡住＝停下回報原文。
