@@ -21,7 +21,7 @@
 | ON / OFF 暖 t/s（256 tok） | **1.5692 / 1.7700**（B-4 FAIL −11.3%） | [已完成工作.md §三](已完成工作.md) |
 | 冷載入 | ~206 s；VRAM 16,724 MiB | B-2 |
 | touches（B-3） | 73,494（鉤子活） | B-3 |
-| hits 分佈（B-6） | vram 43.5% / ram 43.1% / ssd 13.3%；io 1.24 TB（簿記） | `b6_stats.json` |
+| hits 分佈（B-6） | vram 43.5% / ram 43.1% / ssd 13.3%；io 1.24 TB（簿記） | git `24f11f7` 之 `b6_stats.json` |
 | v1 暖基準（#3′ 第二線） | **1.95 t/s**（M=512 上界列） | `legacy_v1/evidence/bench_noprefetch.log` |
 
 ## 二、Task B 環境（已實測）

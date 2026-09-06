@@ -18,11 +18,11 @@
 | **A-14.3**（新） | **`q4e-bench` C++ bench 客戶端**（取代 `bench_tps.py --measure/--prefetch`＋B 側手動 curl） | **✗ 待辦** | 暖機＋N tokens（temp=0 固定 prime prompt）＋t/s＋prefetch on/off 對照＋重疊度（讀 stats）＋JSON 報告；**驗收**：B-8 直接跑 `q4e-bench` 取 ON/OFF t/s＋JSON |
 | **A-12** | 交付包 v4.1（C++ 工具鏈入包） | **✗ 待 A-14.3** | README/03A/03B＋[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)（改跑 `q4e-bench`/`q4e-e2e`）；B 側證據已 commit（`24f11f7`） |
 | **A-14.4**（＝A-13） | ngram live 接線＋diag 4 階段／accept P1–P4 C++ 化 | **✗ 未排程（B-8 後）** | ngram 預測 hint→prefetch；解鎖 M-C #5（N-gram 預取 t/s 掉 <1%） |
-| **A-14.5** | 清理：刪 `legacy_v1/*.py`（8）＋`config.yaml`＋`a9_e2e.ps1`；**保留** `legacy_v1/evidence/`＋B9 報告 | **✗ 待 A-14.4** | 交付樹零 .py/.ps1（上游 `engine/` 除外，文件註明） |
+| **A-14.5** | 清理：刪 `legacy_v1/*.py`（8）＋`a9_e2e.ps1`（`config.yaml` 已於 2026-09-06 清理移除）；**保留** `legacy_v1/evidence/`＋B9 報告 | **✗ 待 A-14.4** | 交付樹零 .py/.ps1（上游 `engine/` 除外，文件註明） |
 | **A-14.6** | 終門：交付包宣告「全 C++」＋README/02 落地 | **✗ 最後** | A-12 交付條件 |
 
 > **執行順序**：A-14.1 → A-14.2 → A-14.3 → **A-12（交付 v4.1）** → **B-8 復驗（[03B](03B_項目現況_TaskB.md)）** → A-14.4 → A-14.5 → A-14.6
-> **範圍拍板（2026-09-06）**：上游 `engine/*.py` 218 檔（conversion/gguf-py/scripts/server tests/examples）＝**不納入**；`legacy_v1/*.py` C++ 替代全綠後**刪除**（evidence 保留）；`config.yaml` 隨 CLI flags 化移除。
+> **範圍拍板（2026-09-06）**：上游 `engine/*.py` 218 檔（conversion/gguf-py/scripts/server tests/examples）＝**不納入**；`legacy_v1/*.py` C++ 替代全綠後**刪除**（evidence 保留）；`config.yaml` 已移除（設定＝q4e-server CLI flags）。
 
 ## 二、Task A 環境（已實測；build/e2e 用）
 
@@ -30,7 +30,7 @@
 |---|---|---|
 | **MSVC（VS 2022 BuildTools）** | ✓ | vcvars64.bat 在位（cl 不在 PATH→build 時 invoke） |
 | **CMake** | ✓ | 4.4.2 |
-| **Ninja** | ✓ | 1.13.2（CJK 路徑增量陷阱→刪 `.ninja_log` 備案，見 `evidence_b1/root_cause_b1.md`） |
+| **Ninja** | ✓ | 1.13.2（CJK 路徑增量陷阱→刪 `.ninja_log` 備案；根因見 git `24f11f7` 之 `evidence_b1/root_cause_b1.md`） |
 | **MinGW g++（WinGet WinLibs）** | ⚠ | **在 PATH 上，會搶 CMake 的編譯器**→**紀律：build 必包在 `vcvars64.bat` 環境** |
 | **CUDA toolkit** | ◐ | v13.3（nvcc 在 PATH）—**A 端不使用**（無 GPU）；B 端 build 用 |
 | **CPU / RAM** | ✓ | i7-9700 8C/8T（無 HT）；RAM 可用 ~20 GB |

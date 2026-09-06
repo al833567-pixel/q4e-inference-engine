@@ -1,8 +1,7 @@
-# A-2/A-3 偵察：qwen4exp 注入點（q4e 核心 hook 位置）
+# qwen4exp 注入點（q4e 核心 hook 位置）
 
-> 2026-09-01（續作輪補寫；03A §四-2 的缺件）。
-> 目的：A-3（動態快取核心）與 A-4（PLE 離載）要掛進 qwen4exp 引擎的**精確位置**＋**現有機制**（不新造輪子）。
-> 證據＝本 repo `engine/`（llama.cpp b10729 fork）行號；v1 實測常數＝`legacy_v1/tools/live_common.py`。
+> 用途：q4e 核心（專家快取／PLE 離載／A-14.1 real backend）掛進 qwen4exp 引擎的**精確位置**＋**現有機制**（不新造輪子）。
+> 證據＝本 repo `engine/`（llama.cpp b10729 fork）行號；實測常數＝`legacy_v1/tools/live_common.py`。
 
 ## 一、MoE 分派路徑（touch() 掛點）
 
