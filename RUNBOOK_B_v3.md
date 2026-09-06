@@ -16,7 +16,7 @@
 | A-14.2 `q4e-e2e`／A-14.3 `q4e-bench`（C++ 客戶端，交付包內） | **待 A 填** | **待 A 填** |
 | C++ 測試全綠（test-q4e-expert-cache／test-q4e-ngram） | **待 A 填** | **待 A 填** |
 | CPU e2e 全綠＋`prefetch_io_issued>0` 證據 | **待 A 填** | **待 A 填** |
-| 設定紅線：ngl=10（CLI flag `--n-gpu-layers 10`，不 999/48/auto） | 同 v4 | 03B §三 |
+| 設定紅線：`--n-gpu-layers all`＋`--q4e-moe-vram 10`（K=10、K 可設定 0–999、VRAM 裝不下跳錯；舊 `-ncmoe/-cmoe` 已連 core 移除） | 新（A-14.0） | 01 §六／03B §三 |
 
 > 本表由 A-12 填完後 B 端才可動工；B 端只核對「全部 ✓＋有 commit/證據」，不做技術判斷。
 
@@ -30,8 +30,10 @@ Get-ChildItem "D:\AI_Model\Qwen3.8-Flash-Next\*.gguf"
 Get-Process | Where-Object { $_.ProcessName -match 'q4e-server' }
 # 交付包版本核對（須比 1144ddd 新）
 engine\build-cuda\bin\q4e-server.exe --version
+# 驗 oracle 的 -ncmoe（OFF 相旗標；若無→B-8-4 OFF 相改用 q4e --no-q4e-prefetch）
+D:\llama\llama-server.exe --help 2>&1 | Select-String -Pattern "ncmoe|n-cpu-moe"
 ```
-**預期輸出**：GPU＝RTX 3090 且 VRAM 空；`nvcc` V13.3.x；4 片 `.gguf` 共 ~103.7 GB；`q4e-server` 無殘留；`--version` commit **新於 `1144ddd`**。
+**預期輸出**：GPU＝RTX 3090 且 VRAM 空；`nvcc` V13.3.x；4 片 `.gguf` 共 ~103.7 GB；`q4e-server` 無殘留；`--version` commit **新於 `1144ddd`**；oracle help **有** `-ncmoe/--n-cpu-moe`（**若無→記入回報**：B-8-4 OFF 相改 q4e `--no-q4e-prefetch` 同 placement）。
 **備案**：任一不符 → **停下回報**（原文），不猜。
 
 ## B-8-1 q4e CUDA build（v4.1 source）
@@ -47,14 +49,14 @@ engine\build-cuda\bin\q4e-server.exe --version
 - 若 incremental build 出現 `ninja: error: FindFirstFileExA(...): ... syntax is incorrect`（CJK 路徑增量陷阱，前輪 B-1 已見；根因見 git commit `24f11f7` 之 `evidence_b1/root_cause_b1.md`）→ **刪 `engine\build-cuda\.ninja_log` 後重試同一指令一次**；仍失敗→回報原文。
 - 其他 CUDA/arch 錯誤 → **回報原文**（錯誤全文＋build 日誌尾段），不改 CMake 參數。
 
-## B-8-2 真機載入（ngl=10）
+## B-8-2 真機載入（ngl=all＋K=10）
 
 **指令**
 ```powershell
 $q4e = Start-Process -FilePath "engine\build-cuda\bin\q4e-server.exe" -ArgumentList @(
   '--model','D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf',
   '--host','127.0.0.1','--port','8124','--api-key','bkey',
-  '--n-gpu-layers','10','--ctx-size','2048','--parallel','1'
+  '--n-gpu-layers','all','--q4e-moe-vram','10','--ctx-size','2048','--parallel','1'
 ) -RedirectStandardOutput 'b8_2_server.log' -RedirectStandardError 'b8_2_server.err.log' -NoNewWindow -PassThru
 $deadline = (Get-Date).AddSeconds(300)
 while ((Get-Date) -lt $deadline) {
@@ -64,8 +66,8 @@ while ((Get-Date) -lt $deadline) {
 curl.exe -s -o NUL -w "health=%{http_code}\n" http://127.0.0.1:8124/health
 nvidia-smi
 ```
-**預期輸出**：`health=200`（**≤~250 s**；前輪實測 ~206 s）；VRAM 占用 **≈16,7xx MiB**（ngl=10）；log 有 model loaded／listening。
-**備案**：超時/失敗 → **回報原文**（`b8_2_server.err.log`＋`nvidia-smi`），不自動降 ngl。
+**預期輸出**：`health=200`（**≤~250 s**；前輪實測 ~206 s）；VRAM 占用 **≈20,0xx–21,0xx MiB**（ngl=all＋K=10；K 過大裝不下→**清晰 VRAM 錯誤**、非 crash）；log 有 model loaded／listening。
+**備案**：超時/失敗 → **回報原文**（`b8_2_server.err.log`＋`nvidia-smi`），不自動降 K。
 
 ## B-8-3 `/v1` e2e 5 閘＋`/q4e/stats`（回歸門）
 
@@ -114,9 +116,11 @@ Start-Sleep -Seconds 5
 nvidia-smi    # 須 VRAM 歸零再繼續
 
 # ── OFF 相（oracle 8125，無 q4e hook；PassThru 拿 PID）──
+# OFF＝oracle（上游 b10685，有自己原生 -ncmoe；-ncmoe 38＝38 層 MoE→CPU＝等同 K=10）
+# 若 B-8-0 顯示 oracle 無 -ncmoe→OFF 相改用 q4e `--no-q4e-prefetch`（同 placement、無預取）
 $oracle = Start-Process -FilePath "D:\llama\llama-server.exe" -ArgumentList @(
   '-m','D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf',
-  '--host','127.0.0.1','--port','8125','-ngl','10','--ctx-size','2048'
+  '--host','127.0.0.1','--port','8125','-ngl','all','-ncmoe','38','--ctx-size','2048'
 ) -RedirectStandardOutput 'b8_4_off.log' -RedirectStandardError 'b8_4_off.err.log' -NoNewWindow -PassThru
 $deadline = (Get-Date).AddSeconds(300)
 while ((Get-Date) -lt $deadline) {
@@ -172,7 +176,7 @@ Get-ChildItem "D:\AI_Model\Qwen3.8-Flash-Next\*.gguf"
 
 ## 驗收基準（v4.1）
 
-1. q4e-server 載真 GGUF（**ngl=10**）＋`/v1` e2e 綠（200/401/SSE）。
+1. q4e-server 載真 GGUF（**ngl=all＋K=10**）＋`/v1` e2e 綠（200/401/SSE）。
 2. **真實 M 可測**（核心看得到 router；口徑＝touched 層）。
 3. **暖 t/s ≥ 拍板線**（ON ≥ OFF 且 ≥ 1.95 t/s）。
 4. 預取重疊度（PCIe 段）≥80%（`prefetch_overlap_ratio`）。
@@ -183,7 +187,7 @@ Get-ChildItem "D:\AI_Model\Qwen3.8-Flash-Next\*.gguf"
 
 ## 紅線
 
-**ngl=10 固定（不 999/48/auto）；不砍功能；不改 `engine/` source/test；不改快取/預取參數；永不過兩模型實例並行；oracle 只對答案；kill 只按 PID、絕不 `Stop-Process -Name llama-server`。**
+**設定＝`--n-gpu-layers all --q4e-moe-vram 10`（K=10；K 可設定 0–999、VRAM 裝不下跳錯）；不砍功能；不改 `engine/` source/test；不改快取/預取/K 參數；永不過兩模型實例並行；oracle 只對答案；kill 只按 PID、絕不 `Stop-Process -Name llama-server`。**
 
 ## 卡住規則
 

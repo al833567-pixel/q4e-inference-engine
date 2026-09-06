@@ -12,7 +12,7 @@
 
 | 項 | 名稱 | 狀態 | 內容／門 |
 |---|---|---|---|
-| **B-8**（v4.1） | **復驗（A-12 交付後）**：照 [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) 零判斷 | **⏳ 待 A-12**（＝A-14.1→A-14.2→A-14.3→A-12） | **重驗 v4 三門**＋回歸門：(1) **B-4 硬線**：暖 t/s **ON ≥ OFF**（A-9 已移除 sync D2H 根因）；(2) **#3′**：ON ≥ OFF 且 **ON ≥ 1.95 t/s**（A-11 拍板線）；(3) **#4 重疊**：`prefetch_overlap_ratio` **≥80%**（A-14.1 提供欄位；定義＝觸碰前已完成預取的 touches 佔比）＋`prefetch_io_issued>0`；**#5 N-gram＝回報不可量**（待 A-14.4）；回歸門＝冷載入≤~250 s＋VRAM 歸零＋oracle 對答案＋e2e 5 閘。**工具**：`q4e-bench`（ON/OFF t/s＋JSON）＋`q4e-e2e`（取代 curl 手動步）。**FAIL＝停下回報原文，不調參。** |
+| **B-8**（v4.1） | **復驗（A-12 交付後）**：照 [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) 零判斷 | **⏳ 待 A-12**（＝A-14.1→A-14.2→A-14.3→A-12） | **重驗 v4 三門**＋回歸門：(1) **B-4 硬線**：暖 t/s **ON ≥ OFF**（A-9 已移除 sync D2H 根因）；(2) **#3′**：ON ≥ OFF 且 **ON ≥ 1.95 t/s**（A-11 拍板線）；(3) **#4 重疊**：`prefetch_overlap_ratio` **≥80%**（A-14.1 提供欄位；定義＝觸碰前已完成預取的 touches 佔比）＋`prefetch_io_issued>0`；**#5 N-gram＝回報不可量**（待 A-14.4）；回歸門＝冷載入≤~250 s＋VRAM 歸零＋oracle 對答案＋e2e 5 閘。**工具**：`q4e-bench`（ON/OFF t/s＋JSON）＋`q4e-e2e`（取代 curl 手動步）。**設定**：ON＝q4e `--n-gpu-layers all --q4e-moe-vram 10`（K=10 預設、**K 可設定**、B-8 可量 12/13 找上限）；OFF＝oracle（上游原生旗標）`-ngl all -ncmoe 38`（B-8-0 先驗 oracle 有 `-ncmoe`；若無→q4e `--no-q4e-prefetch` 同 placement）。**FAIL＝停下回報原文，不調參。** |
 
 ### B-8 上下文（v4 基線數字；對照用）
 
@@ -28,7 +28,7 @@
 
 | 項目 | 狀態 | 說明 |
 |---|---|---|
-| **GPU** | ✓ | RTX 3090 **24 GB**；ngl=10 跑動佔 **16,724 MiB**（v1：16,750）；收尾歸零 |
+| **GPU** | ✓ | RTX 3090 **24 GB**；舊配置 ngl=10 實測 **16,724 MiB**；新配置（ngl=all+K=10）預計 **≈20.6 GB**（B-8-2 實測）；收尾歸零 |
 | **CUDA toolkit（nvcc）** | ✓ | **v13.3**（nvcc V13.3.73；driver 610.47） |
 | **CPU / RAM / SSD** | ✓ | i7-9700 8C/8T；RAM ~20 GB；SATA 0.31–0.44 GB/s |
 | **GGUF** | ✓ | `D:\AI_Model\Qwen3.8-Flash-Next\`（4 片 111,334,654,784 B ≈103.69 GiB Q4_K_XL） |
@@ -40,7 +40,7 @@
 
 | 約束 | 決定 |
 |---|---|
-| **ngl=10 固定** | **使用者紅線**（永不 auto/999/48） |
+| **placement 紅線** | `--n-gpu-layers all`（attn/router/shared 恆 VRAM）＋`--q4e-moe-vram K`（**K＝MoE VRAM 快取預算**，預設 10、範圍 0–999、**VRAM 裝不下→跳錯**、K 可設定）；舊 `-ncmoe/-cmoe/-ncffn` 已連 core 移除（01 §六） |
 | **build 旗標紅線** | CMake 必帶 `-DGGML_CPU_REPACK=OFF`＋`-DBUILD_SHARED_LIBS=OFF`；build 環境＝`vcvars64`＋cl（PATH 上的 MinGW 會搶編譯器） |
 | **並行** | 永不過兩個模型實例同時載入；先 kill server 再 in-process 載 |
 | **零判斷** | 照 RUNBOOK_B_v3 執行；每步＝指令＋預期輸出＋備案 |

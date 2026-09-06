@@ -13,7 +13,8 @@
 
 | 子項 | 名稱 | 狀態 | 內容／驗收 |
 |---|---|---|---|
-| **A-14.1**（＝A-10） | live 預取接線＋real backend（`q4e-expert-warm`） | **✗ 待辦（下一動工）** | server 以上一 token 各層選擇→`prefetch()`（簿記）＋`warm_hint()`（真實 page-warm）；GGUF 專家切片索引（gguf.h）＋`CreateFileMappingW` 唯讀映射（與引擎 mmap 共享 OS page cache）＋background worker＋雙緩衝＋dedup＋有界佇列；GPU 層零 I/O；evict no-op；stats 加 `prefetch.io_issued/io_bytes/io_completed/io_dropped`＋`prefetch_overlap_ratio`（定義＝觸碰前已完成預取的 touches 佔比）；`--q4e-prefetch on/off` 旗標；**驗收**：既有測試全綠＋CPU e2e `prefetch_io_issued>0`＋`prefetch_overlap_hits>0`（issued 定義＝2026-09-06 拍板 Option A，凍結契約不動） |
+| **A-14.0**（新） | **新核心參數：雙層緩衝 MoE**（`--q4e-moe-vram K`） | **✗ 待辦（下一動工）** | K＝MoE VRAM 快取預算（預設 **10**，範圍 0–999，**VRAM 裝不下→載入跳錯**，不悄悄降 K）；placement＝`ngl=all`（attn/router/shared 恆 VRAM）＋前 (48−K) 層 expert→CPU（重用 override 管路）；**連 core 移除** `-ncmoe/-cmoe/-ncffn`＋env（01 §六記錄）；VRAM-fit 檢查＋`/q4e/stats` 回報 K。**驗收**：既有測試全綠＋flag/override 單元測試＋`-ncmoe` 不再生效＋B 側 K=10 載入成功 |
+| **A-14.1**（＝A-10） | live 預取接線＋real backend（`q4e-expert-warm`） | **✗ 待辦（下一動工）** | server 以上一 token 各層選擇→`prefetch()`（簿記）＋`warm_hint()`（真實 page-warm）；GGUF 專家切片索引（gguf.h）＋`CreateFileMappingW` 唯讀映射（與引擎 mmap 共享 OS page cache）＋background worker＋雙緩衝＋dedup＋有界佇列；GPU 層零 I/O；evict no-op；stats 加 `prefetch.io_issued/io_bytes/io_completed/io_dropped`＋`prefetch_overlap_ratio`（定義＝觸碰前已完成預取的 touches 佔比）；`--q4e-prefetch on/off` 旗標；⑧ **hook 修正**（新 placement：touch 條件＝expert 權重在 host＋非同步 ids 讀取，見 02 §二）；**驗收**：既有測試全綠＋CPU e2e `prefetch_io_issued>0`＋`prefetch_overlap_hits>0`＋新 placement 下 touches>0（issued 定義＝2026-09-06 拍板 Option A，凍結契約不動） |
 | **A-14.2**（新） | **`q4e-e2e` C++ e2e 客戶端**（取代 `a9_e2e.ps1`） | **✗ 待辦** | G0 無殘留→G1 health→G2 401→G3 completion→G4 SSE→G5 `/q4e/stats` 門→G6 kill；重用既有 vendored **cpp-httplib**（不引入新依賴）；**驗收**：C++ e2e 全門綠→PS1 出交付範圍 |
 | **A-14.3**（新） | **`q4e-bench` C++ bench 客戶端**（取代 `bench_tps.py --measure/--prefetch`＋B 側手動 curl） | **✗ 待辦** | 暖機＋N tokens（temp=0 固定 prime prompt）＋t/s＋prefetch on/off 對照＋重疊度（讀 stats）＋JSON 報告；**驗收**：B-8 直接跑 `q4e-bench` 取 ON/OFF t/s＋JSON |
 | **A-12** | 交付包 v4.1（C++ 工具鏈入包） | **✗ 待 A-14.3** | README/03A/03B＋[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)（改跑 `q4e-bench`/`q4e-e2e`）；B 側證據已 commit（`24f11f7`） |
@@ -21,7 +22,7 @@
 | **A-14.5** | 清理：刪 `legacy_v1/*.py`（8）＋`a9_e2e.ps1`（`config.yaml` 已於 2026-09-06 清理移除）；**保留** `legacy_v1/evidence/`＋B9 報告 | **✗ 待 A-14.4** | 交付樹零 .py/.ps1（上游 `engine/` 除外，文件註明） |
 | **A-14.6** | 終門：交付包宣告「全 C++」＋README/02 落地 | **✗ 最後** | A-12 交付條件 |
 
-> **執行順序**：A-14.1 → A-14.2 → A-14.3 → **A-12（交付 v4.1）** → **B-8 復驗（[03B](03B_項目現況_TaskB.md)）** → A-14.4 → A-14.5 → A-14.6
+> **執行順序**：A-14.0 → A-14.1 → A-14.2 → A-14.3 → **A-12（交付 v4.1）** → **B-8 復驗（[03B](03B_項目現況_TaskB.md)）** → A-14.4 → A-14.5 → A-14.6
 > **範圍拍板（2026-09-06）**：上游 `engine/*.py` 218 檔（conversion/gguf-py/scripts/server tests/examples）＝**不納入**；`legacy_v1/*.py` C++ 替代全綠後**刪除**（evidence 保留）；`config.yaml` 已移除（設定＝q4e-server CLI flags）。
 
 ## 二、Task A 環境（已實測；build/e2e 用）
@@ -50,7 +51,7 @@
 | **全 C++（2026-09-06 拍板）** | 交付鏈＝C++ 唯一（A-14）；上游 `engine/*.py` 不納入；`legacy_v1/*.py` 替代後刪 |
 | **基底紀律** | 產品代碼只進 `engine/`；`D:\llama` fork＝oracle，代碼不進產品 |
 | **無 GPU** | A 端全部＝CPU build＋CPU 跑；GPU 事→Task B |
-| **ngl=10** | B 端設定紅線（A 端 config 預設同值） |
+| **placement** | `--n-gpu-layers all`＋`--q4e-moe-vram K`（K 預設 10、範圍 0–999、VRAM 裝不下跳錯、K 可設定）；舊 `-ncmoe/-cmoe/-ncffn` **連 core 移除**（01 §六） |
 | **快取判斷** | CPU 式（LRU＋確定性預取），不訓練模型 |
 | **git** | 每步 commit；可回滾 |
 | **引擎代碼風格** | ASCII only；註解 1–2 行（ASD-STE100）；复用上游基建 |

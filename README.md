@@ -1,8 +1,8 @@
 # 推理工具 — Qwen3.8-Flash-Next（qwen4exp）推理
 
-> **現況（2026-09-06）**：v4 兩軌全完成（M-C 5 PASS／1 FAIL 已改 #3′ 線／2 待接線）；B-4 硬線 ON<OFF 根因已修（A-9）。**下一動工＝A-14.1**（live 預取＋real backend）。
+> **現況（2026-09-06）**：v4 兩軌全完成（M-C 5 PASS／1 FAIL 已改 #3′ 線／2 待接線）；B-4 硬線 ON<OFF 根因已修（A-9）。**下一動工＝A-14.0**（新核心參數 K＝雙層緩衝 MoE）→A-14.1（live 預取＋real backend）。
 > **策略**：**C++ 唯一**（`engine/` q4e 樹）；**A-14 全 C++ 化**＝交付鏈 100% C++、我們的工作範圍零 .py/.ps1（上游 `engine/*.py` 不納入；`legacy_v1/*.py` 替代後刪、證據保留）。
-> **紅線**：ngl=10 固定；本模型完整載入使用（不為乾淨砍功能）；oracle `D:\llama` 只對答案；B 端零判斷；kill 只按 PID。
+> **紅線**：設定＝`--n-gpu-layers all`＋`--q4e-moe-vram K`（**K＝MoE VRAM 快取預算**，預設 10、範圍 0–999、VRAM 裝不下跳錯、K 可設定；舊 `-ncmoe/-cmoe/-ncffn` 已連 core 移除，見 01 §六）；本模型完整載入使用（不為乾淨砍功能）；oracle `D:\llama` 只對答案；B 端零判斷；kill 只按 PID。
 
 ## 文件
 
@@ -49,5 +49,5 @@ engine\build-msvc\bin\test-q4e-ngram.exe          # 2989 checks（$env:Q4E_NGRAM
 ## 狀態
 
 - **v4 完成**：Task A（A-0～A-9＋A-11）✓；Task B（B-0～B-7）✓（2026-09-06）。M-C 8 項＝5 PASS／1 FAIL（#3→已改 #3′＝ON≥OFF 且 ≥1.95 t/s）／2 待接線（#4 待 A-14.1、#5 待 A-14.4）。
-- **v4.1 排程**：A-9 ✓ → A-11 ✓ → **A-14.1（live 預取＋real backend；`prefetch_io_issued`/`prefetch_overlap_ratio`）** → A-14.2（`q4e-e2e`）→ A-14.3（`q4e-bench`）→ A-12（交付包 v4.1）→ **B-8 復驗（[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)）** → A-14.4（ngram live）→ A-14.5（清理）→ A-14.6（終門）。
+- **v4.1 排程**：A-9 ✓ → A-11 ✓ → **A-14.0（新核心參數 K＝雙層緩衝 MoE；連 core 移除 `-ncmoe/-cmoe/-ncffn`）** → A-14.1（live 預取＋real backend；`prefetch_io_issued`/`prefetch_overlap_ratio`＋hook 修正）→ A-14.2（`q4e-e2e`）→ A-14.3（`q4e-bench`）→ A-12（交付包 v4.1）→ **B-8 復驗（[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)）** → A-14.4（ngram live）→ A-14.5（清理）→ A-14.6（終門）。
 - git：main；歷史與已完成證據＝`git log`＋[已完成工作.md](已完成工作.md)。
