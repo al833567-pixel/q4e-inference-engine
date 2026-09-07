@@ -1,0 +1,565 @@
+#ifndef NOMINMAX
+#   define NOMINMAX
+#endif
+
+#include "q4e-expert-warm.h"
+
+#include "ggml-backend.h"
+#include "gguf.h"
+
+#include <algorithm>
+#include <cstring>
+#include <filesystem>
+#include <stdexcept>
+
+namespace {
+
+bool q4e_warm_parse_moe(const char * name, int * layer, int * which) {
+    static const char * suf[4] = {
+        ".ffn_gate_exps.weight",
+        ".ffn_up_exps.weight",
+        ".ffn_down_exps.weight",
+        ".ffn_shexp.weight",
+    };
+    if (name == nullptr || strncmp(name, "blk.", 4) != 0) {
+        return false;
+    }
+    const char * p = name + 4;
+    int L = 0;
+    bool digit = false;
+    while (*p >= '0' && *p <= '9') {
+        L = L * 10 + (*p - '0');
+        p++;
+        digit = true;
+    }
+    if (!digit) {
+        return false;
+    }
+    for (int w = 0; w < 4; w++) {
+        if (strcmp(p, suf[w]) == 0) {
+            *layer = L;
+            *which = w;
+            return true;
+        }
+    }
+    return false;
+}
+
+// one long-lived stream per device; must outlive in-flight async copies
+std::mutex g_warm_stream_mu;
+std::vector<std::pair<ggml_backend_dev_t, ggml_backend_t>> g_warm_streams;
+
+ggml_backend_t warm_stream_for(ggml_backend_dev_t dev) {
+    std::lock_guard lk(g_warm_stream_mu);
+    for (const auto & p : g_warm_streams) {
+        if (p.first == dev) {
+            return p.second;
+        }
+    }
+    ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
+    if (be != nullptr) {
+        g_warm_streams.push_back({dev, be});
+    }
+    return be;
+}
+
+}
+
+q4e_expert_warm::q4e_expert_warm(const std::string & model_path) : model_path_(model_path) {
+    slots_.assign(32, std::vector<int32_t>(4096));
+}
+
+q4e_expert_warm::~q4e_expert_warm() {
+    stop();
+}
+
+void q4e_expert_warm::bind(q4e_expert_cache & cache) {
+    cache_ = &cache;
+    prev_.resize((size_t) cache.cfg().n_layers);
+}
+
+int64_t q4e_expert_warm::file_size(const std::string & path) const {
+#ifdef _WIN32
+    const std::wstring wpath = std::filesystem::path(path).wstring();
+    HANDLE fh = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (fh == INVALID_HANDLE_VALUE) {
+        throw std::runtime_error("open failed: " + path);
+    }
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(fh, &sz)) {
+        CloseHandle(fh);
+        throw std::runtime_error("GetFileSizeEx failed: " + path);
+    }
+    CloseHandle(fh);
+    return (int64_t) sz.QuadPart;
+#else
+    (void) path;
+    throw std::runtime_error("Windows-only (A-14.1)");
+#endif
+}
+
+bool q4e_expert_warm::init() {
+    if (!index_.empty() || !files_.empty()) {
+        throw std::runtime_error("already initialized");
+    }
+#ifndef _WIN32
+    throw std::runtime_error("Windows-only (A-14.1)");
+#else
+    // resolve shard files: the dir itself, or the parent dir of the first shard
+    std::vector<std::string> files;
+    std::error_code ec;
+    if (std::filesystem::is_directory(model_path_, ec)) {
+        for (const auto & entry : std::filesystem::directory_iterator(model_path_, ec)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".gguf") {
+                files.push_back(entry.path().string());
+            }
+        }
+        std::sort(files.begin(), files.end());
+    } else {
+        const std::filesystem::path root(model_path_);
+        if (std::filesystem::is_regular_file(root, ec) && root.has_parent_path()) {
+            for (const auto & entry : std::filesystem::directory_iterator(root.parent_path(), ec)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".gguf") {
+                    files.push_back(entry.path().string());
+                }
+            }
+            std::sort(files.begin(), files.end());
+        }
+    }
+    if (files.empty()) {
+        throw std::runtime_error("no gguf files found");
+    }
+    files_ = std::move(files);
+
+    // read-only mapping per shard (mirror q4e-ngram)
+    for (const auto & fn : files_) {
+        const std::wstring wpath = std::filesystem::path(fn).wstring();
+        HANDLE fh = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (fh == INVALID_HANDLE_VALUE) {
+            throw std::runtime_error("open failed: " + fn);
+        }
+        LARGE_INTEGER sz{};
+        if (!GetFileSizeEx(fh, &sz)) {
+            CloseHandle(fh);
+            throw std::runtime_error("GetFileSizeEx failed: " + fn);
+        }
+        HANDLE mh = CreateFileMappingW(fh, nullptr, PAGE_READONLY,
+            (DWORD) (sz.QuadPart >> 32), (DWORD) (sz.QuadPart & 0xFFFFFFFF), nullptr);
+        if (mh == nullptr) {
+            CloseHandle(fh);
+            throw std::runtime_error("CreateFileMapping failed: " + fn);
+        }
+        const uint8_t * view = (const uint8_t *) MapViewOfFile(mh, FILE_MAP_READ, 0, 0, 0);
+        if (view == nullptr) {
+            CloseHandle(mh);
+            CloseHandle(fh);
+            throw std::runtime_error("MapViewOfFile failed: " + fn);
+        }
+        file_h_.push_back(fh);
+        map_h_.push_back(mh);
+        view_.push_back((HANDLE) view);
+    }
+
+    // GGUF scan: collect matched expert tensors, then fill index_
+    struct mten {
+        int     layer;
+        int     which;
+        int     file;
+        int64_t offset; // absolute file offset of expert 0 (shared: tensor start)
+        int64_t len;    // per-expert stride (shared: full tensor size)
+        int64_t n_e;
+    };
+    std::vector<mten> m;
+    for (size_t fi = 0; fi < files_.size(); fi++) {
+        struct gguf_init_params params;
+        params.no_alloc = true;
+        params.ctx = nullptr;
+        struct gguf_context * ctx = gguf_init_from_file(files_[fi].c_str(), params);
+        if (ctx == nullptr) {
+            throw std::runtime_error(files_[fi] + ": not a GGUF file (bad magic)");
+        }
+        const int64_t nt = gguf_get_n_tensors(ctx);
+        const int64_t data_start = (int64_t) gguf_get_data_offset(ctx);
+        for (int64_t i = 0; i < nt; i++) {
+            const char * name = gguf_get_tensor_name(ctx, i);
+            int L = 0;
+            int which = 0;
+            if (!q4e_warm_parse_moe(name, &L, &which)) {
+                continue;
+            }
+            const int64_t * ne = gguf_get_tensor_ne(ctx, i);
+            // expert axis is the slowest dim (llama.cpp convention: [.., .., n_experts])
+            const int64_t n_e = ne[2];
+            const int64_t tsize = (int64_t) gguf_get_tensor_size(ctx, i);
+            const int64_t toff = data_start + (int64_t) gguf_get_tensor_offset(ctx, i);
+            if (which < 3) {
+                if (n_e <= 0 || tsize % n_e != 0) {
+                    throw std::runtime_error("bad expert tensor dims: " + std::string(name));
+                }
+                m.push_back({L, which, (int) fi, toff, tsize / n_e, n_e});
+            } else {
+                m.push_back({L, 3, (int) fi, toff, tsize, 1});
+            }
+        }
+        gguf_free(ctx);
+    }
+
+    if (m.empty()) {
+        return true; // dense model: empty index, mappings stay open
+    }
+    for (size_t a = 0; a < m.size(); a++) {
+        for (size_t b = a + 1; b < m.size(); b++) {
+            if (m[a].layer == m[b].layer && m[a].which == m[b].which) {
+                throw std::runtime_error("duplicate expert tensor for layer " + std::to_string(m[a].layer));
+            }
+        }
+    }
+
+    int max_l = 0;
+    int max_e = 0;
+    for (const auto & t : m) {
+        max_l = std::max(max_l, t.layer);
+        if (t.which < 3) {
+            max_e = std::max(max_e, (int) t.n_e);
+        }
+    }
+    index_.resize((size_t) max_l + 1);
+    for (auto & L : index_) {
+        L.resize((size_t) max_e + 1);
+        L[0].resize(1); // shared expert (-1)
+        for (size_t e = 1; e < L.size(); e++) {
+            L[e].resize(3); // gate/up/down
+        }
+    }
+    for (const auto & t : m) {
+        const uint8_t * base = (const uint8_t *) view_[(size_t) t.file];
+        if (t.which < 3) {
+            for (int64_t e = 0; e < t.n_e; e++) {
+                index_[t.layer][e + 1][t.which] = q4e_warm_slice{base, t.offset + e * t.len, t.len};
+            }
+        } else {
+            index_[t.layer][0][0] = q4e_warm_slice{base, t.offset, t.len};
+        }
+    }
+
+    n_layers_ = (int) index_.size();
+    n_experts_ = (index_[0].size() > 0) ? (int) index_[0].size() - 1 : 0;
+    for (int L = 0; L < n_layers_; L++) {
+        for (int e = 0; e < n_experts_; e++) {
+            if ((size_t) (e + 1) >= index_[L].size() || index_[L][e + 1].size() != 3) {
+                throw std::runtime_error("expert index incomplete for layer " + std::to_string(L));
+            }
+            // UD models quantize each expert tensor differently, so gate/up/down len may differ
+            if (!(index_[L][e + 1][0].len > 0 && index_[L][e + 1][1].len > 0 && index_[L][e + 1][2].len > 0)) {
+                throw std::runtime_error("expert slice empty for layer " + std::to_string(L));
+            }
+        }
+    }
+    max_slice_len_ = 0;
+    for (const auto & L : index_) {
+        for (const auto & E : L) {
+            for (const auto & s : E) {
+                max_slice_len_ = std::max(max_slice_len_, s.len);
+            }
+        }
+    }
+    staging_[0].assign((size_t) max_slice_len_, 0);
+    staging_[1].assign((size_t) max_slice_len_, 0);
+    prev_.resize((size_t) n_layers_);
+    return true;
+#endif
+}
+
+void q4e_expert_warm::start() {
+    if (th_.joinable()) {
+        throw std::runtime_error("already started");
+    }
+    th_ = std::thread(&q4e_expert_warm::worker_loop, this);
+}
+
+void q4e_expert_warm::worker_loop() {
+    for (;;) {
+        std::unique_lock<std::mutex> lk(qmu_);
+        qcv_.wait(lk, [this] {
+            return stop_.load() || !ids_q_.empty() || !warm_q_.empty();
+        });
+        if (stop_.load() && ids_q_.empty() && warm_q_.empty()) {
+            break;
+        }
+        lk.unlock();
+        drain_once();
+    }
+}
+
+void q4e_expert_warm::drain_once() {
+    ids_event e;
+    bool have_ids = false;
+    bool last_share = false;
+    {
+        std::lock_guard lk(qmu_);
+        if (!ids_q_.empty()) {
+            e = ids_q_.front();
+            ids_q_.pop_front();
+            have_ids = true;
+            // ggml events are not refcounted: the last queued event sharing it frees it
+            if (e.have_event && (ids_q_.empty() || ids_q_.front().event != e.event)) {
+                last_share = true;
+            }
+        }
+    }
+    if (have_ids) {
+        if (e.have_event) {
+            ggml_backend_event_synchronize((ggml_backend_event_t) e.event);
+            if (last_share) {
+                ggml_backend_event_free((ggml_backend_event_t) e.event);
+            }
+        }
+        const int32_t * ids = slots_[e.slot].data() + e.off;
+        for (int64_t i = 0; i < e.n; i++) {
+            const int32_t x = ids[i];
+            if (x >= 0 && warm_done_.count(key(e.layer, x)) > 0) {
+                overlap_hits_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        if (cache_ != nullptr && e.n > 0) {
+            try {
+                cache_->touch(e.layer, (const int *) ids, e.n);
+            } catch (const std::exception &) {
+            }
+        }
+        if (e.layer < (int) prev_.size() && !prev_[e.layer].empty()) {
+            if (cache_ != nullptr) {
+                try {
+                    cache_->prefetch(e.layer, prev_[e.layer].data(), (int64_t) prev_[e.layer].size());
+                } catch (const std::exception &) {
+                }
+            }
+            for (int32_t x : prev_[e.layer]) {
+                if (x >= 0) {
+                    warm_hint(e.layer, x);
+                } else if (x == Q4E_EXPERT_SHARED_ID && e.layer < (int) index_.size() &&
+                           e.layer < (int) prev_.size() && index_[e.layer].size() > 0 &&
+                           !index_[e.layer][0].empty()) {
+                    warm_hint(e.layer, x);
+                }
+            }
+        }
+        if (e.layer < (int) prev_.size()) {
+            prev_[e.layer].assign(ids, ids + e.n);
+        }
+    }
+    for (int k = 0; k < 8; k++) {
+        std::pair<int, int> p;
+        {
+            std::lock_guard lk(qmu_);
+            if (warm_q_.empty()) {
+                break;
+            }
+            p = warm_q_.front();
+            warm_q_.pop_front();
+        }
+        do_warm_one(p.first, p.second);
+    }
+}
+
+void q4e_expert_warm::do_warm_one(int layer, int expert) {
+    if (layer < 0 || layer >= (int) index_.size()) {
+        return;
+    }
+    const size_t idxi = (size_t) (expert + 1);
+    if (idxi >= index_[layer].size() || index_[layer][idxi].empty()) {
+        return;
+    }
+    const uint64_t k = key(layer, expert);
+    if (warm_done_.count(k) > 0) {
+        inflight_.erase(k);
+        return;
+    }
+    io_issued_.fetch_add(1, std::memory_order_relaxed);
+    uint8_t * buf = staging_[staging_buf_].data();
+    staging_buf_ ^= 1;
+    for (const auto & s : index_[layer][idxi]) {
+        memcpy(buf, s.base + s.offset, (size_t) s.len);
+        io_bytes_.fetch_add(s.len, std::memory_order_relaxed);
+    }
+    warm_done_.insert(k);
+    inflight_.erase(k);
+    io_completed_.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool q4e_expert_warm::enqueue_host_ids(int layer, const int32_t * ids, int64_t n_ids) {
+    if (!ids || n_ids <= 0 || n_ids > 64 || layer < 0 || layer >= (int) index_.size()) {
+        events_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    std::lock_guard lk(qmu_);
+    if ((int) ids_q_.size() >= ids_cap_) {
+        events_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const int slot = slot_next_ % (int) slots_.size();
+    slot_next_++;
+    memcpy(slots_[slot].data(), ids, (size_t) n_ids * sizeof(int32_t));
+    ids_q_.push_back(ids_event{layer, n_ids, slot, false, nullptr, 0});
+    qcv_.notify_one();
+    return true;
+}
+
+bool q4e_expert_warm::enqueue_device_ids(int layer, const ggml_tensor * ids) {
+    if (!ids || layer < 0) {
+        events_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const int64_t n_ids = ids->ne[0];
+    const int64_t n_tok = (ggml_n_dims(ids) >= 2) ? ids->ne[1] : 1;
+    if (n_ids <= 0 || n_ids > 64 || n_tok <= 0 || n_tok > 32) {
+        events_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const ggml_backend_buffer_t buf = (ids->view_src != nullptr) ? ids->view_src->buffer : ids->buffer;
+    const ggml_backend_buffer_type_t buft = (buf != nullptr) ? ggml_backend_buffer_get_type(buf) : nullptr;
+    const ggml_backend_dev_t dev = (buft != nullptr) ? ggml_backend_buft_get_device(buft) : nullptr;
+    if (dev == nullptr) {
+        events_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    std::lock_guard lk(qmu_);
+    if ((int) ids_q_.size() >= ids_cap_) {
+        events_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const int slot = slot_next_ % (int) slots_.size();
+    slot_next_++;
+    const size_t nbytes = (size_t) n_ids * n_tok * sizeof(int32_t);
+
+    bool have_event = false;
+    ggml_backend_event_t ev = nullptr;
+    struct ggml_backend_dev_props props{};
+    ggml_backend_dev_get_props(dev, &props);
+    if (props.caps.events) {
+        ggml_backend_t backend = warm_stream_for(dev);
+        if (backend != nullptr) {
+            ev = ggml_backend_event_new(dev);
+            if (ev != nullptr) {
+                ggml_backend_tensor_get_async(backend, ids, slots_[slot].data(), 0, nbytes);
+                ggml_backend_event_record(ev, backend);
+                have_event = true;
+            }
+        }
+    }
+    if (!have_event) {
+        // no async/event support on this backend: blocking copy, eventless queue entry
+        ggml_backend_tensor_get(ids, slots_[slot].data(), 0, nbytes);
+    }
+    for (int64_t t = 0; t < n_tok; t++) {
+        ids_q_.push_back(ids_event{layer, n_ids, slot, have_event, (void *) ev, t * n_ids});
+    }
+    qcv_.notify_one();
+    return true;
+}
+
+void q4e_expert_warm::warm_hint(int layer, int expert) {
+    if (layer < 0 || layer >= (int) index_.size()) {
+        return;
+    }
+    const size_t idxi = (size_t) (expert + 1);
+    if (idxi >= index_[layer].size() || index_[layer][idxi].empty()) {
+        return;
+    }
+    const uint64_t k = key(layer, expert);
+    std::lock_guard lk(qmu_);
+    if (inflight_.count(k) > 0) {
+        return;
+    }
+    if ((int) warm_q_.size() >= warm_cap_) {
+        io_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    inflight_.insert(k);
+    warm_q_.push_back({layer, expert});
+    qcv_.notify_one();
+}
+
+int64_t q4e_expert_warm::io_issued() const {
+    return io_issued_.load(std::memory_order_relaxed);
+}
+
+int64_t q4e_expert_warm::io_bytes() const {
+    return io_bytes_.load(std::memory_order_relaxed);
+}
+
+int64_t q4e_expert_warm::io_completed() const {
+    return io_completed_.load(std::memory_order_relaxed);
+}
+
+int64_t q4e_expert_warm::io_dropped() const {
+    return io_dropped_.load(std::memory_order_relaxed);
+}
+
+int64_t q4e_expert_warm::overlap_hits() const {
+    return overlap_hits_.load(std::memory_order_relaxed);
+}
+
+int64_t q4e_expert_warm::events_dropped() const {
+    return events_dropped_.load(std::memory_order_relaxed);
+}
+
+void q4e_expert_warm::set_index_for_test(std::vector<std::vector<std::vector<q4e_warm_slice>>> idx) {
+    index_ = std::move(idx);
+    n_layers_ = (int) index_.size();
+    n_experts_ = n_layers_ > 0 ? (int) index_[0].size() - 1 : 0;
+    max_slice_len_ = 0;
+    for (const auto & L : index_) {
+        for (const auto & E : L) {
+            for (const auto & s : E) {
+                max_slice_len_ = std::max(max_slice_len_, s.len);
+            }
+        }
+    }
+    staging_[0].assign((size_t) max_slice_len_, 0);
+    staging_[1].assign((size_t) max_slice_len_, 0);
+    prev_.resize((size_t) n_layers_);
+}
+
+void q4e_expert_warm::set_queue_caps_for_test(int ids_cap, int warm_cap) {
+    std::lock_guard lk(qmu_);
+    ids_cap_ = ids_cap;
+    warm_cap_ = warm_cap;
+}
+
+bool q4e_expert_warm::has_pending() const {
+    std::lock_guard lk(const_cast<std::mutex &>(qmu_)); // mutex is non-mutable in the header
+    return !ids_q_.empty() || !warm_q_.empty();
+}
+
+uint64_t q4e_expert_warm::key(int layer, int expert) {
+    return ((uint64_t) (uint32_t) layer << 32) | (uint32_t) (expert + 1);
+}
+
+void q4e_expert_warm::stop() {
+    stop_ = true;
+    qcv_.notify_all();
+    if (th_.joinable()) {
+        th_.join();
+    }
+#ifdef _WIN32
+    for (HANDLE v : view_) {
+        if (v != nullptr) {
+            UnmapViewOfFile(v);
+        }
+    }
+    for (HANDLE h : map_h_) {
+        if (h != nullptr) {
+            CloseHandle(h);
+        }
+    }
+    for (HANDLE h : file_h_) {
+        if (h != nullptr) {
+            CloseHandle(h);
+        }
+    }
+    view_.clear();
+    map_h_.clear();
+    file_h_.clear();
+#endif
+}

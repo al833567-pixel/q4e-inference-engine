@@ -97,6 +97,7 @@ add_library(${TARGET}
     preset.cpp
     preset.h
     q4e-expert-cache.cpp
+    q4e-expert-warm.cpp
     q4e-expert-cache.h
     q4e-ngram.cpp
     q4e-ngram.h
