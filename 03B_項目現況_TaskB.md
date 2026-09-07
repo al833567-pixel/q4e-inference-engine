@@ -1,6 +1,6 @@
 # 推理工具 — 項目現況 · Task B（有 GPU，較笨 AI）
 
-> 更新：2026-09-06（**本檔只留未完成項目**；已完成工作→[已完成工作.md](已完成工作.md)；commit 全錄→`git log --oneline`）
+> 更新：2026-09-08（**本檔只留未完成項目**；已完成工作→[已完成工作.md](已完成工作.md)；commit 全錄→`git log --oneline`）
 > 姊妹檔：[03A_項目現況_TaskA.md](03A_項目現況_TaskA.md)
 > 關聯：[02_實作項目工作規劃.md](02_實作項目工作規劃.md)；[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)
 
@@ -12,7 +12,7 @@
 
 | 項 | 名稱 | 狀態 | 內容／門 |
 |---|---|---|---|
-| **B-8**（v4.1） | **復驗（A-12 交付後）**：照 [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) 零判斷 | **⏳ 待 A-12**（＝A-14.1→A-14.2→A-14.3→A-12） | **重驗 v4 三門**＋回歸門：(1) **B-4 硬線**：暖 t/s **ON ≥ OFF**（A-9 已移除 sync D2H 根因）；(2) **#3′**：ON ≥ OFF 且 **ON ≥ 1.95 t/s**（A-11 拍板線）；(3) **#4 重疊**：`prefetch_overlap_ratio` **≥80%**（A-14.1 提供欄位；定義＝觸碰前已完成預取的 touches 佔比）＋`prefetch_io_issued>0`；**#5 N-gram＝回報不可量**（待 A-14.4）；回歸門＝冷載入≤~250 s＋VRAM 歸零＋oracle 對答案＋e2e 5 閘。**工具**：`q4e-bench`（ON/OFF t/s＋JSON）＋`q4e-e2e`（取代 curl 手動步）。**設定**：ON＝q4e `--n-gpu-layers all --q4e-moe-vram 10`（K=10 預設、**K 可設定**、B-8 可量 12/13 找上限）；OFF＝oracle（上游原生旗標）`-ngl all -ncmoe 38`（B-8-0 先驗 oracle 有 `-ncmoe`；若無→q4e `--no-q4e-prefetch` 同 placement）。**FAIL＝停下回報原文，不調參。** |
+| **B-8**（v4.1） | **復驗（A-12 交付後）**：照 [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) 零判斷 | **⏳ 就緒（A-12 ✓；B 側動工前逐項對 RUNBOOK「A 側已驗證」表）** | **重驗 v4 三門**＋回歸門：(1) **B-4 硬線**：暖 t/s **ON ≥ OFF**（A-9 已移除 sync D2H 根因）；(2) **#3′**：ON ≥ OFF 且 **ON ≥ 1.95 t/s**（A-11 拍板線）；(3) **#4 重疊**：`prefetch_overlap_ratio` **≥80%**（A-14.1 提供欄位；定義＝觸碰前已完成預取的 touches 佔比）＋`prefetch_io_issued>0`；**#5 N-gram＝回報不可量**（待 A-14.4）；回歸門＝冷載入≤~250 s＋VRAM 歸零＋oracle 對答案＋e2e 5 閘。**工具**：`q4e-bench`（ON/OFF t/s＋JSON）＋`q4e-e2e`（取代 curl 手動步）。**設定**：ON＝q4e `--n-gpu-layers all --q4e-moe-vram 10`（K=10 預設、**K 可設定**、B-8 可量 12/13 找上限）；OFF＝oracle（上游原生旗標）`-ngl all -ncmoe 38`（B-8-0 先驗 oracle 有 `-ncmoe`；若無→q4e `--no-q4e-prefetch` 同 placement）。**FAIL＝停下回報原文，不調參。** |
 
 ### B-8 上下文（v4 基線數字；對照用）
 

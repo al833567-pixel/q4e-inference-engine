@@ -12,10 +12,10 @@
 |---|---|---|
 | A-9 熱路徑開銷移除（`cb_eval` 不再對 device-resident ids 做 sync D2H；只簿記 CPU 層；stats 加 touched 層數） | **✓（`8413022`）** | 測試 98/98＋2989/2989；CPU e2e `A9_E2E_ALL_PASS` |
 | A-11 驗收線拍板（M-C #3） | **✓（2026-09-06）：Option A＝#3′ 暖 t/s（ON）≥ OFF 且 ≥ 1.95 t/s** | 02 §六 |
-| A-14.1 live 預取接線＋real backend（`q4e-expert-warm`；stats 加 `prefetch_io_issued`／`prefetch_io_bytes`／`prefetch_overlap_ratio`；`--q4e-prefetch on/off` 旗標） | **待 A 填** | **待 A 填** |
-| A-14.2 `q4e-e2e`／A-14.3 `q4e-bench`（C++ 客戶端，交付包內） | **待 A 填** | **待 A 填** |
-| C++ 測試全綠（test-q4e-expert-cache／test-q4e-ngram） | **待 A 填** | **待 A 填** |
-| CPU e2e 全綠＋`prefetch_io_issued>0` 證據 | **待 A 填** | **待 A 填** |
+| A-14.1 live 預取接線＋real backend（`q4e-expert-warm`；stats 加 `prefetch_io_issued`／`prefetch_io_bytes`／`prefetch_overlap_ratio`；`--q4e-prefetch on/off` 旗標） | **✓（commits `243dcac`／`0c204f7`／`43d06c8`／`d0aba15`／`9a9472b`）** | `evidence_a141/stats.json`（`prefetch_io_issued=13019>0`、`prefetch_overlap_ratio=0.6105`、`prefetch_overlap_hits=24144`、touches=39550、48 層）；旗標 `--q4e-prefetch on/off`＋`--no-q4e-prefetch`（OFF fallback 可用） |
+| A-14.2 `q4e-e2e`／A-14.3 `q4e-bench`（C++ 客戶端，交付包內） | **✓（`19eaae3`／`471abae`）** | `evidence_a141/`（q4e-e2e `Q4E_E2E_ALL_PASS`）＋`evidence_a143/bench_report.json`（q4e-bench ON/OFF＋JSON；CPU smoke 的 perf verdict FAIL＝預期，perf 門在 B 側） |
+| C++ 測試全綠（test-q4e-expert-cache／test-q4e-ngram） | **✓（`9a9472b` 前 S5 全量 ctest）** | test-q4e-expert-cache 98/98、test-q4e-expert-warm 59/59、test-q4e-ngram 2989/2989、test-arg-parser OK；20 個上游 FAIL＝CJK 路徑環境問題（ASCII 相對路徑 20/20 PASS）；`S5-ctest.log`／`S5-failures.txt` |
+| CPU e2e 全綠＋`prefetch_io_issued>0` 證據 | **✓（`9a9472b`）** | `evidence_a141/stats.json`（`prefetch_io_issued=13019`）＋`Q4E_E2E_ALL_PASS` |
 | 設定紅線：`--n-gpu-layers all`＋`--q4e-moe-vram 10`（K=10、K 可設定 0–999、VRAM 裝不下跳錯；舊 `-ncmoe/-cmoe` 已連 core 移除） | 新（A-14.0） | 01 §六／03B §三 |
 
 > 本表由 A-12 填完後 B 端才可動工；B 端只核對「全部 ✓＋有 commit/證據」，不做技術判斷。
