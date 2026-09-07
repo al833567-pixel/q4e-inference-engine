@@ -17,6 +17,11 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 #include "q4e-expert-cache.h"
+// q4e-expert-warm.h pulls in <windows.h>; guard the min/max macros it would define
+#ifndef NOMINMAX
+#   define NOMINMAX
+#endif
+#include "q4e-expert-warm.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -884,6 +889,7 @@ private:
     common_init_result_ptr llama_init;
 
     q4e_expert_cache q4e_cache; // A-5: persistent expert-cache (cb_eval hook target)
+    std::unique_ptr<q4e_expert_warm> q4e_warm; // A-14.1: live prefetch backend (prefetch on); owns worker + mappings
 
     llama_context * ctx_tgt = nullptr;
 
@@ -1100,8 +1106,25 @@ private:
             params_base.load_progress_callback_user_data = &load_progress_text;
         }
 
-        params_base.cb_eval           = q4e_expert_cache_cb_eval;
-        params_base.cb_eval_user_data = &q4e_cache;
+        // A-14.1: prefetch on -> live warm backend (async ids + real page-warm); off -> A-9 hook only
+        if (params_base.q4e_prefetch) {
+            try {
+                q4e_warm = std::make_unique<q4e_expert_warm>(params_base.model.path);
+                q4e_warm->bind(q4e_cache);
+                q4e_warm->init();
+                q4e_warm->start();
+                params_base.cb_eval           = q4e_expert_warm_cb_eval;
+                params_base.cb_eval_user_data = q4e_warm.get();
+                SRV_INF("q4e: live prefetch backend active (model=%s)\n", params_base.model.path.c_str());
+            } catch (const std::exception & e) {
+                SRV_WRN("q4e: live prefetch backend init failed (%s); falling back to A-9 hook\n", e.what());
+                q4e_warm.reset();
+            }
+        }
+        if (params_base.cb_eval == nullptr) {
+            params_base.cb_eval           = q4e_expert_cache_cb_eval;
+            params_base.cb_eval_user_data = &q4e_cache;
+        }
 
         llama_init = common_init_from_params(params_base);
 
@@ -4652,7 +4675,7 @@ void server_routes::init_routes() {
         auto res = create_response(true);
 
         const auto s = ctx_server.q4e_cache.stats();
-        res->ok({
+        json data = {
             { "layers",            s.layers },
             { "touches",           s.touches },
             { "hits_vram",         s.hits.vram },
@@ -4669,7 +4692,21 @@ void server_routes::init_routes() {
             { "layers_touched",    s.layers_touched },
             { "hook_skips_device_ids", s.hook_skips_device_ids },
             { "q4e_moe_vram",      params.q4e_moe_vram },
-        });
+            { "q4e_prefetch",      ctx_server.q4e_warm ? 1 : 0 },
+        };
+        if (ctx_server.q4e_warm) {
+            const auto & w = *ctx_server.q4e_warm;
+            const int64_t touches_seen = w.touches_seen();
+            data.set({ "prefetch_io_issued",      w.io_issued() });
+            data.set({ "prefetch_io_bytes",       w.io_bytes() });
+            data.set({ "prefetch_io_completed",   w.io_completed() });
+            data.set({ "prefetch_io_dropped",     w.io_dropped() });
+            data.set({ "prefetch_events_dropped", w.events_dropped() });
+            data.set({ "prefetch_overlap_hits",   w.overlap_hits() });
+            data.set({ "prefetch_overlap_ratio",  touches_seen > 0 ? (double)w.overlap_hits() / (double)touches_seen : 0.0 });
+            data.set({ "hook_skips_weights_device", w.hook_skips_weights_device() });
+        }
+        res->ok(data);
         return res;
     };
 
