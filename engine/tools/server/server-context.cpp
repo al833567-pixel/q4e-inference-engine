@@ -4668,6 +4668,7 @@ void server_routes::init_routes() {
             { "io_bytes_estimate", (int64_t)s.placement_events * 3072000 },
             { "layers_touched",    s.layers_touched },
             { "hook_skips_device_ids", s.hook_skips_device_ids },
+            { "q4e_moe_vram",      params.q4e_moe_vram },
         });
         return res;
     };

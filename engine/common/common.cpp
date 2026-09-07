@@ -10,6 +10,8 @@
 #include "speculative.h"
 #include "unicode.h"
 
+#include "../src/llama-ext.h"
+
 #include <algorithm>
 #include <cinttypes>
 #include <climits>
@@ -1287,10 +1289,69 @@ struct common_init_result::impl {
     std::vector<llama_sampler_seq_config> samplers_seq_config;
 };
 
+// --q4e-moe-vram: resolve n_layers (metadata-only load) and add CPU buft overrides for MoE experts; true if applied
+static bool common_q4e_moe_vram_apply(common_params & params) {
+    llama_model_params qparams = llama_model_default_params();
+    qparams.load_mode = LLAMA_LOAD_MODE_NONE;
+    qparams.no_alloc  = true;
+
+    llama_model * qmodel = llama_model_load_from_file(params.model.path.c_str(), qparams);
+    if (qmodel == nullptr) {
+        return false; // the real load below reports the error
+    }
+
+    const int n_layers = llama_model_n_layer(qmodel);
+    const int n_expert = llama_model_n_expert(qmodel);
+    llama_model_free(qmodel);
+
+    if (n_expert == 0) {
+        return false; // dense model, nothing to do
+    }
+
+    llm_add_q4e_moe_vram_overrides(n_layers, params.q4e_moe_vram, params.tensor_buft_overrides);
+    return true;
+}
+
+// verify the requested layout fits in VRAM; never silently lower k
+static bool common_q4e_moe_vram_check(const char * path_model, int32_t k,
+                                      const llama_model_params * mparams, llama_context_params * cparams) {
+    std::vector<ggml_backend_dev_t> devs;
+    uint32_t hp_ngl = 0, hp_nct = 0, hp_nex = 0;
+
+    common_device_memory_data_vec dmds;
+    try {
+        dmds = common_get_device_memory_data(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, GGML_LOG_LEVEL_ERROR);
+    } catch (const std::exception & e) {
+        COM_ERR("%s: failed to measure device memory: %s\n", __func__, e.what());
+        return false;
+    }
+
+    const int64_t MiB = 1024 * 1024;
+    for (size_t id = 0; id < devs.size(); id++) {
+        const int64_t required = int64_t(dmds[id].model) + int64_t(dmds[id].context) + int64_t(dmds[id].compute);
+        if (required > dmds[id].free) {
+            COM_ERR("%s: --q4e-moe-vram k=%d does not fit in VRAM: %s needs %" PRId64 " MiB, only %" PRId64 " MiB free\n",
+                    __func__, k, ggml_backend_dev_name(devs[id]), required / MiB, dmds[id].free / MiB);
+            return false;
+        }
+    }
+    return true;
+}
+
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
+    // --q4e-moe-vram: needs n_layers, so it runs before the real load; CPU-only is a no-op
+    bool q4e_applied = false;
+    if (llama_supports_gpu_offload()) {
+        q4e_applied = common_q4e_moe_vram_apply(params);
+    }
+
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
+
+    if (q4e_applied && !common_q4e_moe_vram_check(params.model.path.c_str(), params.q4e_moe_vram, &mparams, &cparams)) {
+        return;
+    }
 
     if (params.fit_params) {
         COM_TRC("%s", "fitting params to device memory ...\n");

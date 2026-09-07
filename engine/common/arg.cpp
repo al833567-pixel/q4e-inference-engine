@@ -2779,33 +2779,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_OVERRIDE_TENSOR"));
     add_opt(common_arg(
-        {"-cmoe", "--cpu-moe"},
-        "keep all Mixture of Experts (MoE) weights in the CPU",
-        [](common_params & params) {
-            params.tensor_buft_overrides.push_back(llm_ffn_exps_cpu_override());
-        }
-    ).set_env("LLAMA_ARG_CPU_MOE"));
-    add_opt(common_arg(
-        {"-ncmoe", "--n-cpu-moe"}, "N",
-        "keep the Mixture of Experts (MoE) weights of the first N layers in the CPU",
+        {"--q4e-moe-vram"}, "K",
+        string_format(
+            "keep the Mixture of Experts (MoE) weights of the last K layers in VRAM, move the rest to the CPU\n"
+            "(default: %d; valid range 0-999; K >= n_layers keeps all expert weights in VRAM, K = 0 keeps all in the CPU)",
+            params.q4e_moe_vram),
         [](common_params & params, int value) {
-            if (value < 0) {
-                throw std::invalid_argument("invalid value");
+            if (value < 0 || value > 999) {
+                throw std::invalid_argument("K must be in range 0-999");
             }
-            llm_add_n_cpu_ffn_overrides(value, LLM_FFN_EXPS_REGEX, params.tensor_buft_overrides);
+            params.q4e_moe_vram = value;
         }
-    ).set_env("LLAMA_ARG_N_CPU_MOE"));
-    add_opt(common_arg(
-        {"-ncffn", "--n-cpu-ffn"}, "N",
-        "keep the dense FFN weights of the first N layers in the CPU\n"
-        "(dense models; for MoE expert weights use --n-cpu-moe)",
-        [](common_params & params, int value) {
-            if (value < 0) {
-                throw std::invalid_argument("invalid value");
-            }
-            llm_add_n_cpu_ffn_overrides(value, LLM_FFN_DENSE_REGEX, params.tensor_buft_overrides);
-        }
-    ).set_env("LLAMA_ARG_N_CPU_FFN"));
+    ).set_env("Q4E_MOE_VRAM"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",

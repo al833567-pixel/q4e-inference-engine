@@ -477,6 +477,8 @@ struct common_params {
     bool    fit_params_print   = false; // print the estimated required memory to run the model
     int32_t fit_params_min_ctx = 4096;  // minimum context size to set when trying to reduce memory use
 
+    int32_t q4e_moe_vram       = 10;    // keep MoE experts of the last K layers in VRAM, rest on CPU buft (0 = all on CPU)
+
     // margin per device in bytes for fitting parameters to free memory:
     std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);
 
@@ -1129,8 +1131,6 @@ const char * const LLM_KV_SPLIT_TENSORS_COUNT = "split.tensors.count";
 
 const char * const LLM_FFN_EXPS_REGEX = "\\.ffn_(up|down|gate|gate_up)_(ch|)exps";
 
-const char * const LLM_FFN_DENSE_REGEX = "\\.ffn_(up|down|gate)\\.";
-
 inline std::string llm_ffn_block_regex(int idx, const char * ffn_regex) {
     return string_format("blk\\.%d%s", idx, ffn_regex);
 }
@@ -1146,6 +1146,15 @@ inline void llm_add_n_cpu_ffn_overrides(int n, const char * ffn_regex, std::vect
         buft_override_strings.push_back(llm_ffn_block_regex(i, ffn_regex));
         overrides.push_back({buft_override_strings.back().c_str(), ggml_backend_cpu_buffer_type()});
     }
+}
+
+// --q4e-moe-vram: move expert weights of the first n_layers - k layers to the CPU buft; k >= n_layers: no override
+inline void llm_add_q4e_moe_vram_overrides(int n_layers, int k, std::vector<llama_model_tensor_buft_override> & overrides) {
+    const int n_cpu = n_layers - k;
+    if (n_cpu <= 0) {
+        return;
+    }
+    llm_add_n_cpu_ffn_overrides(n_cpu, LLM_FFN_EXPS_REGEX, overrides);
 }
 
 //

@@ -303,6 +303,62 @@ static void test(void) {
     assert(params.lora_adapters[2].path == "file3\"3\".gguf");
     assert(params.lora_adapters[3].path == "file4\".gguf");
 
+    printf("test-arg-parser: test --q4e-moe-vram (valid + invalid usages)\n\n");
+
+    {
+        common_params q4e_params;
+        q4e_params.model.path = "model_file.gguf"; // satisfy the required-model check (same as earlier blocks)
+        assert(q4e_params.q4e_moe_vram == 10); // default
+
+        argv = {"binary_name", "--q4e-moe-vram", "5"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_moe_vram == 5);
+
+        argv = {"binary_name", "--q4e-moe-vram", "0"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_moe_vram == 0);
+
+        argv = {"binary_name", "--q4e-moe-vram", "999"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_moe_vram == 999);
+
+        argv = {"binary_name", "--q4e-moe-vram", "-1"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+
+        argv = {"binary_name", "--q4e-moe-vram", "1000"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+
+        // retired MoE CPU-placement flags must no longer be recognized
+        argv = {"binary_name", "-ncmoe", "5"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+
+        argv = {"binary_name", "-cmoe"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+
+        argv = {"binary_name", "-ncffn", "3"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+    }
+
+    printf("test-arg-parser: test --q4e-moe-vram override generation\n\n");
+
+    {
+        std::vector<llama_model_tensor_buft_override> ovs;
+        llm_add_q4e_moe_vram_overrides(48, 10, ovs);
+        assert(ovs.size() == 38);
+        ovs.clear();
+        llm_add_q4e_moe_vram_overrides(48, 0, ovs);
+        assert(ovs.size() == 48);
+        ovs.clear();
+        llm_add_q4e_moe_vram_overrides(48, 48, ovs);
+        assert(ovs.size() == 0);
+        ovs.clear();
+        llm_add_q4e_moe_vram_overrides(48, 999, ovs);
+        assert(ovs.size() == 0);
+        ovs.clear();
+        llm_add_q4e_moe_vram_overrides(38, 10, ovs); // k > n_layers: keep all experts in VRAM
+        assert(ovs.size() == 28);
+    }
+
 // skip this part on windows, because setenv is not supported
 #ifdef _WIN32
     printf("test-arg-parser: skip on windows build\n");
