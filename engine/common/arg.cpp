@@ -2791,6 +2791,27 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.q4e_moe_vram = value;
         }
     ).set_env("Q4E_MOE_VRAM"));
+    add_opt(common_arg(
+        {"--q4e-prefetch"}, "on|off",
+        "live expert page-warm prefetch, \"on\" or \"off\" (default: on)",
+        [](common_params & params, const std::string & value) {
+            if (value == "on" || value == "1" || value == "true") {
+                params.q4e_prefetch = true;
+            } else if (value == "off" || value == "0" || value == "false") {
+                params.q4e_prefetch = false;
+            } else {
+                throw std::invalid_argument("--q4e-prefetch: expected on or off");
+            }
+        }
+    ).set_env("Q4E_PREFETCH"));
+    add_opt(common_arg(
+        {"--no-q4e-prefetch"},
+        {},
+        "alias for --q4e-prefetch off",
+        [](common_params & params, bool) {
+            params.q4e_prefetch = false;
+        }
+    ));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",

@@ -339,6 +339,33 @@ static void test(void) {
         assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
     }
 
+    printf("test-arg-parser: test --q4e-prefetch (valid + invalid usages)\n\n");
+
+    {
+        common_params q4e_params;
+        q4e_params.model.path = "model_file.gguf"; // satisfy the required-model check (same as earlier blocks)
+        assert(q4e_params.q4e_prefetch == true); // default
+
+        argv = {"binary_name", "--q4e-prefetch", "off"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_prefetch == false);
+
+        argv = {"binary_name", "--q4e-prefetch", "on"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_prefetch == true);
+
+        argv = {"binary_name", "--no-q4e-prefetch"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_prefetch == false);
+
+        argv = {"binary_name", "--q4e-prefetch", "on", "--no-q4e-prefetch"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_prefetch == false);
+
+        argv = {"binary_name", "--q4e-prefetch", "yes"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+    }
+
     printf("test-arg-parser: test --q4e-moe-vram override generation\n\n");
 
     {

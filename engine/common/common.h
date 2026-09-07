@@ -478,6 +478,7 @@ struct common_params {
     int32_t fit_params_min_ctx = 4096;  // minimum context size to set when trying to reduce memory use
 
     int32_t q4e_moe_vram       = 10;    // keep MoE experts of the last K layers in VRAM, rest on CPU buft (0 = all on CPU)
+    bool    q4e_prefetch       = true;  // live expert page-warm prefetch (A-14.1); off = A-9 hook only
 
     // margin per device in bytes for fitting parameters to free memory:
     std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);
