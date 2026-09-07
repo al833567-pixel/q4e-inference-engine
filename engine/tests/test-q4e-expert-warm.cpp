@@ -187,6 +187,31 @@ static void test_synthetic_a7(const uint8_t * heap) {
     CHECK(m4.warm.events_dropped() == 0);
 }
 
+static void test_slot_exhaustion(const uint8_t * heap) {
+    module m;
+    make_module(m, heap);
+    const int32_t id[] = {1};
+    CHECK(m.warm.enqueue_host_ids(0, id, 1));
+    CHECK_EQ_I64(m.warm.free_slots_for_test(), 31);
+    m.warm.mark_all_slots_busy_for_test();
+    CHECK_EQ_I64(m.warm.free_slots_for_test(), 0);
+    const int64_t dropped = m.warm.events_dropped();
+    CHECK(!m.warm.enqueue_host_ids(0, id, 1));
+    CHECK_EQ_I64(m.warm.events_dropped(), dropped + 1);
+    drain_until_quiescent(m.warm); // worker drains the queued event and releases its slot
+    CHECK(m.warm.free_slots_for_test() > 0);
+    CHECK(m.warm.enqueue_host_ids(0, id, 1));
+    drain_until_quiescent(m.warm);
+}
+
+static void test_touches_seen(const uint8_t * heap) {
+    module m;
+    make_module(m, heap);
+    CHECK_EQ_I64(m.warm.touches_seen(), 0);
+    replay_abc(m); // A1: 3 ids, A2: 2 ids, A3: 1 id
+    CHECK_EQ_I64(m.warm.touches_seen(), 6);
+}
+
 static void test_real_gguf() {
     const char * dir = std::getenv("Q4E_WARM_REAL_DIR");
     if (dir == nullptr) {
@@ -248,6 +273,8 @@ int main(int argc, char ** argv) {
     test_synthetic_a5(heap.data());
     test_synthetic_a6(heap.data());
     test_synthetic_a7(heap.data());
+    test_slot_exhaustion(heap.data());
+    test_touches_seen(heap.data());
     test_real_gguf();
 
     if (g_failures) {

@@ -42,6 +42,8 @@ public:
     void start();                        // start worker thread (after bind + init)
     void stop();                         // join worker, close mappings; idempotent
 
+    int n_layers() const { return n_layers_; }
+
     // hot path (cb_eval): copy ids into an internal slot, enqueue an ids-event
     // (bounded FIFO cap 256; full -> events_dropped++, returns false)
     bool enqueue_host_ids(int layer, const int32_t * ids, int64_t n_ids);
@@ -61,12 +63,17 @@ public:
     int64_t io_dropped() const;
     int64_t overlap_hits() const;
     int64_t events_dropped() const;
+    int64_t touches_seen() const;
+    int64_t hook_skips_weights_device() const;
+    void note_hook_skip_weights_device() { hook_skips_weights_device_.fetch_add(1, std::memory_order_relaxed); }
 
     // test-only seams (deterministic, no thread)
     void set_index_for_test(std::vector<std::vector<std::vector<q4e_warm_slice>>> idx);
     void set_queue_caps_for_test(int ids_cap, int warm_cap);
     void drain_once();    // one worker-loop iteration: <=1 ids event, then <=8 warm requests
     bool has_pending() const;
+    void mark_all_slots_busy_for_test();
+    int free_slots_for_test() const;
 
 private:
     // one ids event: host ids already in slot, or async get with device event
@@ -106,6 +113,7 @@ private:
 
     std::vector<std::vector<int32_t>> slots_;
     int slot_next_ = 0;
+    std::vector<char> slot_busy_; // 1 = slot still referenced by a queued ids event
 
     std::thread th_;
     std::atomic<bool> stop_ {false};
@@ -123,4 +131,11 @@ private:
     std::atomic<int64_t> io_dropped_ {0};
     std::atomic<int64_t> overlap_hits_ {0};
     std::atomic<int64_t> events_dropped_ {0};
+    std::atomic<int64_t> touches_seen_ {0};
+    std::atomic<int64_t> hook_skips_weights_device_ {0};
 };
+
+// llama_context_params.cb_eval hook: on the MoE expert matmul, warms the selected expert
+// pages; fires only when the expert weights are host-resident (GPU layers stay zero-I/O)
+// user_data must be a q4e_expert_warm * (or nullptr to no-op)
+bool q4e_expert_warm_cb_eval(struct ggml_tensor * t, bool ask, void * user_data);

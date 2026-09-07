@@ -5,6 +5,7 @@
 #include "q4e-expert-warm.h"
 
 #include "ggml-backend.h"
+#include "ggml.h"
 #include "gguf.h"
 
 #include <algorithm>
@@ -67,6 +68,7 @@ ggml_backend_t warm_stream_for(ggml_backend_dev_t dev) {
 
 q4e_expert_warm::q4e_expert_warm(const std::string & model_path) : model_path_(model_path) {
     slots_.assign(32, std::vector<int32_t>(4096));
+    slot_busy_.assign(slots_.size(), 0);
 }
 
 q4e_expert_warm::~q4e_expert_warm() {
@@ -295,12 +297,17 @@ void q4e_expert_warm::drain_once() {
     ids_event e;
     bool have_ids = false;
     bool last_share = false;
+    bool last_slot = false;
     {
         std::lock_guard lk(qmu_);
         if (!ids_q_.empty()) {
             e = ids_q_.front();
             ids_q_.pop_front();
             have_ids = true;
+            // the slot is released once no queued event references it anymore
+            if (ids_q_.empty() || ids_q_.front().slot != e.slot) {
+                last_slot = true;
+            }
             // ggml events are not refcounted: the last queued event sharing it frees it
             if (e.have_event && (ids_q_.empty() || ids_q_.front().event != e.event)) {
                 last_share = true;
@@ -346,6 +353,11 @@ void q4e_expert_warm::drain_once() {
         }
         if (e.layer < (int) prev_.size()) {
             prev_[e.layer].assign(ids, ids + e.n);
+        }
+        touches_seen_.fetch_add(e.n, std::memory_order_relaxed);
+        if (last_slot) {
+            std::lock_guard lk(qmu_);
+            slot_busy_[(size_t) e.slot] = 0;
         }
     }
     for (int k = 0; k < 8; k++) {
@@ -397,8 +409,21 @@ bool q4e_expert_warm::enqueue_host_ids(int layer, const int32_t * ids, int64_t n
         events_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    const int slot = slot_next_ % (int) slots_.size();
-    slot_next_++;
+    // acquire a free slot; the worker releases it once its queued event is drained
+    int slot = -1;
+    for (int i = 0; i < (int) slots_.size(); i++) {
+        const int s = (slot_next_ + i) % (int) slots_.size();
+        if (!slot_busy_[(size_t) s]) {
+            slot = s;
+            break;
+        }
+    }
+    if (slot < 0) {
+        events_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    slot_next_ = (slot + 1) % (int) slots_.size();
+    slot_busy_[(size_t) slot] = 1;
     memcpy(slots_[slot].data(), ids, (size_t) n_ids * sizeof(int32_t));
     ids_q_.push_back(ids_event{layer, n_ids, slot, false, nullptr, 0});
     qcv_.notify_one();
@@ -428,8 +453,21 @@ bool q4e_expert_warm::enqueue_device_ids(int layer, const ggml_tensor * ids) {
         events_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    const int slot = slot_next_ % (int) slots_.size();
-    slot_next_++;
+    // acquire a free slot; the worker releases it once its queued event is drained
+    int slot = -1;
+    for (int i = 0; i < (int) slots_.size(); i++) {
+        const int s = (slot_next_ + i) % (int) slots_.size();
+        if (!slot_busy_[(size_t) s]) {
+            slot = s;
+            break;
+        }
+    }
+    if (slot < 0) {
+        events_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    slot_next_ = (slot + 1) % (int) slots_.size();
+    slot_busy_[(size_t) slot] = 1;
     const size_t nbytes = (size_t) n_ids * n_tok * sizeof(int32_t);
 
     bool have_event = false;
@@ -504,6 +542,14 @@ int64_t q4e_expert_warm::events_dropped() const {
     return events_dropped_.load(std::memory_order_relaxed);
 }
 
+int64_t q4e_expert_warm::touches_seen() const {
+    return touches_seen_.load(std::memory_order_relaxed);
+}
+
+int64_t q4e_expert_warm::hook_skips_weights_device() const {
+    return hook_skips_weights_device_.load(std::memory_order_relaxed);
+}
+
 void q4e_expert_warm::set_index_for_test(std::vector<std::vector<std::vector<q4e_warm_slice>>> idx) {
     index_ = std::move(idx);
     n_layers_ = (int) index_.size();
@@ -530,6 +576,22 @@ void q4e_expert_warm::set_queue_caps_for_test(int ids_cap, int warm_cap) {
 bool q4e_expert_warm::has_pending() const {
     std::lock_guard lk(const_cast<std::mutex &>(qmu_)); // mutex is non-mutable in the header
     return !ids_q_.empty() || !warm_q_.empty();
+}
+
+void q4e_expert_warm::mark_all_slots_busy_for_test() {
+    std::lock_guard lk(qmu_);
+    std::fill(slot_busy_.begin(), slot_busy_.end(), 1);
+}
+
+int q4e_expert_warm::free_slots_for_test() const {
+    std::lock_guard lk(const_cast<std::mutex &>(qmu_)); // mutex is non-mutable in the header
+    int n = 0;
+    for (char b : slot_busy_) {
+        if (b == 0) {
+            n++;
+        }
+    }
+    return n;
 }
 
 uint64_t q4e_expert_warm::key(int layer, int expert) {
@@ -562,4 +624,55 @@ void q4e_expert_warm::stop() {
     map_h_.clear();
     file_h_.clear();
 #endif
+}
+
+bool q4e_expert_warm_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
+    auto * self = static_cast<q4e_expert_warm *>(user_data);
+    if (t == nullptr || self == nullptr) {
+        return true;
+    }
+
+    // one match per MoE layer: the ffn_up_exps mul_mat_id (ids = t->src[2])
+    const bool is_moe_up = t->op == GGML_OP_MUL_MAT_ID &&
+                           t->src[0] != nullptr &&
+                           std::strstr(t->src[0]->name, "up") != nullptr;
+    if (ask) {
+        return is_moe_up;
+    }
+    if (!is_moe_up) {
+        return true;
+    }
+
+    const int il = q4e_expert_layer_from_name(t->src[0]->name, self->n_layers());
+    if (il < 0) {
+        return true;
+    }
+
+    // only prefetch host-resident expert weights; GPU layers stay resident (zero I/O)
+    if (t->src[0]->buffer == nullptr || !ggml_backend_buffer_is_host(t->src[0]->buffer)) {
+        self->note_hook_skip_weights_device();
+        return true;
+    }
+
+    const struct ggml_tensor * ids = t->src[2];
+    if (ids == nullptr || ids->ne[0] <= 0 || ids->ne[1] <= 0) {
+        return true;
+    }
+    const int64_t n_ids = ids->ne[0];
+    const int64_t n_tok = ids->ne[1];
+
+    if (ids->buffer != nullptr && ggml_backend_buffer_is_host(ids->buffer)) {
+        // ids is column-major: expert k of token t is ids_data[k * n_tok + t]
+        std::vector<int32_t> token_ids((size_t) n_ids);
+        const int32_t * ids_data = (const int32_t *) ids->data;
+        for (int64_t t_i = 0; t_i < n_tok; t_i++) {
+            for (int64_t k = 0; k < n_ids; k++) {
+                token_ids[(size_t) k] = ids_data[k * n_tok + t_i];
+            }
+            self->enqueue_host_ids(il, token_ids.data(), n_ids); // > 64 ids: drops + counts
+        }
+    } else {
+        self->enqueue_device_ids(il, ids);
+    }
+    return true;
 }
