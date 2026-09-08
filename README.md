@@ -15,7 +15,7 @@
 | [已完成工作.md](已完成工作.md) | 已完成工作彙整（v1 基準＋Task A＋Task B＋決策紀錄）；歷史細節＝`git log` |
 | [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) | **Task B 復驗手冊（B-8，零判斷）**：硬線/t/s/重疊三門＋回歸門 |
 | [docs_A2_insertion_points.md](docs_A2_insertion_points.md) | qwen4exp 插入點分析（MoE dispatch＋cb_eval hook＋專家佈局＋server 端點） |
-| [legacy_v1/](legacy_v1/) | v1 基準證據＋方法學（B9 報告＋36 證據；.py 工具於 A-14.5 刪） |
+| [legacy_v1/](legacy_v1/) | v1 封存（B9 報告＋evidence；.py 工具已於 A-14.5 刪） |
 
 ## 目錄結構
 
@@ -23,7 +23,6 @@
 推理工具/
 ├── 01/02/03A/03B/README/已完成工作.md   # 架構 / 規劃 / 現況 / 已完成
 ├── RUNBOOK_B_v3.md                     # B-8 零判斷手冊
-├── a9_e2e.ps1                          # CPU e2e（A-14.2 q4e-e2e 取代後刪）
 ├── docs_A2_insertion_points.md         # 插入點分析
 ├── engine/                             # **唯一實現（C++，q4e 樹）**
 │   ├── common/
@@ -38,7 +37,7 @@
 │   │   ├── test-q4e-expert-warm.cpp    # 59 checks（A-14.1 backend）
 │   │   └── test-q4e-ngram.cpp          # 2989 checks（FNV/RNG/解碼向量凍結）
 │   └── build-msvc/                     # MSVC Release build（bin/*.exe）
-└── legacy_v1/                          # v1 封存（B9 報告／evidence／.py 工具）
+└── legacy_v1/                          # v1 封存（B9 報告／evidence）
 ```
 
 ## build（A 端，CPU）
