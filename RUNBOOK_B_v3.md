@@ -1,6 +1,6 @@
 # RUNBOOK_B v3 — Task B（GPU 側）v4.1 復驗手冊（B-8，零判斷）
 
-> **你是 Task B（有 GPU、較笨的 AI）**。本輪（B-8）目的＝重驗三門＋回歸門：① B-8-4 硬線 **ON ≥ OFF**；② B-8-6 暖 t/s（**ON ≥ OFF 且 ≥ 1.95 t/s**，A-11 拍板線）＋預取重疊 **≥80%**（`prefetch_overlap_ratio`）；③ N-gram 掉幅（待 A-14.4，本輪照實回報「不可量」）；回歸門＝e2e／oracle 對答案／冷載入 ≤~250 s／收尾 VRAM 歸零。
+> **你是 Task B（有 GPU、較笨的 AI）**。本輪（B-8）目的＝重驗三門＋回歸門：① B-8-4 硬線 **ON ≥ OFF**；② B-8-6 暖 t/s（**ON ≥ OFF 且 ≥ 1.95 t/s**，A-11 拍板線）＋預取重疊 **≥80%**（`prefetch_overlap_ratio`）；③ N-gram 掉幅（**A-14.4 ✓ 可量**；B 側 GPU 量，工具 `q4e-ngram accept`）；回歸門＝e2e／oracle 對答案／冷載入 ≤~250 s／收尾 VRAM 歸零。
 > **你的工作只有：B-8-0 → B-8-7 依序執行，對照預期輸出；任一步失敗→停下回報。** 不改 `engine/` 任何 source/test、不自行調參、不猜、不編造數字。
 > 環境：Windows PowerShell（每步指令從 repo 根 `D:\Nova2_home\AI研究\推理工具\` 執行）；MSVC（vcvars64）＋CMake＋Ninja＋CUDA 13.3（nvcc）；RTX 3090 24 GB。
 > 被測對象＝C++ 產品 `q4e-server`（`engine/`，A-9＋A-14.1 之後的 build）；oracle＝`D:\llama\llama-server.exe`（fork build 10685，**只對答案，代碼不進產品**）。
@@ -14,6 +14,7 @@
 | A-11 驗收線拍板（M-C #3） | **✓（2026-09-06）：Option A＝#3′ 暖 t/s（ON）≥ OFF 且 ≥ 1.95 t/s** | 02 §六 |
 | A-14.1 live 預取接線＋real backend（`q4e-expert-warm`；stats 加 `prefetch_io_issued`／`prefetch_io_bytes`／`prefetch_overlap_ratio`；`--q4e-prefetch on/off` 旗標） | **✓（commits `243dcac`／`0c204f7`／`43d06c8`／`d0aba15`／`9a9472b`）** | `evidence_a141/stats.json`（`prefetch_io_issued=13019>0`、`prefetch_overlap_ratio=0.6105`、`prefetch_overlap_hits=24144`、touches=39550、48 層）；旗標 `--q4e-prefetch on/off`＋`--no-q4e-prefetch`（OFF fallback 可用） |
 | A-14.2 `q4e-e2e`／A-14.3 `q4e-bench`（C++ 客戶端，交付包內） | **✓（`19eaae3`／`471abae`）** | `evidence_a141/`（q4e-e2e `Q4E_E2E_ALL_PASS`）＋`evidence_a143/bench_report.json`（q4e-bench ON/OFF＋JSON；CPU smoke 的 perf verdict FAIL＝預期，perf 門在 B 側） |
+| A-14.4 ngram live 接線＋`q4e-ngram` 工具（diag 4 階段／accept P1–P4；解鎖 M-C #5 可量） | **✓（`5b09765`／`c92606e`）** | `evidence_a144/`；CPU accept **verdict PASS**（max drop +0.22% < 1%）、diag A/B/C/D green；B 側 GPU 終驗 |
 | C++ 測試全綠（test-q4e-expert-cache／test-q4e-ngram） | **✓（`9a9472b` 前 S5 全量 ctest）** | test-q4e-expert-cache 98/98、test-q4e-expert-warm 59/59、test-q4e-ngram 2989/2989、test-arg-parser OK；20 個上游 FAIL＝CJK 路徑環境問題（ASCII 相對路徑 20/20 PASS）；`S5-ctest.log`／`S5-failures.txt` |
 | CPU e2e 全綠＋`prefetch_io_issued>0` 證據 | **✓（`9a9472b`）** | `evidence_a141/stats.json`（`prefetch_io_issued=13019`）＋`Q4E_E2E_ALL_PASS` |
 | 設定紅線：`--n-gpu-layers all`＋`--q4e-moe-vram 10`（K=10、K 可設定 0–999、VRAM 裝不下跳錯；舊 `-ncmoe/-cmoe` 已連 core 移除） | 新（A-14.0） | 01 §六／03B §三 |
@@ -149,7 +150,7 @@ Get-Content b8_5_oracle.json -Raw -Encoding UTF8
 **預期輸出**：兩端 `choices[0].message`（`content`＋`reasoning_content`）一致，或差異可解釋（kernel/版本差 b10729 基 vs 10685＋prompt-cache 狀態差；前輪先例＝content 位元相同、reasoning 差 1 token）。
 **備案**：不一致且無法解釋 → **回報原文**（兩份 JSON 全文），不猜。
 
-## B-8-6 性能基準（門：t/s＋重疊；N-gram 待 A-14.4）
+## B-8-6 性能基準（門：t/s＋重疊；N-gram 掉幅 A-14.4 ✓ 可量）
 
 > 優先用交付包 `q4e-bench.exe`（A-14.3，ON/OFF t/s＋重疊＋JSON 一鍵）；以下＝讀取 B-8-4 產物的備援。
 
@@ -160,7 +161,7 @@ Get-Content b8_6_stats.json -Raw -Encoding UTF8
 **預期輸出（門）**：
 1. **暖 t/s（ON）≥ OFF 且 ≥ 1.95 t/s**（A-11 拍板線；以 B-8-4 計數跑 t/s 為準）；
 2. **預取重疊 ≥80%**：`b8_6_stats.json` 之 `prefetch_overlap_ratio`（A-14.1 定義：觸碰前已完成預取的 touches 佔比）＋`prefetch_io_issued>0`；
-3. N-gram 掉幅 <1%：**A-14.4 未接線→本 build 不可量**→照實回報（`prefetch` 全欄位原文），**不編造**。
+3. N-gram 掉幅 <1%：**A-14.4 ✓ 可量**（`q4e-ngram accept` 工具已入包；CPU 預驗 PASS max drop +0.22%）→B 側 GPU 量（`prefetch` 全欄位原文），**不編造**。
 **備案**：任一门不及 → **回報原文**（t/s、touches/hits/occ/prefetch 全欄位＋log 尾段），不猜、不 profile 代碼（profile 屬 A 端權限）。
 
 ## B-8-7 收尾（回歸門）
@@ -180,7 +181,7 @@ Get-ChildItem "D:\AI_Model\Qwen3.8-Flash-Next\*.gguf"
 2. **真實 M 可測**（核心看得到 router；口徑＝touched 層）。
 3. **暖 t/s ≥ 拍板線**（ON ≥ OFF 且 ≥ 1.95 t/s）。
 4. 預取重疊度（PCIe 段）≥80%（`prefetch_overlap_ratio`）。
-5. N-gram 預取 t/s 掉幅 <1%（**待 A-14.4；本輪照實回報「不可量」**）。
+5. N-gram 預取 t/s 掉幅 <1%（**A-14.4 ✓ 可量**；B 側 GPU 量；工具 `q4e-ngram accept`）。
 6. 快取命中報告（vram/ram/ssd）＋I/O bytes＋真實 M（口徑＝**CPU 層簿記**，GPU 層不計 touches）。
 7. A 側 C++ 測試全綠（交付證據）。
 8. 冷載入 ≤ ~250 s；收尾 VRAM 歸零。

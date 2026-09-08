@@ -1,6 +1,6 @@
 # 推理工具 — Qwen3.8-Flash-Next（qwen4exp）推理
 
-> **現況（2026-09-08）**：v4.1 交付包完成：A-14.0～A-14.3 ✓（`169fc67`/`243dcac`…`471abae`）＋A-12 文件 ✓；**下一動工＝B-8 復驗**（[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)）；其後 A-14.4→A-14.5→A-14.6。
+> **現況（2026-09-08）**：**Task A 全完成**：A-14.0～A-14.6＋A-12 ✓（`169fc67`…`4e08ef2`）；**交付包＝全 C++**（server＋q4e-e2e＋q4e-bench＋q4e-ngram＋測試；交付樹零 .py/.ps1（`engine/` 上游除外））；**B-8 復驗就緒**（[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)，B 側 GPU）。
 > **策略**：**C++ 唯一**（`engine/` q4e 樹）；**A-14 全 C++ 化**＝交付鏈 100% C++、我們的工作範圍零 .py/.ps1（上游 `engine/*.py` 不納入；`legacy_v1/*.py` 替代後刪、證據保留）。
 > **紅線**：設定＝`--n-gpu-layers all`＋`--q4e-moe-vram K`（**K＝MoE VRAM 快取預算**，預設 10、範圍 0–999、VRAM 裝不下跳錯、K 可設定；舊 `-ncmoe/-cmoe/-ncffn` 已連 core 移除，見 01 §六）；本模型完整載入使用（不為乾淨砍功能）；oracle `D:\llama` 只對答案；B 端零判斷；kill 只按 PID。
 
@@ -52,6 +52,6 @@ engine\build-msvc\bin\test-q4e-ngram.exe          # 2989 checks（$env:Q4E_NGRAM
 
 ## 狀態
 
-- **v4 完成**：Task A（A-0～A-9＋A-11）✓；Task B（B-0～B-7）✓（2026-09-06）。M-C 8 項＝5 PASS／1 FAIL（#3→已改 #3′＝ON≥OFF 且 ≥1.95 t/s）；#4 欄位已上線（A-14.1 ✓，A 側 CPU 實測 0.61，80% 門在 B-8 GPU 量）、#5 待 A-14.4。
-- **v4.1 排程**：A-9 ✓ → A-11 ✓ → A-14.0 ✓（`169fc67`）→ A-14.1 ✓（`243dcac`…`9a9472b`）→ A-14.2 ✓（`19eaae3`）→ A-14.3 ✓（`471abae`）→ A-12 ✓（交付包 v4.1 文件）→ **B-8 復驗（下一步，[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)）** → A-14.4（ngram live）→ A-14.5（清理）→ A-14.6（終門）。
+- **v4 完成**：Task A（A-0～A-9＋A-11）✓；Task B（B-0～B-7）✓（2026-09-06）。M-C 8 項＝5 PASS／1 FAIL（#3→已改 #3′＝ON≥OFF 且 ≥1.95 t/s）；#4 欄位已上線（A-14.1 ✓，A 側 CPU 實測 0.61，80% 門在 B-8 GPU 量）、#5 A-14.4 ✓ 可量（`5b09765`／`c92606e`，CPU accept verdict PASS、max drop +0.22%；B-8 GPU 終驗）。
+- **v4.1 排程**：A-9 ✓ → A-11 ✓ → A-14.0 ✓（`169fc67`）→ A-14.1 ✓（`243dcac`…`9a9472b`）→ A-14.2 ✓（`19eaae3`）→ A-14.3 ✓（`471abae`）→ A-12 ✓（`ed84537`／`6fa43e7`）→ A-14.4 ✓（`5b09765`／`c92606e`）→ A-14.5 ✓（`4e08ef2`）→ **A-14.6 ✓（本次，終門）** → **B-8 復驗（下一步，[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)，B 側 GPU）**。
 - git：main；歷史與已完成證據＝`git log`＋[已完成工作.md](已完成工作.md)。

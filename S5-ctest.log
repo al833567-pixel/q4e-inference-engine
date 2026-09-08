@@ -1,0 +1,285 @@
+Test project D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc
+      Start  1: test-tokenizer-0-bert-bge
+ 1/62 Test  #1: test-tokenizer-0-bert-bge ..................***Failed    0.08 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-bert-bge.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-bert-bge.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-bert-bge.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-bert-bge.gguf'
+
+      Start  2: test-tokenizer-0-command-r
+ 2/62 Test  #2: test-tokenizer-0-command-r .................***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-command-r.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-command-r.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-command-r.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-command-r.gguf'
+
+      Start  3: test-tokenizer-0-deepseek-coder
+ 3/62 Test  #3: test-tokenizer-0-deepseek-coder ............***Failed    0.02 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-deepseek-coder.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-deepseek-coder.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-deepseek-coder.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-deepseek-coder.gguf'
+
+      Start  4: test-tokenizer-0-deepseek-llm
+ 4/62 Test  #4: test-tokenizer-0-deepseek-llm ..............***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-deepseek-llm.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-deepseek-llm.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-deepseek-llm.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-deepseek-llm.gguf'
+
+      Start  5: test-tokenizer-0-falcon
+ 5/62 Test  #5: test-tokenizer-0-falcon ....................***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-falcon.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-falcon.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-falcon.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-falcon.gguf'
+
+      Start  6: test-tokenizer-0-gemma-4
+ 6/62 Test  #6: test-tokenizer-0-gemma-4 ...................***Failed    0.02 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-gemma-4.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-gemma-4.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-gemma-4.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-gemma-4.gguf'
+
+      Start  7: test-tokenizer-0-gpt-2
+ 7/62 Test  #7: test-tokenizer-0-gpt-2 .....................***Failed    0.02 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-gpt-2.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-gpt-2.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-gpt-2.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-gpt-2.gguf'
+
+      Start  8: test-tokenizer-0-llama-bpe
+ 8/62 Test  #8: test-tokenizer-0-llama-bpe .................***Failed    0.02 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-bpe.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-bpe.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-bpe.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-bpe.gguf'
+
+      Start  9: test-tokenizer-0-llama-spm
+ 9/62 Test  #9: test-tokenizer-0-llama-spm .................***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-spm.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-spm.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-spm.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-spm.gguf'
+
+      Start 10: test-tokenizer-0-mpt
+10/62 Test #10: test-tokenizer-0-mpt .......................***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-mpt.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-mpt.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-mpt.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-mpt.gguf'
+
+      Start 11: test-tokenizer-0-phi-3
+11/62 Test #11: test-tokenizer-0-phi-3 .....................***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-phi-3.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-phi-3.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-phi-3.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-phi-3.gguf'
+
+      Start 12: test-tokenizer-0-qwen2
+12/62 Test #12: test-tokenizer-0-qwen2 .....................***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-qwen2.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-qwen2.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-qwen2.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-qwen2.gguf'
+
+      Start 13: test-tokenizer-0-qwen35
+13/62 Test #13: test-tokenizer-0-qwen35 ....................***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-qwen35.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-qwen35.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-qwen35.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-qwen35.gguf'
+
+      Start 14: test-tokenizer-0-refact
+14/62 Test #14: test-tokenizer-0-refact ....................***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-refact.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-refact.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-refact.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-refact.gguf'
+
+      Start 15: test-tokenizer-0-starcoder
+15/62 Test #15: test-tokenizer-0-starcoder .................***Failed    0.01 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-starcoder.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-starcoder.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-starcoder.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-starcoder.gguf'
+
+      Start 16: test-unicode
+16/62 Test #16: test-unicode ...............................   Passed    0.03 sec
+      Start 17: test-sampling
+17/62 Test #17: test-sampling ..............................   Passed    1.17 sec
+      Start 18: test-reasoning-budget
+18/62 Test #18: test-reasoning-budget ......................   Passed    0.04 sec
+      Start 19: test-q4e-expert-cache
+19/62 Test #19: test-q4e-expert-cache ......................   Passed    0.19 sec
+      Start 20: test-q4e-expert-warm
+20/62 Test #20: test-q4e-expert-warm .......................   Passed    0.02 sec
+      Start 21: test-q4e-ngram
+21/62 Test #21: test-q4e-ngram .............................   Passed    0.03 sec
+      Start 22: test-grammar-parser
+22/62 Test #22: test-grammar-parser ........................   Passed    0.08 sec
+      Start 23: test-grammar-integration
+23/62 Test #23: test-grammar-integration ...................   Passed    0.06 sec
+      Start 24: test-llama-grammar
+24/62 Test #24: test-llama-grammar .........................   Passed    0.07 sec
+      Start 25: test-batch-alloc
+25/62 Test #25: test-batch-alloc ...........................   Passed    0.04 sec
+      Start 26: test-chat
+26/62 Test #26: test-chat ..................................   Passed    6.30 sec
+      Start 27: test-json-schema-to-grammar
+27/62 Test #27: test-json-schema-to-grammar ................   Passed    8.48 sec
+      Start 28: test-tokenizer-1-llama-spm
+28/62 Test #28: test-tokenizer-1-llama-spm .................***Failed    0.08 sec
+main : reading vocab from: 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-spm.gguf'
+gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-spm.gguf' (No such file or directory)
+llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-spm.gguf
+llama_model_load_from_file_impl: failed to load model
+main: error: failed to load vocab 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/models/ggml-vocab-llama-spm.gguf'
+
+      Start 29: test-llama-archs
+29/62 Test #29: test-llama-archs ...........................   Passed   11.17 sec
+      Start 30: test-generate-models
+30/62 Test #30: test-generate-models .......................   Passed    2.93 sec
+      Start 31: test-recurrent-state-rollback
+31/62 Test #31: test-recurrent-state-rollback ..............***Failed    0.09 sec
+0.00.006.590 E gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//qwen35-dense.gguf' (No such file or directory)
+0.00.006.659 E llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//qwen35-dense.gguf
+0.00.006.664 E llama_model_load_from_file_impl: failed to load model
+0.00.006.719 E common_fit_params: encountered an error while trying to fit params to free device memory: failed to load model
+main : failed to init model
+0.00.006.825 E gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//qwen35-dense.gguf' (No such file or directory)
+0.00.006.840 E llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//qwen35-dense.gguf
+0.00.006.841 E llama_model_load_from_file_impl: failed to load model
+0.00.006.842 E cmn  common_init_: failed to load model 'D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//qwen35-dense.gguf'
+
+      Start 32: test-recurrent-state-rollback-nemotron-h
+32/62 Test #32: test-recurrent-state-rollback-nemotron-h ...***Failed    0.02 sec
+0.00.006.754 E gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//nemotron_h-dense.gguf' (No such file or directory)
+0.00.006.814 E llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//nemotron_h-dense.gguf
+0.00.006.815 E llama_model_load_from_file_impl: failed to load model
+0.00.006.850 E common_fit_params: encountered an error while trying to fit params to free device memory: failed to load model
+0.00.006.914 E gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//nemotron_h-dense.gguf' (No such file or directory)
+0.00.006.949 E llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//nemotron_h-dense.gguf
+main : failed to init model
+0.00.006.950 E llama_model_load_from_file_impl: failed to load model
+0.00.006.951 E cmn  common_init_: failed to load model 'D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//nemotron_h-dense.gguf'
+
+      Start 33: test-recurrent-state-rollback-dsv4
+33/62 Test #33: test-recurrent-state-rollback-dsv4 .........***Failed    0.02 sec
+0.00.006.444 E gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//deepseek4-moe.gguf' (No such file or directory)
+0.00.006.502 E llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//deepseek4-moe.gguf
+0.00.006.503 E llama_model_load_from_file_impl: failed to load model
+0.00.006.519 E common_fit_params: encountered an error while trying to fit params to free device memory: failed to load model
+0.00.006.576 E gguf_init_from_file: failed to open GGUF file 'D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//deepseek4-moe.gguf' (No such file or directory)
+0.00.006.607 E llama_model_load: error loading model: llama_model_loader: failed to load model from D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//deepseek4-moe.gguf
+main : failed to init model
+0.00.006.608 E llama_model_load_from_file_impl: failed to load model
+0.00.006.609 E cmn  common_init_: failed to load model 'D:/Nova2_home/AIÁ†îÁ©∂/Êé®ÁêÜÂ∑•ÂÖ∑/engine/build-msvc/tests/test-models//deepseek4-moe.gguf'
+
+      Start 34: test-save-load-state
+34/62 Test #34: test-save-load-state .......................***Failed    0.09 sec
+0.00.006.514 E main: no .gguf models found in 'D:/Nova2_home/AI¨„®s/±¿≤z§u®„/engine/build-msvc/tests/test-models/'
+
+      Start 35: test-chat-peg-parser
+35/62 Test #35: test-chat-peg-parser .......................   Passed    0.09 sec
+      Start 36: test-jinja
+36/62 Test #36: test-jinja .................................   Passed    0.19 sec
+      Start 37: test-jinja-py
+37/62 Test #37: test-jinja-py ..............................   Passed   43.16 sec
+      Start 38: test-chat-auto-parser
+38/62 Test #38: test-chat-auto-parser ......................   Passed    1.09 sec
+      Start 39: test-chat-template
+39/62 Test #39: test-chat-template .........................   Passed    0.21 sec
+      Start 40: test-log
+40/62 Test #40: test-log ...................................   Passed    0.05 sec
+      Start 41: test-peg-parser
+41/62 Test #41: test-peg-parser ............................   Passed    0.06 sec
+      Start 42: test-download-model
+42/62 Test #42: test-download-model ........................   Passed    3.21 sec
+      Start 43: test-thread-safety
+43/62 Test #43: test-thread-safety .........................   Passed    0.58 sec
+      Start 44: test-arg-parser
+44/62 Test #44: test-arg-parser ............................   Passed    0.71 sec
+      Start 45: test-model-resolution
+45/62 Test #45: test-model-resolution ......................   Passed    3.51 sec
+      Start 46: test-opt
+46/62 Test #46: test-opt ...................................   Passed    0.07 sec
+      Start 47: test-backend-ops
+47/62 Test #47: test-backend-ops ...........................   Passed    0.04 sec
+      Start 48: test-model-load-cancel
+48/62 Test #48: test-model-load-cancel .....................   Passed    0.03 sec
+      Start 49: test-autorelease
+49/62 Test #49: test-autorelease ...........................   Passed    0.03 sec
+      Start 50: test-backend-sampler
+50/62 Test #50: test-backend-sampler .......................   Passed    0.03 sec
+      Start 51: test-state-restore-fragmented
+51/62 Test #51: test-state-restore-fragmented ..............   Passed    0.17 sec
+      Start 52: test-barrier
+52/62 Test #52: test-barrier ...............................   Passed    0.43 sec
+      Start 53: test-quantize-fns
+53/62 Test #53: test-quantize-fns ..........................   Passed    4.25 sec
+      Start 54: test-quantize-perf
+54/62 Test #54: test-quantize-perf .........................   Passed    0.11 sec
+      Start 55: test-rope
+55/62 Test #55: test-rope ..................................   Passed    0.07 sec
+      Start 56: test-col2im-1d
+56/62 Test #56: test-col2im-1d .............................   Passed    0.04 sec
+      Start 57: test-mtmd-c-api
+57/62 Test #57: test-mtmd-c-api ............................   Passed    0.15 sec
+      Start 58: test-mtmd-impl
+58/62 Test #58: test-mtmd-impl .............................   Passed    0.03 sec
+      Start 59: test-gguf
+59/62 Test #59: test-gguf ..................................   Passed    0.38 sec
+      Start 60: test-alloc
+60/62 Test #60: test-alloc .................................   Passed    0.03 sec
+      Start 61: test-eval-callback-download-model
+61/62 Test #61: test-eval-callback-download-model ..........   Passed    0.12 sec
+      Start 62: test-eval-callback
+62/62 Test #62: test-eval-callback .........................   Passed    0.19 sec
+
+68% tests passed, 20 tests failed out of 62
+
+Label Time Summary:
+main      =  43.28 sec*proc (54 tests)
+model     =   0.26 sec*proc (4 tests)
+python    =  43.16 sec*proc (1 test)
+
+Total Test time (real) =  91.69 sec
+
+The following tests FAILED:
+	  1 - test-tokenizer-0-bert-bge (Failed)                main
+	  2 - test-tokenizer-0-command-r (Failed)               main
+	  3 - test-tokenizer-0-deepseek-coder (Failed)          main
+	  4 - test-tokenizer-0-deepseek-llm (Failed)            main
+	  5 - test-tokenizer-0-falcon (Failed)                  main
+	  6 - test-tokenizer-0-gemma-4 (Failed)                 main
+	  7 - test-tokenizer-0-gpt-2 (Failed)                   main
+	  8 - test-tokenizer-0-llama-bpe (Failed)               main
+	  9 - test-tokenizer-0-llama-spm (Failed)               main
+	 10 - test-tokenizer-0-mpt (Failed)                     main
+	 11 - test-tokenizer-0-phi-3 (Failed)                   main
+	 12 - test-tokenizer-0-qwen2 (Failed)                   main
+	 13 - test-tokenizer-0-qwen35 (Failed)                  main
+	 14 - test-tokenizer-0-refact (Failed)                  main
+	 15 - test-tokenizer-0-starcoder (Failed)               main
+	 28 - test-tokenizer-1-llama-spm (Failed)               main
+	 31 - test-recurrent-state-rollback (Failed)            main
+	 32 - test-recurrent-state-rollback-nemotron-h (Failed) main
+	 33 - test-recurrent-state-rollback-dsv4 (Failed)       main
+	 34 - test-save-load-state (Failed)                     main
+Errors while running CTest

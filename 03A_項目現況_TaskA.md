@@ -14,11 +14,12 @@
 | 子項 | 名稱 | 狀態 | 內容／驗收 |
 |---|---|---|---|
 | **A-14.4**（＝A-13） | ngram live 接線＋diag 4 階段／accept P1–P4 C++ 化 | **✓（`5b09765` engine 接線＋`c92606e` q4e-ngram 工具；evidence_a144）** | ngram 預測 hint→prefetch；解鎖 M-C #5（N-gram 預取 t/s 掉 <1%） |
-| **A-14.5** | 清理：刪 `legacy_v1/*.py`（8）＋`a9_e2e.ps1`＋`evidence_a141/e2e_a141.ps1`（S6 暫時腳本；輸出證據保留）（`config.yaml` 已於 2026-09-06 清理移除）；**保留** `legacy_v1/evidence/`＋B9 報告 | **✓（本次 commit）** | 交付樹零 .py/.ps1（上游 `engine/` 除外，文件註明） |
-| **A-14.6** | 終門：交付包宣告「全 C++」＋README/02 落地 | **✗ 最後** | A-12 交付條件 |
+| **A-14.5** | 清理：刪 `legacy_v1/*.py`（8）＋`a9_e2e.ps1`＋2 temp smoke（**12 刪除**；輸出證據保留）；**保留** `legacy_v1/evidence/`＋B9 報告 | **✓（`4e08ef2`）** | 交付樹零 .py/.ps1（上游 `engine/` 除外，文件註明） |
+| **A-14.6** | 終門：交付包宣告「全 C++」＋README/02/03A/03B/已完成工作/RUNBOOK 全落地 | **✓（本次 commit）** | A-12 交付條件 |
 
-> **執行順序**：A-14.0 ✓ → A-14.1 ✓ → A-14.2 ✓ → A-14.3 ✓ → **A-12（交付 v4.1）✓（2026-09-08）** → **B-8 復驗（[03B](03B_項目現況_TaskB.md)）（下一動工）** → **A-14.4 ✓** → **A-14.5 ✓（本次 commit）** → **A-14.6（下一動工）**
+> **執行順序**：A-14.0 ✓ → A-14.1 ✓ → A-14.2 ✓ → A-14.3 ✓ → **A-12（交付 v4.1）✓** → A-14.4 ✓ → **A-14.5 ✓（`4e08ef2`）** → **A-14.6 ✓（本次 commit）**；**Task A 全項 ✓（2026-09-08）；剩 B-8（Task B，[03B](03B_項目現況_TaskB.md)）**
 > **範圍拍板（2026-09-06）**：上游 `engine/*.py` 218 檔（conversion/gguf-py/scripts/server tests/examples）＝**不納入**；`legacy_v1/*.py` C++ 替代全綠後**刪除**（evidence 保留）；`config.yaml` 已移除（設定＝q4e-server CLI flags）。
+> **Task A 全項完成（2026-09-08）；剩餘工作＝B-8（Task B）**（A-14.6 終門＝本次 commit 宣告「全 C++」）。
 
 ## 二、Task A 環境（已實測；build/e2e 用）
 
