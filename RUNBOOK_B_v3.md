@@ -15,7 +15,7 @@
 | A-14.1 live 預取接線＋real backend（`q4e-expert-warm`；stats 加 `prefetch_io_issued`／`prefetch_io_bytes`／`prefetch_overlap_ratio`；`--q4e-prefetch on/off` 旗標） | **✓（commits `243dcac`／`0c204f7`／`43d06c8`／`d0aba15`／`9a9472b`）** | `evidence_a141/stats.json`（`prefetch_io_issued=13019>0`、`prefetch_overlap_ratio=0.6105`、`prefetch_overlap_hits=24144`、touches=39550、48 層）；旗標 `--q4e-prefetch on/off`＋`--no-q4e-prefetch`（OFF fallback 可用） |
 | A-14.2 `q4e-e2e`／A-14.3 `q4e-bench`（C++ 客戶端，交付包內） | **✓（`19eaae3`／`471abae`）** | `evidence_a141/`（q4e-e2e `Q4E_E2E_ALL_PASS`）＋`evidence_a143/bench_report.json`（q4e-bench ON/OFF＋JSON；CPU smoke 的 perf verdict FAIL＝預期，perf 門在 B 側） |
 | A-14.4 ngram live 接線＋`q4e-ngram` 工具（diag 4 階段／accept P1–P4；解鎖 M-C #5 可量） | **✓（`5b09765`／`c92606e`）** | `evidence_a144/`；CPU accept **verdict PASS**（max drop +0.22% < 1%）、diag A/B/C/D green；B 側 GPU 終驗 |
-| C++ 測試全綠（test-q4e-expert-cache／test-q4e-ngram） | **✓（`9a9472b` 前 S5 全量 ctest）** | test-q4e-expert-cache 98/98、test-q4e-expert-warm 59/59、test-q4e-ngram 2989/2989、test-arg-parser OK；20 個上游 FAIL＝CJK 路徑環境問題（ASCII 相對路徑 20/20 PASS）；`S5-ctest.log`／`S5-failures.txt` |
+| C++ 測試全綠（test-q4e-expert-cache／test-q4e-ngram） | **✓（`9a9472b` 前 S5 全量 ctest）** | test-q4e-expert-cache 98/98、test-q4e-expert-warm 59/59、test-q4e-ngram 2989/2989、test-arg-parser OK；20 個上游 FAIL＝CJK 路徑環境問題（ASCII 相對路徑 20/20 PASS）；`S5-ctest.log`／`S5-failures.txt`（暫存 log 已清除、歸檔 git `bcaf1c9`） |
 | CPU e2e 全綠＋`prefetch_io_issued>0` 證據 | **✓（`9a9472b`）** | `evidence_a141/stats.json`（`prefetch_io_issued=13019`）＋`Q4E_E2E_ALL_PASS` |
 | 設定紅線：`--n-gpu-layers all`＋`--q4e-moe-vram 10`（K=10、K 可設定 0–999、VRAM 裝不下跳錯；舊 `-ncmoe/-cmoe` 已連 core 移除） | 新（A-14.0） | 01 §六／03B §三 |
 

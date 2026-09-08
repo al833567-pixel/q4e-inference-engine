@@ -61,7 +61,7 @@
 5. **CJK 路徑 ninja 增量**：偶發 stale→刪 `.ninja_log` 重跑（A-9 本輪未觸發；B-1 曾觸發）。
 6. **CreateFileMapping 權限**（A-14.1 backend 適用）：handle 以 `GENERIC_READ` 開啟時 mapping 必 **`PAGE_READONLY`**（`PAGE_READWRITE`→ERROR_ACCESS_DENIED→0xC0000409）。
 7. **沙箱**：本 session＝danger-full-access＋approval disabled；build 正常。
-8. **header 依賴追蹤缺失**：`engine/build-msvc` 無 ninja .d depfile（CJK/ACP-950 環境）→header 改動不觸發重編→stale .obj（ODR 不一致）；**紀律：改到 header 後 build 必 `--clean-first`（或核對 .obj mtime）**；2026-09-08 實踩（S6 e2e 假失敗）→`S6-rebuild.log` 修復證據。
+8. **header 依賴追蹤缺失**：`engine/build-msvc` 無 ninja .d depfile（CJK/ACP-950 環境）→header 改動不觸發重編→stale .obj（ODR 不一致）；**紀律：改到 header 後 build 必 `--clean-first`（或核對 .obj mtime）**；2026-09-08 實踩（S6 e2e 假失敗）→`S6-rebuild.log` 修復證據（暫存 log 已清除、歸檔 git `bcaf1c9`，`git show bcaf1c9:S6-rebuild.log` 取回）。
 
 ## 五、指針
 
