@@ -17,9 +17,27 @@
 | **A-14.5** | 清理：刪 `legacy_v1/*.py`（8）＋`a9_e2e.ps1`＋2 temp smoke（**12 刪除**；輸出證據保留）；**保留** `legacy_v1/evidence/`＋B9 報告 | **✓（`4e08ef2`）** | 交付樹零 .py/.ps1（上游 `engine/` 除外，文件註明） |
 | **A-14.6** | 終門：交付包宣告「全 C++」＋README/02/03A/03B/已完成工作/RUNBOOK 全落地 | **✓（本次 commit）** | A-12 交付條件 |
 
-> **執行順序**：A-14.0 ✓ → A-14.1 ✓ → A-14.2 ✓ → A-14.3 ✓ → **A-12（交付 v4.1）✓** → A-14.4 ✓ → **A-14.5 ✓（`4e08ef2`）** → **A-14.6 ✓（本次 commit）**；**Task A 全項 ✓（2026-09-08）；剩 B-8（Task B，[03B](03B_項目現況_TaskB.md)）**
+> **執行順序（v4.1，全 ✓）**：A-14.0 ✓ → A-14.1 ✓ → A-14.2 ✓ → A-14.3 ✓ → **A-12（交付 v4.1）✓** → A-14.4 ✓ → **A-14.5 ✓（`4e08ef2`）** → **A-14.6 ✓（本次 commit）**；**Task A（v4.1）全項 ✓（2026-09-08）；剩 B-8（Task B，[03B](03B_項目現況_TaskB.md)）**
 > **範圍拍板（2026-09-06）**：上游 `engine/*.py` 218 檔（conversion/gguf-py/scripts/server tests/examples）＝**不納入**；`legacy_v1/*.py` C++ 替代全綠後**刪除**（evidence 保留）；`config.yaml` 已移除（設定＝q4e-server CLI flags）。
-> **Task A 全項完成（2026-09-08）；剩餘工作＝B-8（Task B）**（A-14.6 終門＝本次 commit 宣告「全 C++」）。
+> **Task A（v4.1）全項完成（2026-09-08）；B-8 後接 v5（B 方案，三層全 GPU）＝A-15.0~A-15.7（見下）**。
+
+## 一-v5、未完成項目（B 方案＝三層全 GPU MoE；2026-09-08 拍板，完整版）
+
+> 目標：v4.1「K 層 GPU＋38 層 CPU 算」→ **48 層 expert 全 GPU 算＋專家級動態駐留**（L1 VRAM pool＋L2 pinned RAM＋L3 SSD；miss→H2D 提升、LRU 逐出；重用 warm 管線＋ngram hint）。細節／驗收／風險見 [02 §二 v5 表](02_實作項目工作規劃.md)。
+
+| 項 | 名稱 | 內容／驗收 |
+|---|---|---|
+| **A-15.0** | v5 設計拍板＋參數語義 | 重定義 `--q4e-moe-vram N`（＝VRAM 駐留 routed 專家數，預設 5000≈104/層）＋新 `--q4e-moe-ram N2`（L2，預設 4000）＋三層定義＋LRU 逐出（L2 副本保留→L1 逐出 metadata no-op）＋VRAM-fit/RAM-fit 公式；驗收＝設計文件＋參數解析/fit 單元測試 |
+| **A-15.1** | 專家 pool 駐留管理器 | 擴充 `q4e-expert-cache`：per-(layer,expert) L1/L2/L3＋per-layer LRU pool（R 槽）＋promote/evict＋**hit 分佈（L1/L2/L3）＋真實 M 計數**；驗收＝C++ 全綠＋單元測試 |
+| **A-15.3** | H2D 提升管線 | 改指 `q4e-expert-warm`：pinned staging＋非同步 H2D 進 pool 槽＋重疊度量＋dedup＋ngram 提前提升；驗收＝C++ 全綠＋測試（H2D bytes/重疊比） |
+| **A-15.2**（core，最高風險） | graph 手術 | `qwen4exp` arch：每層 expert **pool tensor**（gate/up×[2560,640,R]、down×[640,2560,R]）＋**id-remap**（global→pool slot）＋**promotion op**（H2D＋slot→global 映射）＋`MUL_MAT_ID` over pool（**48 層全 GPU**）；驗收＝C++ 全綠＋**oracle 對答案**＋B 側載入成功 |
+| **A-15.4** | L2 pinned RAM pool＋SSD→L2 fill | pinned pool（N2）＋OS page cache backing＋L2 miss→SSD 讀入 L2→H2D；驗收＝C++ 全綠＋測試 |
+| **A-15.5** | server 接線＋`/q4e/stats` v5 | L1/L2/L3 hit 分佈＋H2D bytes＋pool 佔用＋**真實 M**＋重疊比；驗收＝端點全欄位＋C++ 測試 |
+| **A-15.6** | q4e-bench / q4e-e2e v5 | ON/OFF t/s＋L1/L2/L3 命中＋M＋JSON 報告；驗收＝B-9 直接跑取數 |
+| **A-15.7** | 交付包 v5 | README/01/02/03A/03B/RUNBOOK 全落地「三層全 GPU」＋「A 側已驗證」表；驗收＝交付包可獨立執行 |
+
+> **v5 執行順序（依賴序）**：A-15.0 → A-15.1 → **A-15.3（H2D 管線）** → **A-15.2（graph 手術，最高風險）** → A-15.4 → A-15.5 → A-15.6 → A-15.7 → **B-9（Task B，[03B](03B_項目現況_TaskB.md)）**。
+> **前置**：B-8（v4.1 復驗）先跑，量出**真實 M**＋v4.1 實測 t/s（v5 目標＝2×）；M≤R（≈104/層）→v5 收益最大（L1 全命中）。
 
 ## 二、Task A 環境（已實測；build/e2e 用）
 

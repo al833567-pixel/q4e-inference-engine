@@ -14,6 +14,14 @@
 |---|---|---|---|
 | **B-8**（v4.1） | **復驗（A-12 交付後）**：照 [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) 零判斷 | **⏳ 就緒（A-14 全 C++ 化全完成（含 A-14.4 ngram live＋A-14.5 清理）；B 側動工前逐項對 RUNBOOK「A 側已驗證」表）** | **重驗 v4 三門**＋回歸門：(1) **B-4 硬線**：暖 t/s **ON ≥ OFF**（A-9 已移除 sync D2H 根因）；(2) **#3′**：ON ≥ OFF 且 **ON ≥ 1.95 t/s**（A-11 拍板線）；(3) **#4 重疊**：`prefetch_overlap_ratio` **≥80%**（A-14.1 提供欄位；定義＝觸碰前已完成預取的 touches 佔比）＋`prefetch_io_issued>0`；**#5 N-gram＝A-14.4 ✓ 可量**（`5b09765`／`c92606e`；CPU 預驗 PASS max drop +0.22%；B 側 GPU 量）；回歸門＝冷載入≤~250 s＋VRAM 歸零＋oracle 對答案＋e2e 5 閘。**工具**：`q4e-bench`（ON/OFF t/s＋JSON）＋`q4e-e2e`（取代 curl 手動步）。**設定**：ON＝q4e `--n-gpu-layers all --q4e-moe-vram 10`（K=10 預設、**K 可設定**、B-8 可量 12/13 找上限）；OFF＝oracle（上游原生旗標）`-ngl all -ncmoe 38`（B-8-0 先驗 oracle 有 `-ncmoe`；若無→q4e `--no-q4e-prefetch` 同 placement）。**FAIL＝停下回報原文，不調參。** |
 
+### B-9（v5）復驗（三層全 GPU MoE；待 Task A A-15.0~A-15.7 完成）
+
+| 項 | 名稱 | 狀態 | 內容／門 |
+|---|---|---|---|
+| **B-9**（v5） | **v5 復驗（三層全 GPU）**：照 RUNBOOK 零判斷（build＋載入 v5 placement＋oracle 對答案＋L1/L2/L3 命中分佈＋t/s＋回歸門） | **⏳ 待 A-15.0~A-15.7（Task A）完成** | **主門**：ON 暖 t/s **≥ 2× B-8 實測 v4.1 ON**（M≤R 時，目標 **≥8**）；**L1 hit ≥80%**（M≤R 時）；**oracle 對答案**（48 層全 GPU＋pool，逐層比對）；**VRAM-fit**（N=5000≤24 GB，過大跳錯）；回歸門＝e2e 5 閘＋冷載入≤~250 s＋VRAM 歸零。**設定**：`--n-gpu-layers all --q4e-moe-vram 5000 --q4e-moe-ram 4000`（B-9 可調 N/N2 找上限）。**FAIL＝停下回報原文，不調參。** |
+
+> **v5 目標數字（對照用）**：v4.1 實測 2–4 t/s（v1 錨 1.95）→ v5 目標 **≥8 t/s**（M≤R≈104/層 時，L1 全命中、48 層全 GPU 算）。M 由 B-8 量出（`/q4e/stats` distinct 專家/層/輪）。
+
 ### B-8 上下文（v4 基線數字；對照用）
 
 | 項 | v4 實測 | 來源 |
