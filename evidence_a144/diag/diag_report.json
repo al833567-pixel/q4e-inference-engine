@@ -1,0 +1,55 @@
+{
+  "host": "127.0.0.1",
+  "model": "D:\\AI_Model\\Qwen3.8-Flash-Next\\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+  "phases": [
+    {
+      "cum_tps": 1.2936560705728433,
+      "mode": "off",
+      "n_tokens": 33,
+      "name": "A",
+      "rolling50": []
+    },
+    {
+      "cum_tps": 3.705458577279298,
+      "mode": "shim",
+      "n_tokens": 33,
+      "name": "B",
+      "rolling50": []
+    },
+    {
+      "cum_tps": 3.8568975985272544,
+      "mode": "full",
+      "n_tokens": 33,
+      "name": "C",
+      "rolling50": []
+    },
+    {
+      "cum_tps": 3.871361144886782,
+      "mode": "full",
+      "n_tokens": 33,
+      "name": "D",
+      "rolling50": []
+    }
+  ],
+  "port": 8132,
+  "prompt": "List prime numbers starting from 2, one number per line, no explanations, keep going.",
+  "server": "engine\\build-msvc\\bin\\q4e-server.exe",
+  "stats": {
+    "ngram_bytes_warmed": 46080,
+    "ngram_hints": 112,
+    "ngram_prefetch": 2,
+    "ngram_rows_dropped": 0,
+    "ngram_rows_warmed": 512
+  },
+  "tail": 150,
+  "temp": 0,
+  "tokens": 32,
+  "verdict": "n/a",
+  "vs_a_pct": {
+    "A": 0.0,
+    "B": 186.43305292406544,
+    "C": 198.13933442289522,
+    "D": 199.25737086925326
+  },
+  "warmup_tokens": 16
+}

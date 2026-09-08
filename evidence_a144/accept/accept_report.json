@@ -1,0 +1,59 @@
+{
+  "drops": {
+    "drop_cum1": -22.82679975644344,
+    "drop_cum2": -61.846166413178324,
+    "drop_tail1": -108.61829253339978,
+    "drop_tail2": 0.2221069101306083
+  },
+  "host": "127.0.0.1",
+  "model": "D:\\AI_Model\\Qwen3.8-Flash-Next\\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+  "phases": [
+    {
+      "cum_tps": 0.7915992016150162,
+      "mode": "off",
+      "n_tokens": 49,
+      "name": "P1",
+      "tail_tps": 0.5945344720952478
+    },
+    {
+      "cum_tps": 0.9722959662412809,
+      "mode": "full",
+      "n_tokens": 49,
+      "name": "P2",
+      "rows_per_token": 10.183673469387756,
+      "rows_warmed_delta": 499.0,
+      "tail_tps": 1.240307664207568
+    },
+    {
+      "cum_tps": 2.398726959376986,
+      "mode": "off",
+      "n_tokens": 49,
+      "name": "P3",
+      "tail_tps": 4.118671487502999
+    },
+    {
+      "cum_tps": 3.8822476264710497,
+      "mode": "full",
+      "n_tokens": 49,
+      "name": "P4",
+      "rows_per_token": 0.0,
+      "rows_warmed_delta": 0.0,
+      "tail_tps": 4.1095236335236756
+    }
+  ],
+  "port": 8132,
+  "prompt": "List prime numbers starting from 2, one number per line, no explanations, keep going.",
+  "server": "engine\\build-msvc\\bin\\q4e-server.exe",
+  "stats": {
+    "ngram_bytes_warmed": 69120,
+    "ngram_hints": 112,
+    "ngram_prefetch": 2,
+    "ngram_rows_dropped": 0,
+    "ngram_rows_warmed": 768
+  },
+  "tail": 16,
+  "temp": 0,
+  "tokens": 48,
+  "verdict": "PASS",
+  "warmup_tokens": 16
+}
