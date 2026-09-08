@@ -1116,6 +1116,14 @@ private:
                 params_base.cb_eval           = q4e_expert_warm_cb_eval;
                 params_base.cb_eval_user_data = q4e_warm.get();
                 SRV_INF("q4e: live prefetch backend active (model=%s)\n", params_base.model.path.c_str());
+                // A-14.4: ngram (PLE) row prefetch on the same backend; absent tensor stays off
+                try {
+                    if (q4e_warm->init_ngram(params_base.model.path)) {
+                        q4e_warm->set_ngram_mode(params_base.q4e_ngram_prefetch ? 2 : 0);
+                    }
+                } catch (const std::exception & e) {
+                    SRV_WRN("q4e: ngram prefetch init failed (%s); ngram prefetch off\n", e.what());
+                }
             } catch (const std::exception & e) {
                 SRV_WRN("q4e: live prefetch backend init failed (%s); falling back to A-9 hook\n", e.what());
                 q4e_warm.reset();
@@ -3863,6 +3871,15 @@ private:
 
             common_sampler_accept(slot.smpl.get(), id, true);
 
+            // A-14.4: ngram (PLE) row prefetch; history = last prompt tokens (id not in prompt yet)
+            if (q4e_warm && q4e_warm->ngram_ready()) {
+                const auto & pt = slot.prompt.tokens;
+                const size_t np = pt.size();
+                if (np >= 1) {
+                    q4e_warm->ngram_hint((int64_t) id, (int64_t) pt[np - 1], np >= 2 ? (int64_t) pt[np - 2] : 0);
+                }
+            }
+
             // here we have synchronized the llama_context (due to the sampling above), so we can do time measurement
             const int64_t t_now = ggml_time_us();
 
@@ -3996,6 +4013,17 @@ private:
             slot.prompt.tokens.insert({ids.begin(), ids.end() - 1});
 
             slot.sampled = ids.back(); // last accepted token
+
+            // A-14.4: ngram (PLE) row prefetch; the prompt already holds the accepted draft here,
+            // so history = last prompt tokens, t = the last accepted one
+            if (q4e_warm && q4e_warm->ngram_ready()) {
+                const auto & pt = slot.prompt.tokens;
+                const size_t np = pt.size();
+                if (np >= 1) {
+                    q4e_warm->ngram_hint((int64_t) slot.sampled, (int64_t) pt[np - 1], np >= 2 ? (int64_t) pt[np - 2] : 0);
+                }
+            }
+
             SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
 
             slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
@@ -4693,6 +4721,11 @@ void server_routes::init_routes() {
             { "hook_skips_device_ids", s.hook_skips_device_ids },
             { "q4e_moe_vram",      params.q4e_moe_vram },
             { "q4e_prefetch",      ctx_server.q4e_warm ? 1 : 0 },
+            { "ngram_prefetch",    0 },
+            { "ngram_hints",       0 },
+            { "ngram_rows_warmed", 0 },
+            { "ngram_rows_dropped", 0 },
+            { "ngram_bytes_warmed", 0 },
         };
         if (ctx_server.q4e_warm) {
             const auto & w = *ctx_server.q4e_warm;
@@ -4705,8 +4738,38 @@ void server_routes::init_routes() {
             data.set({ "prefetch_overlap_hits",   w.overlap_hits() });
             data.set({ "prefetch_overlap_ratio",  touches_seen > 0 ? (double)w.overlap_hits() / (double)touches_seen : 0.0 });
             data.set({ "hook_skips_weights_device", w.hook_skips_weights_device() });
+            data.set({ "ngram_prefetch",    w.ngram_mode() });
+            data.set({ "ngram_hints",       w.ngram_hints() });
+            data.set({ "ngram_rows_warmed", w.ngram_rows_warmed() });
+            data.set({ "ngram_rows_dropped", w.ngram_rows_dropped() });
+            data.set({ "ngram_bytes_warmed", w.ngram_bytes_warmed() });
         }
         res->ok(data);
+        return res;
+    };
+
+    this->set_ngram_mode = [this](const server_http_req & req) {
+        auto res = create_response(true);
+
+        if (ctx_server.q4e_warm == nullptr) {
+            res->error(format_error_response("q4e live prefetch backend not active", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+        json data = json::parse(req.body);
+        const std::string mode = data.value("mode", "");
+        int m;
+        if (mode == "on" || mode == "full") {
+            m = 2;
+        } else if (mode == "off") {
+            m = 0;
+        } else if (mode == "shim") {
+            m = 1;
+        } else {
+            res->error(format_error_response("\"mode\" must be on, off or shim", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        ctx_server.q4e_warm->set_ngram_mode(m);
+        res->ok({ { "ok", true }, { "mode", ctx_server.q4e_warm->ngram_mode() } });
         return res;
     };
 

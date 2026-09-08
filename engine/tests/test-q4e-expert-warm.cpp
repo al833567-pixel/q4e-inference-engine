@@ -8,6 +8,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <vector>
 
 static int g_failures = 0;
@@ -253,6 +254,134 @@ static void test_real_gguf() {
            layer, expert, (int) delta, (long long) (real.io_bytes() - bytes_before));
 }
 
+// ngram (PLE) row prefetch tests (A-14.4); fake 64 KB buffer, row0=0, rows=64 (entries=4), row=90 B
+
+// how many of the 16 rows are distinct for a token triple (mirrors q4e_ngram_table::row_ids_for_token)
+static int64_t ngram_rows_distinct(int64_t entries, int64_t t, int64_t t1, int64_t t2) {
+    auto entry_of = [entries](int head, const int64_t * ids, int n_ids) -> uint64_t {
+        uint8_t raw[4 + 8 * 16];
+        raw[0] = (uint8_t)(head & 0xFF);
+        raw[1] = (uint8_t)((head >> 8) & 0xFF);
+        raw[2] = (uint8_t)((head >> 16) & 0xFF);
+        raw[3] = (uint8_t)((head >> 24) & 0xFF);
+        for (int i = 0; i < n_ids; i++) {
+            for (int b = 0; b < 8; b++) {
+                raw[4 + i * 8 + b] = (uint8_t)((ids[i] >> (8 * b)) & 0xFF);
+            }
+        }
+        return q4e_ngram_fnv1a64(raw, 4 + (size_t) n_ids * 8) % (uint64_t) entries;
+    };
+    std::set<int64_t> rows;
+    for (int h = 0; h < 8; h++) {
+        const int64_t ids[2] = {t1, t};
+        rows.insert((int64_t) entry_of(h, ids, 2) * 16 + h);
+    }
+    for (int h = 8; h < 16; h++) {
+        const int64_t ids[3] = {t2, t1, t};
+        rows.insert((int64_t) entry_of(h, ids, 3) * 16 + (h - 8));
+    }
+    return (int64_t) rows.size();
+}
+
+static void test_ngram_prefetch() {
+    std::vector<uint8_t> nheap(64 * 1024, (uint8_t) 0xAB);
+
+    // design a token triple whose 16 rows are all distinct (required by the full-mode check below)
+    int64_t t = 0, t1 = 0, t2 = 0;
+    bool found = false;
+    for (int i = 0; i < 64 && !found; i++) {
+        const int64_t a = 1000 + i, b = 2000 + i, c = 3000 + i;
+        if (ngram_rows_distinct(4, a, b, c) == 16) {
+            t = a; t1 = b; t2 = c;
+            found = true;
+        }
+    }
+    CHECK(found);
+    if (!found) {
+        return;
+    }
+
+    // mode off (0): hint is a no-op, nothing counted, queue stays empty
+    {
+        module m;
+        make_module(m, nheap.data());
+        m.warm.set_ngram_for_test(nheap.data(), 0, 64, 90, true);
+        m.warm.set_ngram_mode(0);
+        m.warm.ngram_hint(t, t1, t2);
+        CHECK(m.warm.ngram_hints() == 0);
+        CHECK(!m.warm.has_pending());
+        CHECK(m.warm.ngram_rows_warmed() == 0);
+        CHECK(m.warm.ngram_bytes_warmed() == 0);
+    }
+
+    // shim (1): hints counted, no I/O, no pending requests
+    {
+        module m;
+        make_module(m, nheap.data());
+        m.warm.set_ngram_for_test(nheap.data(), 0, 64, 90, true);
+        m.warm.set_ngram_mode(1);
+        m.warm.ngram_hint(t, t1, t2);
+        m.warm.ngram_hint(t + 1, t1 + 1, t2 + 1);
+        m.warm.ngram_hint(t + 2, t1 + 2, t2 + 2);
+        CHECK(m.warm.ngram_hints() == 3);
+        CHECK(m.warm.ngram_rows_warmed() == 0);
+        CHECK(m.warm.ngram_bytes_warmed() == 0);
+        CHECK(!m.warm.has_pending());
+    }
+
+    // full (2): 16 distinct rows enqueued and warmed; a second identical hint is deduped
+    {
+        module m;
+        make_module(m, nheap.data());
+        m.warm.set_ngram_for_test(nheap.data(), 0, 64, 90, true);
+        m.warm.set_ngram_mode(2);
+        m.warm.ngram_hint(t, t1, t2);
+        CHECK(m.warm.ngram_hints() == 1);
+        drain_until_quiescent(m.warm);
+        CHECK(!m.warm.has_pending());
+        CHECK_EQ_I64(m.warm.ngram_rows_warmed(), 16);
+        CHECK_EQ_I64(m.warm.ngram_bytes_warmed(), 16 * 90);
+        m.warm.ngram_hint(t, t1, t2); // same rows: warmed once only
+        drain_until_quiescent(m.warm);
+        CHECK_EQ_I64(m.warm.ngram_rows_warmed(), 16);
+        CHECK_EQ_I64(m.warm.ngram_bytes_warmed(), 16 * 90);
+    }
+
+    // mode switch: full -> shim (accounting only) -> full again (rows warm once)
+    {
+        module m;
+        make_module(m, nheap.data());
+        m.warm.set_ngram_for_test(nheap.data(), 0, 64, 90, true);
+        m.warm.set_ngram_mode(2);
+        CHECK(m.warm.ngram_mode() == 2);
+        m.warm.set_ngram_mode(1);
+        CHECK(m.warm.ngram_mode() == 1);
+        m.warm.ngram_hint(t, t1, t2);
+        CHECK(m.warm.ngram_hints() == 1);
+        CHECK(!m.warm.has_pending());
+        m.warm.set_ngram_mode(2);
+        CHECK(m.warm.ngram_mode() == 2);
+        m.warm.ngram_hint(t, t1, t2);
+        drain_until_quiescent(m.warm);
+        CHECK_EQ_I64(m.warm.ngram_rows_warmed(), 16);
+        CHECK_EQ_I64(m.warm.ngram_bytes_warmed(), 16 * 90);
+    }
+
+    // invalid modes clamp to off (0)
+    {
+        module m;
+        make_module(m, nheap.data());
+        m.warm.set_ngram_for_test(nheap.data(), 0, 64, 90, true);
+        m.warm.set_ngram_mode(7);
+        CHECK(m.warm.ngram_mode() == 0);
+        m.warm.set_ngram_mode(-3);
+        CHECK(m.warm.ngram_mode() == 0);
+        m.warm.ngram_hint(t, t1, t2);
+        CHECK(m.warm.ngram_hints() == 0);
+        CHECK(!m.warm.has_pending());
+    }
+}
+
 int main(int argc, char ** argv) {
     (void) argc;
     (void) argv;
@@ -275,6 +404,7 @@ int main(int argc, char ** argv) {
     test_synthetic_a7(heap.data());
     test_slot_exhaustion(heap.data());
     test_touches_seen(heap.data());
+    test_ngram_prefetch();
     test_real_gguf();
 
     if (g_failures) {

@@ -309,6 +309,10 @@ int32_t q4e_ngram_table::gtype() const { return tensor_gtype; }
 int64_t q4e_ngram_table::size() const { return tensor_size; }
 int64_t q4e_ngram_table::n_entries() const { return entries_total; }
 
+void q4e_ngram_table::set_entries_for_test(int64_t entries_total) {
+    this->entries_total = entries_total;
+}
+
 int64_t q4e_ngram_table::row_bytes() const {
     if (row_len_v == 0) {
         throw std::runtime_error("call parse() first");

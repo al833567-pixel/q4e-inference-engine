@@ -7,6 +7,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "gguf.h"
+#include "log.h"
 
 #include <algorithm>
 #include <cstring>
@@ -283,9 +284,9 @@ void q4e_expert_warm::worker_loop() {
     for (;;) {
         std::unique_lock<std::mutex> lk(qmu_);
         qcv_.wait(lk, [this] {
-            return stop_.load() || !ids_q_.empty() || !warm_q_.empty();
+            return stop_.load() || !ids_q_.empty() || !warm_q_.empty() || !ngram_q_.empty();
         });
-        if (stop_.load() && ids_q_.empty() && warm_q_.empty()) {
+        if (stop_.load() && ids_q_.empty() && warm_q_.empty() && ngram_q_.empty()) {
             break;
         }
         lk.unlock();
@@ -372,6 +373,18 @@ void q4e_expert_warm::drain_once() {
         }
         do_warm_one(p.first, p.second);
     }
+    for (int k = 0; k < 16; k++) {
+        int64_t row = 0;
+        {
+            std::lock_guard lk(qmu_);
+            if (ngram_q_.empty()) {
+                break;
+            }
+            row = ngram_q_.front();
+            ngram_q_.pop_front();
+        }
+        do_warm_row(row);
+    }
 }
 
 void q4e_expert_warm::do_warm_one(int layer, int expert) {
@@ -397,6 +410,28 @@ void q4e_expert_warm::do_warm_one(int layer, int expert) {
     warm_done_.insert(k);
     inflight_.erase(k);
     io_completed_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void q4e_expert_warm::do_warm_row(int64_t row) {
+    if (ngram_view_ == nullptr || row < 0 || row >= ngram_rows_) {
+        return;
+    }
+    const uint64_t k = ngram_key(row);
+    if (warm_done_.count(k) > 0) {
+        inflight_.erase(k);
+        return;
+    }
+    if ((int64_t) staging_[staging_buf_].size() < ngram_row_bytes_) {
+        return;
+    }
+    // same page-warm technique as do_warm_one: copy the row into staging to pull its pages in
+    uint8_t * buf = staging_[staging_buf_].data();
+    staging_buf_ ^= 1;
+    memcpy(buf, ngram_view_ + (ngram_row0_ + row * ngram_row_bytes_), (size_t) ngram_row_bytes_);
+    warm_done_.insert(k);
+    inflight_.erase(k);
+    ngram_rows_warmed_.fetch_add(1, std::memory_order_relaxed);
+    ngram_bytes_warmed_.fetch_add(ngram_row_bytes_, std::memory_order_relaxed);
 }
 
 bool q4e_expert_warm::enqueue_host_ids(int layer, const int32_t * ids, int64_t n_ids) {
@@ -518,6 +553,118 @@ void q4e_expert_warm::warm_hint(int layer, int expert) {
     qcv_.notify_one();
 }
 
+bool q4e_expert_warm::init_ngram(const std::string & model_path) {
+#ifndef _WIN32
+    (void) model_path;
+    throw std::runtime_error("Windows-only (A-14.4)");
+#else
+    if (files_.empty()) {
+        throw std::runtime_error("call init() first");
+    }
+    // parse over the resolved shard dir, so the tensor is found regardless of which shard holds it
+    const std::string dir = std::filesystem::path(files_.front()).parent_path().string();
+    try {
+        ngram_tbl_.parse(dir);
+    } catch (const std::exception & e) {
+        LOG_WRN("q4e: ngram tensor absent, ngram prefetch off (%s)\n", e.what());
+        return false;
+    }
+    int fi = -1;
+    for (size_t i = 0; i < files_.size(); i++) {
+        if (files_[i] == ngram_tbl_.path()) {
+            fi = (int) i;
+            break;
+        }
+    }
+    if (fi < 0) {
+        LOG_WRN("q4e: ngram tensor file %s not among mapped shards, ngram prefetch off\n", ngram_tbl_.path().c_str());
+        return false;
+    }
+    ngram_row0_ = ngram_tbl_.data_offset(); // absolute in-file offset of the tensor data
+    ngram_rows_ = ngram_tbl_.n_rows();
+    ngram_row_bytes_ = ngram_tbl_.row_bytes();
+    const int64_t fsz = file_size(files_[fi]);
+    if (ngram_row0_ <= 0 || ngram_rows_ <= 0 || ngram_row_bytes_ <= 0 ||
+        ngram_row0_ + ngram_rows_ * ngram_row_bytes_ > fsz) {
+        LOG_WRN("q4e: ngram tensor range out of file, ngram prefetch off\n");
+        return false;
+    }
+    ngram_view_ = (const uint8_t *) view_[(size_t) fi];
+    if ((int64_t) staging_[0].size() < ngram_row_bytes_) {
+        staging_[0].resize((size_t) ngram_row_bytes_);
+        staging_[1].resize((size_t) ngram_row_bytes_);
+    }
+    ngram_ready_ = true;
+    ngram_mode_ = 2; // full = default on, like q4e_prefetch
+    LOG_INF("q4e: ngram prefetch ready (file=%s, rows=%lld, row=%lld B)\n",
+            files_[fi].c_str(), (long long) ngram_rows_, (long long) ngram_row_bytes_);
+    return true;
+#endif
+}
+
+void q4e_expert_warm::ngram_hint(int64_t t, int64_t t_prev1, int64_t t_prev2) {
+    if (!ngram_ready_) {
+        return;
+    }
+    const int m = ngram_mode_.load(std::memory_order_relaxed);
+    if (m == 0) {
+        return;
+    }
+    ngram_hints_.fetch_add(1, std::memory_order_relaxed);
+    if (m == 1) {
+        return; // shim: enqueue-cost accounting only, no I/O
+    }
+    bool pushed = false;
+    for (int64_t row : ngram_tbl_.row_ids_for_token(t, t_prev1, t_prev2)) {
+        if (row < 0 || row >= ngram_rows_) {
+            continue;
+        }
+        const uint64_t k = ngram_key(row);
+        std::lock_guard lk(qmu_);
+        if (inflight_.count(k) > 0) {
+            continue;
+        }
+        if ((int) ngram_q_.size() >= ngram_cap_) {
+            ngram_rows_dropped_.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        inflight_.insert(k);
+        ngram_q_.push_back(row);
+        pushed = true;
+    }
+    if (pushed) {
+        qcv_.notify_one();
+    }
+}
+
+bool q4e_expert_warm::ngram_ready() const {
+    return ngram_ready_;
+}
+
+int q4e_expert_warm::ngram_mode() const {
+    return ngram_mode_.load(std::memory_order_relaxed);
+}
+
+void q4e_expert_warm::set_ngram_mode(int m) {
+    ngram_mode_ = (m == 1 || m == 2) ? m : 0;
+}
+
+int64_t q4e_expert_warm::ngram_hints() const {
+    return ngram_hints_.load(std::memory_order_relaxed);
+}
+
+int64_t q4e_expert_warm::ngram_rows_warmed() const {
+    return ngram_rows_warmed_.load(std::memory_order_relaxed);
+}
+
+int64_t q4e_expert_warm::ngram_rows_dropped() const {
+    return ngram_rows_dropped_.load(std::memory_order_relaxed);
+}
+
+int64_t q4e_expert_warm::ngram_bytes_warmed() const {
+    return ngram_bytes_warmed_.load(std::memory_order_relaxed);
+}
+
 int64_t q4e_expert_warm::io_issued() const {
     return io_issued_.load(std::memory_order_relaxed);
 }
@@ -573,9 +720,24 @@ void q4e_expert_warm::set_queue_caps_for_test(int ids_cap, int warm_cap) {
     warm_cap_ = warm_cap;
 }
 
+void q4e_expert_warm::set_ngram_for_test(const uint8_t * base, int64_t row0, int64_t rows, int64_t row_bytes, bool ready) {
+    ngram_view_ = base;
+    ngram_row0_ = row0;
+    ngram_rows_ = rows;
+    ngram_row_bytes_ = row_bytes;
+    ngram_ready_ = ready;
+    if (rows >= 16) {
+        ngram_tbl_.set_entries_for_test(rows / 16);
+    }
+    if ((int64_t) staging_[0].size() < row_bytes) {
+        staging_[0].resize((size_t) row_bytes);
+        staging_[1].resize((size_t) row_bytes);
+    }
+}
+
 bool q4e_expert_warm::has_pending() const {
     std::lock_guard lk(const_cast<std::mutex &>(qmu_)); // mutex is non-mutable in the header
-    return !ids_q_.empty() || !warm_q_.empty();
+    return !ids_q_.empty() || !warm_q_.empty() || !ngram_q_.empty();
 }
 
 void q4e_expert_warm::mark_all_slots_busy_for_test() {
@@ -596,6 +758,11 @@ int q4e_expert_warm::free_slots_for_test() const {
 
 uint64_t q4e_expert_warm::key(int layer, int expert) {
     return ((uint64_t) (uint32_t) layer << 32) | (uint32_t) (expert + 1);
+}
+
+// bit 62 namespaces ngram row ids so they never collide with (layer, expert) keys
+uint64_t q4e_expert_warm::ngram_key(int64_t row) {
+    return (1ULL << 62) | (uint64_t) (row & ((1LL << 62) - 1));
 }
 
 void q4e_expert_warm::stop() {

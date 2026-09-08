@@ -2,6 +2,7 @@
 // live expert page-warm backend (A-14.1)
 #pragma once
 #include "q4e-expert-cache.h"
+#include "q4e-ngram.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -53,6 +54,18 @@ public:
     // real I/O request for one (layer, expert); dedup + bounded FIFO cap 512; full -> io_dropped++
     void warm_hint(int layer, int expert);
 
+    // ngram (PLE table) row prefetch (A-14.4); modes: 0 = off, 1 = shim (accounting only), 2 = full
+    bool init_ngram(const std::string & model_path); // parse the PLE table; absent tensor -> false, never fatal
+    // hot path: enqueue up to 16 row-warm requests for the token triple (t, t_prev1, t_prev2)
+    void ngram_hint(int64_t t, int64_t t_prev1, int64_t t_prev2);
+    bool ngram_ready() const;
+    int ngram_mode() const;
+    void set_ngram_mode(int m); // 0/1/2; invalid clamps to 0 (off)
+    int64_t ngram_hints() const;
+    int64_t ngram_rows_warmed() const;
+    int64_t ngram_rows_dropped() const;
+    int64_t ngram_bytes_warmed() const;
+
     void place(int, int, const char *) override {}
     void evict(int, int, const char *) override {}
 
@@ -70,7 +83,8 @@ public:
     // test-only seams (deterministic, no thread)
     void set_index_for_test(std::vector<std::vector<std::vector<q4e_warm_slice>>> idx);
     void set_queue_caps_for_test(int ids_cap, int warm_cap);
-    void drain_once();    // one worker-loop iteration: <=1 ids event, then <=8 warm requests
+    void set_ngram_for_test(const uint8_t * base, int64_t row0, int64_t rows, int64_t row_bytes, bool ready);
+    void drain_once();    // one worker-loop iteration: <=1 ids event, <=8 warm requests, <=16 ngram rows
     bool has_pending() const;
     void mark_all_slots_busy_for_test();
     int free_slots_for_test() const;
@@ -88,8 +102,10 @@ private:
 
     void worker_loop();
     void do_warm_one(int layer, int expert);
+    void do_warm_row(int64_t row);
     int64_t file_size(const std::string & path) const;
     static uint64_t key(int layer, int expert);
+    static uint64_t ngram_key(int64_t row);
 
     q4e_expert_cache * cache_ = nullptr;
     std::string model_path_;
@@ -108,8 +124,10 @@ private:
     std::condition_variable qcv_;
     std::deque<ids_event> ids_q_;
     std::deque<std::pair<int, int>> warm_q_;
+    std::deque<int64_t> ngram_q_; // pending ngram row-warm requests (row ids)
     int ids_cap_ = 256;
     int warm_cap_ = 512;
+    int ngram_cap_ = 256;
 
     std::vector<std::vector<int32_t>> slots_;
     int slot_next_ = 0;
@@ -133,6 +151,20 @@ private:
     std::atomic<int64_t> events_dropped_ {0};
     std::atomic<int64_t> touches_seen_ {0};
     std::atomic<int64_t> hook_skips_weights_device_ {0};
+
+    // ngram (PLE) prefetch state (A-14.4)
+    q4e_ngram_table ngram_tbl_;
+    bool ngram_ready_ = false;
+    const uint8_t * ngram_view_ = nullptr; // mapped shard view holding the PLE tensor
+    int64_t ngram_row0_ = 0;               // absolute file offset of row 0
+    int64_t ngram_rows_ = 0;
+    int64_t ngram_row_bytes_ = 0;
+    std::atomic<int> ngram_mode_ {0};      // 0 = off, 1 = shim, 2 = full
+
+    std::atomic<int64_t> ngram_hints_ {0};
+    std::atomic<int64_t> ngram_rows_warmed_ {0};
+    std::atomic<int64_t> ngram_rows_dropped_ {0};
+    std::atomic<int64_t> ngram_bytes_warmed_ {0};
 };
 
 // llama_context_params.cb_eval hook: on the MoE expert matmul, warms the selected expert

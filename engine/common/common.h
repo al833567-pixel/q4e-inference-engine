@@ -479,6 +479,7 @@ struct common_params {
 
     int32_t q4e_moe_vram       = 10;    // keep MoE experts of the last K layers in VRAM, rest on CPU buft (0 = all on CPU)
     bool    q4e_prefetch       = true;  // live expert page-warm prefetch (A-14.1); off = A-9 hook only
+    bool    q4e_ngram_prefetch = true;  // ngram (PLE table) row prefetch (A-14.4); needs q4e_prefetch
 
     // margin per device in bytes for fitting parameters to free memory:
     std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);

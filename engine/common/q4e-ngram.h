@@ -78,6 +78,9 @@ public:
     // last 3 tokens -> 16 x 160 vals; throws std::invalid_argument if empty
     std::vector<float> lookup(const std::vector<int64_t> & token_ids);
 
+    // test-only: set the entry count without parsing (deterministic row ids)
+    void set_entries_for_test(int64_t entries_total);
+
     // fake override points (B: real host/SSD offload + async prefetch)
     void offload(const std::string & path);
     const std::string & offload_path() const;
