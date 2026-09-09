@@ -1,0 +1,14 @@
+0.00.045.668 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.045.954 W srv  llama_server: -----------------
+0.00.045.955 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.045.955 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.045.955 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.045.955 W srv  llama_server: -----------------
+0.00.056.431 I srv    load_model: loading model 'D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf'
+0.00.214.569 I srv    load_model: q4e: live prefetch backend active (model=D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf)
+0.00.296.920 I q4e: ngram prefetch ready (file=D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf, rows=320001536, row=90 B)
+0.01.641.788 E cmn  common_q4e_m: common_q4e_moe_vram_check: --q4e-moe-vram k=10 does not fit in VRAM: CUDA0 needs 78768 MiB, only 22884 MiB free
+0.01.641.794 E cmn  common_init_: failed to load model 'D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf'
+0.01.641.795 E srv    load_model: failed to load model, 'D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf'
+0.01.641.802 I srv   operator (): operator (): cleaning up before exit...
+0.01.642.957 E srv  llama_server: exiting due to model loading error

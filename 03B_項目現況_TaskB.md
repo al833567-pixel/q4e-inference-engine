@@ -1,6 +1,6 @@
 # 推理工具 — 項目現況 · Task B（有 GPU，較笨 AI）
 
-> 更新：2026-09-08（**本檔只留未完成項目**；已完成工作→[已完成工作.md](已完成工作.md)；commit 全錄→`git log --oneline`）
+> 更新：2026-09-10（**本檔只留未完成項目**；已完成工作→[已完成工作.md](已完成工作.md)；commit 全錄→`git log --oneline`）
 > 姊妹檔：[03A_項目現況_TaskA.md](03A_項目現況_TaskA.md)
 > 關聯：[02_實作項目工作規劃.md](02_實作項目工作規劃.md)；[RUNBOOK_B_v3.md](RUNBOOK_B_v3.md)
 
@@ -12,7 +12,7 @@
 
 | 項 | 名稱 | 狀態 | 內容／門 |
 |---|---|---|---|
-| **B-8**（v4.1） | **復驗（A-12 交付後）**：照 [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) 零判斷 | **✅ B-8-1 build 完成 → ⛔ B-8-2 BLOCKED（fork bug）→ ✅ A 側修復已交付（2026-09-09）**：A 側依改法 A 修復（`0ccc16c`）＋重構 **build 39**＋test-arg-parser 全綠；新 exe 在 `engine\build-cuda\bin\q4e-server.exe`。**B 側動作＝重跑 B-8-2 原文（不重構、不重做 B-8-1）**。B-8-1 沙箱映射根因已解（`danger-full-access` 後 build EXIT=0，`q4e-server.exe` 42 MB commit `b2dacb5`）；B-8-0 全綠。**B-8-2 真機載入 crash（非超時）**：`common.cpp:1768 GGML_ASSERT(...Tensor buffer overrides not terminated with empty pattern) failed`——`--q4e-moe-vram 10` 經 `common_q4e_moe_vram_apply`(common.cpp:1311)→`llm_add_n_cpu_ffn_overrides(38,...)`(common.h:1144) 只推 38 筆非 null pattern、**未加 null-terminator**，緊接 `common_model_params_to_llama`(common.cpp:1349) 斷言 `back().pattern==nullptr` 即崩；fork 自測(test-arg-parser.cpp:400) 只驗 `size()==38` 故遮蔽此不變式。**影響所有 k<n_layers（K=10 必崩）**，且崩於 VRAM-fit check(common.cpp:1352) 之前→非預期的「清晰 VRAM 錯誤」而是 crash。VRAM 0MiB、無程序、port 8124 空。**備案：不降 K、不改 engine source→待用戶/A 側決定**（最小修法：`common_q4e_moe_vram_apply` 回傳前補 `{nullptr,nullptr}`）。下方 B-8-1／B-8-2 阻斷為問題紀錄 | **重驗 v4 三門**＋回歸門：(1) **B-4 硬線**：暖 t/s **ON ≥ OFF**（A-9 已移除 sync D2H 根因）；(2) **#3′**：ON ≥ OFF 且 **ON ≥ 1.95 t/s**（A-11 拍板線）；(3) **#4 重疊**：`prefetch_overlap_ratio` **≥80%**（A-14.1 提供欄位；定義＝觸碰前已完成預取的 touches 佔比）＋`prefetch_io_issued>0`；**#5 N-gram＝A-14.4 ✓ 可量**（`5b09765`／`c92606e`；CPU 預驗 PASS max drop +0.22%；B 側 GPU 量）；回歸門＝冷載入≤~250 s＋VRAM 歸零＋oracle 對答案＋e2e 5 閘。**工具**：`q4e-bench`（ON/OFF t/s＋JSON）＋`q4e-e2e`（取代 curl 手動步）。**設定**：ON＝q4e `--n-gpu-layers all --q4e-moe-vram 10`（K=10 預設、**K 可設定**、B-8 可量 12/13 找上限）；OFF＝oracle（上游原生旗標）`-ngl all -ncmoe 38`（B-8-0 先驗 oracle 有 `-ncmoe`；若無→q4e `--no-q4e-prefetch` 同 placement）。**FAIL＝停下回報原文，不調參。** |
+| **B-8**（v4.1） | **復驗（A-12 交付後）**：照 [RUNBOOK_B_v3.md](RUNBOOK_B_v3.md) 零判斷 | **✅ B-8-1 build 完成 → ⛔ B-8-2 BLOCKED（fork bug）→ ✅ A 側修復已交付（2026-09-09）**：A 側依改法 A 修復（`0ccc16c`）＋重構 **build 39**＋test-arg-parser 全綠；新 exe 在 `engine\build-cuda\bin\q4e-server.exe`。**B-8-2 重跑（2026-09-09 20:3x，build 39）＝⛔ FAIL（VRAM-fit 清晰錯誤）**——fork 修復實機生效（不再 assert 崩、已抵達 VRAM-fit check 給清晰錯誤＝RUNBOOK 預期形態），但兩個獨立阻擋：① GPU 被 harness 自家模型服務（PID 2992 `llama-server` port 8080）占用 ~24 GB（絕不殺紅線→**待用戶釋放**）② check 實測 ngl=all+K=10 placement 需 **78,431 MiB** ＞ 全空 GPU 24,576 MiB、且為預期 ≈20.6 GB 之 3.8× → **B-8-2 空 GPU 重跑（2026-09-10 00:53，build 39）＝⛔ FAIL 再確認**：`CUDA0 needs 78768 MiB, only 22884 MiB free`（WDDM 樂觀值；全空 24,576；vs 20:3x 78,431 Δ≈+0.4%＝確定性 placement 測量、與 GPU 占用無關）→ **原文必 FAIL，⛔ 待 A 側 H1/H2 裁決（spec 自含，見下方兩節證據）；前置②用戶釋放 GPU＝✅ 已完成（llama-server 已消失、VRAM 0 MiB）**。B-8-1 沙箱映射根因已解（`danger-full-access` 後 build EXIT=0，`q4e-server.exe` 42 MB commit `b2dacb5`）；B-8-0 全綠。**B-8-2 真機載入 crash（非超時）**：`common.cpp:1768 GGML_ASSERT(...Tensor buffer overrides not terminated with empty pattern) failed`——`--q4e-moe-vram 10` 經 `common_q4e_moe_vram_apply`(common.cpp:1311)→`llm_add_n_cpu_ffn_overrides(38,...)`(common.h:1144) 只推 38 筆非 null pattern、**未加 null-terminator**，緊接 `common_model_params_to_llama`(common.cpp:1349) 斷言 `back().pattern==nullptr` 即崩；fork 自測(test-arg-parser.cpp:400) 只驗 `size()==38` 故遮蔽此不變式。**影響所有 k<n_layers（K=10 必崩）**，且崩於 VRAM-fit check(common.cpp:1352) 之前→非預期的「清晰 VRAM 錯誤」而是 crash。VRAM 0MiB、無程序、port 8124 空。**備案：不降 K、不改 engine source→待用戶/A 側決定**（最小修法：`common_q4e_moe_vram_apply` 回傳前補 `{nullptr,nullptr}`）。下方 B-8-1／B-8-2 阻斷為問題紀錄 | **重驗 v4 三門**＋回歸門：(1) **B-4 硬線**：暖 t/s **ON ≥ OFF**（A-9 已移除 sync D2H 根因）；(2) **#3′**：ON ≥ OFF 且 **ON ≥ 1.95 t/s**（A-11 拍板線）；(3) **#4 重疊**：`prefetch_overlap_ratio` **≥80%**（A-14.1 提供欄位；定義＝觸碰前已完成預取的 touches 佔比）＋`prefetch_io_issued>0`；**#5 N-gram＝A-14.4 ✓ 可量**（`5b09765`／`c92606e`；CPU 預驗 PASS max drop +0.22%；B 側 GPU 量）；回歸門＝冷載入≤~250 s＋VRAM 歸零＋oracle 對答案＋e2e 5 閘。**工具**：`q4e-bench`（ON/OFF t/s＋JSON）＋`q4e-e2e`（取代 curl 手動步）。**設定**：ON＝q4e `--n-gpu-layers all --q4e-moe-vram 10`（K=10 預設、**K 可設定**、B-8 可量 12/13 找上限）；OFF＝oracle（上游原生旗標）`-ngl all -ncmoe 38`（B-8-0 先驗 oracle 有 `-ncmoe`；若無→q4e `--no-q4e-prefetch` 同 placement）。**FAIL＝停下回報原文，不調參。** |
 
 #### ✅ B-8-1 阻斷已解（2026-09-09 09:59；根因＝沙箱路徑映射，非 build 參數／engine）— 問題紀錄
 
@@ -106,6 +106,51 @@ D:\Nova2_home\AI研究\推理工具\engine\common\common.cpp:1768: GGML_ASSERT(p
 
 **回歸**：A 側修後建議跑 `test-arg-parser`（q4e-moe-vram override 生成段）確認 size 斷言仍綠（改法 A 應無變動）。
 
+#### ⛔ B-8-2 重跑證據（2026-09-09 20:3x；build 39；fork 修復實機生效＋新阻擋：GPU 被占＋check 需 78,431 MiB）
+
+**指令**：RUNBOOK B-8-2 原文逐字（build 39 exe；log 落 `b8_run2\s1_b82\`）。**結果**：`health=000` 全程 300 s（載入階段 server 自行退出）；**不再 common.cpp:1768 assert 崩→A 側 null-terminator 修復實機生效**；錯誤為 RUNBOOK 預期「清晰 VRAM 錯誤」形態，但數字異常（見下）。
+
+**錯誤原文**（`b8_2_server.err.log` 全 9 行、關鍵 2 行）：
+```
+0.01.647.653 E cmn  common_q4e_m: common_q4e_moe_vram_check: --q4e-moe-vram k=10 does not fit in VRAM: CUDA0 needs 78431 MiB, only 23142 MiB free
+0.01.649.682 E srv  llama_server: exiting due to model loading error
+```
+（log 前 4 行正常：verbosity / loading model / `q4e: live prefetch backend active` / `ngram prefetch ready (rows=320001536, row=90 B)` → 載入已過原崩潰點、抵達 VRAM-fit check。）
+
+**事實（不猜）**：
+1. **check 代碼路徑**：`common_q4e_moe_vram_check`（common.cpp:1319-1342）：required＝`dmds.model+context+compute`（:1334），出自 `common_get_device_memory_data`（fit.cpp:155→:29 `_impl`）——`mparams_copy=*mparams`（**含 build 39 的 38 筆 q4e CPU overrides＋null-terminator**）、`no_alloc`＋`LLAMA_LOAD_MODE_NONE` 載 model 後 `llama_get_memory_breakdown(ctx)` 逐 buft 加總（fit.cpp:75-97）→ **78,431 MiB 是（若 override 生效的）實際 placement 測量值**。
+2. **`free=23,142 MiB` 為 `ggml_backend_dev_memory`（CUDA）值、WDDM 下樂觀**（同時刻 nvidia-smi used≈23,972 MiB→真實 free ≈600 MiB；GPU 被 harness 自家模型服務 PID 2992 `llama-server` --port 8080 -ngl 99 -c 150000 --no-mmap（9/9 19:25 啟動）占 ~24 GB）。
+3. **即使 GPU 全空（24,576 MiB）：78,431 > 24,576 → B-8-2 原文（ngl=all+K=10）照原文過不了 VRAM-fit check**，且為 RUNBOOK 預期 ≈20,0xx–21,0xx MiB／§二 估 ≈20.6 GB 之 3.8×。
+4. 清理驗證：無 q4e 殘留、VRAM 回基準（23,972 MiB）、port 8124 空。
+
+**⬇ 交接 A 側 spec（自含；A 側執行，B 側零改 engine）⬇**
+
+**目標**：解釋 ngl=all+K=10 之 VRAM-fit required＝**78,431 MiB**（build 39 實測）vs 預期 **≈20.6 GB** 之 3.8× 落差，並讓 B-8-2 原文能在 24 GB 3090 上載入（或重定 placement）。
+
+**兩假說（A 側裁決；B 側不猜）**：
+- **H1（override 未生效）**：`llm_add_q4e_moe_vram_overrides`→`llm_add_n_cpu_ffn_overrides`（common.h:1144、`LLM_FFN_EXPS_REGEX`）產出的 38 筆 per-layer pattern **未匹配本 GGUF 實際 expert tensor 名稱** → 全部 experts 留在 CUDA → required≈全 attn＋全 experts≈78 GB。驗證法：dump GGUF tensor 名稱（metadata-only、勿載權重）逐筆對 regex；或 `-lv debug` 跑載入看 `common_memory_breakdown_print` per-buft breakdown（fit.cpp:146）。
+- **H2（估算錯）**：pattern 生效、K=10 placement 確實 ≈78 GB → 20.6 GB 估算錯 → 紅線設定 ngl=all+K=10 於 24 GB 卡**物理裝不下** → **重定 K 或 ngl（＝placement 改變＝A＋用戶決定；RUNBOOK／03B 紅線同步更新）**。
+
+**A 側交付**：(a) required 組成之 per-buft breakdown（明文解釋）；(b) 若 H1→修 pattern 重構（build 40、交付新 exe）；若 H2→A＋用戶重定 B-8-2 設定＋新預期 VRAM；(c) 新預期 VRAM 數字（B 側驗證線）。
+
+**B 側前置＋復驗**：(1) A 側交付到位（⏳ pending）；(2) **用戶釋放 GPU＝✅ 已完成**（2026-09-10 00:53 前：llama-server 已消失、nvidia-smi 0 MiB；原狀態 PID 2992 占 ~24 GB；B 側紅線絕不殺 `llama-server`）。**B 側已於空 GPU 重跑 B-8-2 原文＝⛔ FAIL（needs 78,768 MiB＞24,576；見上方「空 GPU 重跑證據」）→ 待前置 (1) A 側交付到位（build 40／重定 placement＋新預期 VRAM）→ 再重跑 B-8-2 原文** → `health=200`＋VRAM 合 A 側新預期 → 續 B-8-3…B-8-7。**B 側不調 K／placement。**
+
+#### ⛔ B-8-2 空 GPU 重跑證據（2026-09-10 00:53；build 39；GPU 全空 24,576 MiB；RUNBOOK B-8-2 原文）
+
+**指令**：RUNBOOK B-8-2 原文逐字（build 39 exe、ngl=all＋K=10；log 落 `b8_run3\s_b82\`→歸檔 `b8_evidence\step2c_rerun_b39_gnufree\`；輪詢迴圈於 server 自退時 early-break——server 已自行退出、health 永不再達 200、與 300 s 全輪詢邏輯等價）。**結果**：`health=000`（首輪 poll 503→server 自退→connection refused；自退於啟動後 ~1.6 s）；**fork 修復仍實機生效（無 common.cpp:1768 assert 崩、抵達 VRAM-fit check）**。
+
+**錯誤原文**（`b8_2_server.err.log` 14 行、關鍵 1 行）：
+```
+0.01.641.788 E cmn  common_q4e_m: common_q4e_moe_vram_check: --q4e-moe-vram k=10 does not fit in VRAM: CUDA0 needs 78768 MiB, only 22884 MiB free
+```
+（log 前行正常：verbosity / CORS 警告 / `loading model` / `q4e: live prefetch backend active` / `ngram prefetch ready (rows=320001536, row=90 B)` → 載入已過原崩潰點、抵達 VRAM-fit check。）
+
+**事實（不猜）**：
+1. **跑前 nvidia-smi＝0 MiB used / 24,576 free（無任何 GPU 程序）**；跑後 VRAM 回 0、無 q4e 殘留、port 8124 空。
+2. **needs 78,768 vs 20:3x 之 78,431（Δ≈+0.4%）**＝`no_alloc` placement 確定性測量、**與 GPU 占用無關** → 20:3x 結論於空 GPU 再確認：**B-8-2 原文（ngl=all+K=10）必 FAIL VRAM-fit check**（78,768＞24,576 全空；預期 ≈20.6 GB 之 3.8×）。
+3. `free=22,884 MiB` 仍為 WDDM 樂觀值（`ggml_backend_dev_memory`）；實際全空總量 24,576 MiB。
+4. **B-8-2 狀態＝⛔ 待 A 側 H1/H2 裁決**（交接 spec 自含於上一節）。前置：(1) A 側交付到位＝⏳ pending（git HEAD `97619a0` 無 A 側新 commit、無 build 40）；(2) 用戶釋放 GPU＝✅ 已完成。
+
 ### B-9（v5）復驗（三層全 GPU MoE；待 Task A A-15.0~A-15.7 完成）
 
 | 項 | 名稱 | 狀態 | 內容／門 |
@@ -128,13 +173,13 @@ D:\Nova2_home\AI研究\推理工具\engine\common\common.cpp:1768: GGML_ASSERT(p
 
 | 項目 | 狀態 | 說明 |
 |---|---|---|
-| **GPU** | ✓ | RTX 3090 **24 GB**；舊配置 ngl=10 實測 **16,724 MiB**；新配置（ngl=all+K=10）預計 **≈20.6 GB**（B-8-2 實測）；收尾歸零 |
+| **GPU** | ✓ | RTX 3090 **24 GB**；舊配置 ngl=10 實測 **16,724 MiB**；新配置（ngl=all+K=10）A 側估算 **≈20.6 GB**（build 39 VRAM-fit check 實測 required＝**78,431→78,768 MiB**（空 GPU 重跑再確認）、3.8× 落差→見下方 B-8-2 重跑／空 GPU 重跑證據、待 A 側）；收尾歸零 |
 | **CUDA toolkit（nvcc）** | ✓ | **v13.3**（nvcc V13.3.73；driver 610.47） |
 | **CPU / RAM / SSD** | ✓ | i7-9700 8C/8T；RAM ~20 GB；SATA 0.31–0.44 GB/s |
 | **GGUF** | ✓ | `D:\AI_Model\Qwen3.8-Flash-Next\`（4 片 111,334,654,784 B ≈103.69 GiB Q4_K_XL） |
 | **oracle** | ✓ | `D:\llama\llama-server.exe`（fork build 10685；**僅二進位**） |
 | **MSVC** | ✓ | VS 2022 BuildTools（vcvars64.bat）—CUDA build 用 |
-| **harness 注意** | ⚠ | harness 自身的模型服務＝`D:\llama\llama-server.exe` 常駐；**殘留檢查只配對 `q4e-server`，絕不殺 `llama-server`** |
+| **harness 注意** | ⚠ | harness 自身的模型服務＝`D:\llama\llama-server.exe` 常駐；**殘留檢查只配對 `q4e-server`，絕不殺 `llama-server`**。**9/9 實測：resident 時實際占 ~24 GB VRAM**（PID 2992、-ngl 99 -c 150000 --no-mmap、port 8080、19:25 啟動）→ **B-8-2 無法與之並行→需用戶先釋放**；**2026-09-10 00:53 前已消失（nvidia-smi 0 MiB、無程序）→ 空 GPU 重跑條件已滿足** |
 
 ## 三、Task B 約束
 
