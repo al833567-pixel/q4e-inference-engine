@@ -1308,10 +1308,7 @@ static bool common_q4e_moe_vram_apply(common_params & params) {
         return false; // dense model, nothing to do
     }
 
-    llm_add_q4e_moe_vram_overrides(n_layers, params.q4e_moe_vram, params.tensor_buft_overrides);
-    if (!params.tensor_buft_overrides.empty()) {
-        params.tensor_buft_overrides.push_back({nullptr, nullptr}); // null-terminate for common_model_params_to_llama
-    }
+    llm_insert_q4e_moe_vram_overrides(n_layers, params.q4e_moe_vram, params.tensor_buft_overrides);
     return true;
 }
 

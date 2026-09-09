@@ -1159,6 +1159,29 @@ inline void llm_add_q4e_moe_vram_overrides(int n_layers, int k, std::vector<llam
     llm_add_n_cpu_ffn_overrides(n_cpu, LLM_FFN_EXPS_REGEX, overrides);
 }
 
+// --q4e-moe-vram: insert the CPU buft patterns before the first null terminator.
+// common_params_parse pads this buffer with null entries (for llama_params_fit), so
+// appending after the padding would leave the patterns past the terminator, and the
+// loader (null-terminated array) would apply zero overrides
+inline void llm_insert_q4e_moe_vram_overrides(int n_layers, int k, std::vector<llama_model_tensor_buft_override> & ovs) {
+    const int n_cpu = n_layers - k;
+    if (n_cpu <= 0) {
+        return;
+    }
+
+    std::vector<llama_model_tensor_buft_override> pats;
+    llm_add_n_cpu_ffn_overrides(n_cpu, LLM_FFN_EXPS_REGEX, pats);
+
+    size_t pos = 0;
+    while (pos < ovs.size() && ovs[pos].pattern != nullptr) {
+        pos++;
+    }
+    ovs.insert(ovs.begin() + pos, pats.begin(), pats.end());
+    if (pos + pats.size() >= ovs.size() || ovs[pos + pats.size()].pattern != nullptr) {
+        ovs.insert(ovs.begin() + pos + pats.size(), llama_model_tensor_buft_override{nullptr, nullptr});
+    }
+}
+
 //
 // training utils
 //

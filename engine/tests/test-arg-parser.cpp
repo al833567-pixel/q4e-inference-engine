@@ -5,6 +5,7 @@
 #include "speculative.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <vector>
@@ -411,6 +412,47 @@ static void test(void) {
         ovs.clear();
         llm_add_q4e_moe_vram_overrides(38, 10, ovs); // k > n_layers: keep all experts in VRAM
         assert(ovs.size() == 28);
+    }
+
+    printf("test-arg-parser: test --q4e-moe-vram override insertion into padded buffer\n\n");
+
+    {
+        // common_params_parse pads tensor_buft_overrides with nulls (for llama_params_fit);
+        // the q4e patterns must land before the first null terminator, or the loader
+        // (null-terminated array) applies zero overrides. assert() may be compiled out
+        // by header include order, so use hard checks:
+        auto check = [](bool ok, const char * what) {
+            if (!ok) {
+                printf("test-arg-parser: CHECK FAILED: %s\n", what);
+                std::exit(1);
+            }
+        };
+
+        common_params q4e_params;
+        q4e_params.model.path = "model_file.gguf";
+        argv = {"binary_name", "--q4e-moe-vram", "10"};
+        check(common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-moe-vram 10");
+        auto & ovs = q4e_params.tensor_buft_overrides;
+        check(ovs.size() == llama_max_tensor_buft_overrides(), "parse pads buffer to llama_max_tensor_buft_overrides()");
+        check(ovs.front().pattern == nullptr, "padded buffer starts with null terminator");
+
+        llm_insert_q4e_moe_vram_overrides(48, 10, ovs);
+        for (int i = 0; i < 38; ++i) {
+            check(ovs[i].pattern != nullptr && ovs[i].buft != nullptr, "pattern slot filled");
+        }
+        check(ovs[38].pattern == nullptr, "null terminator right after the 38 patterns");
+        check(std::string(ovs[0].pattern)  == "blk\\.0\\.ffn_(up|down|gate|gate_up)_(ch|)exps", "pattern blk.0");
+        check(std::string(ovs[37].pattern) == "blk\\.37\\.ffn_(up|down|gate|gate_up)_(ch|)exps", "pattern blk.37");
+
+        // k >= n_layers: no patterns, buffer left as-is
+        common_params q4e_params2;
+        q4e_params2.model.path = "model_file.gguf";
+        argv = {"binary_name", "--q4e-moe-vram", "999"};
+        check(common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params2, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-moe-vram 999");
+        llm_insert_q4e_moe_vram_overrides(48, 999, q4e_params2.tensor_buft_overrides);
+        check(q4e_params2.tensor_buft_overrides.front().pattern == nullptr, "k >= n_layers leaves buffer null-first");
     }
 
 // skip this part on windows, because setenv is not supported
