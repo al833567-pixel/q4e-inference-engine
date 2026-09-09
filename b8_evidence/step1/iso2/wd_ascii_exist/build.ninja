@@ -1,0 +1,4 @@
+cmake_ninja_workdir =D$:\Nova2_home\AI研究\推理工具\b8_evidence\step1\iso2\wd_ascii_exist\
+rule cp
+  command = cmd /c echo hi
+build out.txt

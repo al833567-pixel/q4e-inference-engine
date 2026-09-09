@@ -1,0 +1,10 @@
+﻿
+Name                                                   Length
+----                                                   ------
+Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf    10946624
+Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf 49859583136
+Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf 49376141504
+Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf 12087983520
+
+
+Count=4 Sum=111334654784

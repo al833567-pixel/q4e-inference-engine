@@ -1,0 +1,3 @@
+rule cp
+  command = cmd /c echo hi
+build out.txt

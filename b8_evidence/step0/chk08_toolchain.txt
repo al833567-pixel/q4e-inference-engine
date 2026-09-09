@@ -1,0 +1,11 @@
+﻿vcvars64.bat: True
+
+Name      Source                                                                                                       
+----      ------                                                                                                       
+cmake.exe C:\Program Files\CMake\bin\cmake.exe                                                                         
+ninja.exe C:\Users\al833\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.S...
+nvcc.exe  C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\nvcc.exe                                        
+curl.exe  C:\WINDOWS\system32\curl.exe                                                                                 
+
+
+

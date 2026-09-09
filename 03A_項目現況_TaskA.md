@@ -21,6 +21,18 @@
 > **範圍拍板（2026-09-06）**：上游 `engine/*.py` 218 檔（conversion/gguf-py/scripts/server tests/examples）＝**不納入**；`legacy_v1/*.py` C++ 替代全綠後**刪除**（evidence 保留）；`config.yaml` 已移除（設定＝q4e-server CLI flags）。
 > **Task A（v4.1）全項完成（2026-09-08）；B-8 後接 v5（B 方案，三層全 GPU）＝A-15.0~A-15.7（見下）**。
 
+## 一-B8、B-8-2 crash 修復（A 側交付，2026-09-09）
+
+| 項 | 狀態 | 證據/commit |
+|---|---|---|
+| **B-8-2 修復**（`--q4e-moe-vram k<n_layers` 載入 abort） | **✓ A 側交付** | `common_q4e_moe_vram_apply`(common.cpp) 補 null-terminator `{nullptr,nullptr}`（改法 A，純新增 3 行；不碰生成函式）；**`0ccc16c`** |
+| 重構 q4e-server（CUDA） | **✓ build 39** | `version: 0.3.0-dev (build 39, commit 0ccc16c)`；MSVC 19.44.35228.0 Windows AMD64 |
+| test-arg-parser 回歸 | **✓ 全綠** | exit 0 `all tests OK`；`--q4e-moe-vram override generation` size 38/48/0/0/28 不變 |
+| 交付 | **✓** | `engine\build-cuda\bin\q4e-server.exe`＝build 39（SHA256 `A3C63470A45942C86AD3228E50CF9EB2E218B2F8390A4D2B1CFB03E923D4334D`） |
+| **B 側重驗（Task B，A 側不做）** | ⏳ 待 B | B-8-2 原文（ngl=all+K=10、health 200 ≤~250 s）→ B-8-3…B-8-7（見 [03B](03B_項目現況_TaskB.md)） |
+
+> **build 環境紀錄（2026-09-09 實證）**：本 session launched process ANSI codepage＝950（Big5）且 `chcp 65001` 無效→ninja ANSI API 無法解析 UTF-8 build.ninja 的 CJK 路徑（`FindFirstFileExA(...AI研究...): syntax is incorrect`）；舊沙箱期 build-cuda 另含 `D$:` 驅動引用（D$ 非有效驅動）。**結論：workspace CJK build 樹本環境不可用；A 側 build 位置＝`D:\q4e_build`（ASCII 樹：`src`＝engine 鏡像（含 `.git`）＋`build`）**；build number 來源＝configure 時 `git rev-list --count HEAD`（需 `.git` 鏡像）。
+
 ## 一-v5、未完成項目（B 方案＝三層全 GPU MoE；2026-09-08 拍板，完整版）
 
 > 目標：v4.1「K 層 GPU＋38 層 CPU 算」→ **48 層 expert 全 GPU 算＋專家級動態駐留**（L1 VRAM pool＋L2 pinned RAM＋L3 SSD；miss→H2D 提升、LRU 逐出；重用 warm 管線＋ngram hint）。細節／驗收／風險見 [02 §二 v5 表](02_實作項目工作規劃.md)。

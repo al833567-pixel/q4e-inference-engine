@@ -1,0 +1,3 @@
+D:/Nova2_home/AI研究/推理工具/engine/build-cuda/CMakeFiles/CMakeScratch/TryCompile-2gsbt4/CMakeFiles/cmTC_72a8d.dir
+D:/Nova2_home/AI研究/推理工具/engine/build-cuda/CMakeFiles/CMakeScratch/TryCompile-2gsbt4/CMakeFiles/edit_cache.dir
+D:/Nova2_home/AI研究/推理工具/engine/build-cuda/CMakeFiles/CMakeScratch/TryCompile-2gsbt4/CMakeFiles/rebuild_cache.dir
