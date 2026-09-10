@@ -21,15 +21,18 @@
 > **範圍拍板（2026-09-06）**：上游 `engine/*.py` 218 檔（conversion/gguf-py/scripts/server tests/examples）＝**不納入**；`legacy_v1/*.py` C++ 替代全綠後**刪除**（evidence 保留）；`config.yaml` 已移除（設定＝q4e-server CLI flags）。
 > **Task A（v4.1）全項完成（2026-09-08）；B-8 後接 v5（B 方案，三層全 GPU）＝A-15.0~A-15.7（見下）**。
 
-## 一-B8、B-8-2 crash 修復（A 側交付，2026-09-09）
+## 一-B8、B-8-2 修復＋H1/H2 裁決（A 側交付，2026-09-09~09-10）
 
 | 項 | 狀態 | 證據/commit |
 |---|---|---|
-| **B-8-2 修復**（`--q4e-moe-vram k<n_layers` 載入 abort） | **✓ A 側交付** | `common_q4e_moe_vram_apply`(common.cpp) 補 null-terminator `{nullptr,nullptr}`（改法 A，純新增 3 行；不碰生成函式）；**`0ccc16c`** |
-| 重構 q4e-server（CUDA） | **✓ build 39** | `version: 0.3.0-dev (build 39, commit 0ccc16c)`；MSVC 19.44.35228.0 Windows AMD64 |
-| test-arg-parser 回歸 | **✓ 全綠** | exit 0 `all tests OK`；`--q4e-moe-vram override generation` size 38/48/0/0/28 不變 |
-| 交付 | **✓** | `engine\build-cuda\bin\q4e-server.exe`＝build 39（SHA256 `A3C63470A45942C86AD3228E50CF9EB2E218B2F8390A4D2B1CFB03E923D4334D`） |
-| **B 側重驗（Task B，A 側不做）** | ⏳ 待 B | B-8-2 原文（ngl=all+K=10、health 200 ≤~250 s）→ B-8-3…B-8-7（見 [03B](03B_項目現況_TaskB.md)） |
+| **B-8-2 crash 修復**（`k<n_layers` 載入 abort） | **✓（round 1）** | null-terminator 補上；`0ccc16c`＋build 39——實機生效但 override 仍 **no-op**（VRAM-fit 實測 78,431/78,768 MiB） |
+| **H1/H2 裁決＝H1 成立** | **✓（2026-09-10）** | 真根因＝`common_params_parse_ex`(arg.cpp:945-949) 先把 `tensor_buft_overrides` **pad 到 4096 個 null**、其後 q4e pattern append 在 null 之後→loader null-terminated loop 套用到 **0 筆**；regex 本身無誤（`s4_regex_probe` 雙引擎實測）；**裁決＋per-buft breakdown＋新預期 VRAM＝[b8_evidence/stepA_h1h2/adjudication.md](b8_evidence/stepA_h1h2/adjudication.md)** |
+| **修復 round 2**（insert 前於首個 null） | **✓ A 側交付** | `llm_insert_q4e_moe_vram_overrides`(common.h)＋`common.cpp:1311` 改呼叫；test-arg-parser 新增 padded-buffer insert hard-check 區塊；**`207fe88`** |
+| 重構 q4e-server（CUDA） | **✓ build 42** | `version: 0.3.0-dev (build 42, commit 207fe88)`；build 樹＝`D:\q4e_build` ASCII 鏡像 |
+| test-arg-parser 回歸 | **✓ 全綠** | exit 0 `all tests OK`（含新區塊；09-10 複驗 log＝`stepA_h1h2/s5_fix_testargparser.log`） |
+| **新預期 VRAM（B 側驗證線）** | **21,315 MiB** | fit `no_alloc` 投影＝model **20,106.45 on CUDA0**（＝78,056−57,950 吻合）＋ctx/compute ≈1,208.6（ctx 2048/parallel 1）；B 側預期 VRAM-fit 通過＋health 200＋實占 ≈20,1xx–21,3xx MiB |
+| **B 側重驗（Task B，A 側不做）** | 🔓 解鎖 | 前置＝**用戶再釋放 GPU**（llama-server PID 13392 已回來占 23,680/24,576 MiB；絕不殺）；環境警示＝GPU 驅動慢性 WATCHDOG＋9/10 BSOD（adjudication.md）；B-8-2 原文→B-8-3…B-8-7（見 [03B](03B_項目現況_TaskB.md)） |
+| **範圍聲明** | — | `s6_diag` 診斷實際觸及 GPU＝**超出 A 側「無 GPU」範圍**；裁決只採 CPU 側證據（fit no_alloc 投影＋loader placement 帳目＋override log）；GPU 實機驗收＝Task B |
 
 > **build 環境紀錄（2026-09-09 實證）**：本 session launched process ANSI codepage＝950（Big5）且 `chcp 65001` 無效→ninja ANSI API 無法解析 UTF-8 build.ninja 的 CJK 路徑（`FindFirstFileExA(...AI研究...): syntax is incorrect`）；舊沙箱期 build-cuda 另含 `D$:` 驅動引用（D$ 非有效驅動）。**結論：workspace CJK build 樹本環境不可用；A 側 build 位置＝`D:\q4e_build`（ASCII 樹：`src`＝engine 鏡像（含 `.git`）＋`build`）**；build number 來源＝configure 時 `git rev-list --count HEAD`（需 `.git` 鏡像）。
 

@@ -1,0 +1,14 @@
+=== shard 00002 (kv_count=3, version=3) ===
+split.count = 4
+split.no = 1
+split.tensors.count = 1224
+
+=== shard 00003 (kv_count=3, version=3) ===
+split.count = 4
+split.no = 2
+split.tensors.count = 1224
+
+=== shard 00004 (kv_count=3, version=3) ===
+split.count = 4
+split.no = 3
+split.tensors.count = 1224

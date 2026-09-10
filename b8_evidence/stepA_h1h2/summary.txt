@@ -1,0 +1,81 @@
+file: D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+version: 3
+tensor_count: 0
+kv_count: 67
+total_bytes_consumed: 10946618
+note: this file's strings use u64 length prefixes (no padding); tensor_count is 0, so the header contains no tensor entries
+
+first 20 tensor names:
+(none - tensor_count is 0)
+
+last 5 tensor names:
+(none - tensor_count is 0)
+
+KV metadata keys (67):
+general.architecture
+general.type
+general.sampling.top_k
+general.sampling.top_p
+general.sampling.temp
+general.name
+general.description
+general.size_label
+qwen4exp.block_count
+qwen4exp.context_length
+qwen4exp.embedding_length
+qwen4exp.attention.head_count
+qwen4exp.attention.head_count_kv
+qwen4exp.rope.dimension_sections
+qwen4exp.rope.freq_base
+qwen4exp.attention.layer_norm_rms_epsilon
+qwen4exp.expert_count
+qwen4exp.expert_used_count
+qwen4exp.attention.key_length
+qwen4exp.attention.value_length
+qwen4exp.expert_feed_forward_length
+qwen4exp.expert_shared_feed_forward_length
+qwen4exp.ssm.conv_kernel
+qwen4exp.ssm.state_size
+qwen4exp.ssm.group_count
+qwen4exp.ssm.time_step_rank
+qwen4exp.ssm.inner_size
+qwen4exp.full_attention_interval
+qwen4exp.rope.dimension_count
+qwen4exp.hyper_connection.count
+qwen4exp.hyper_connection.low_rank
+qwen4exp.attention.indexer.head_count
+qwen4exp.attention.indexer.key_length
+qwen4exp.attention.indexer.top_k
+qwen4exp.attention.compress_ratios
+qwen4exp.ple.layers
+qwen4exp.ple.ngram_size
+qwen4exp.ple.heads_per_ngram
+qwen4exp.ple.conv_kernel
+qwen4exp.ple.eos_token_id
+qwen4exp.embedding_length_per_layer_input
+qwen4exp.ple.layer_multipliers
+qwen4exp.ple.head_offsets
+qwen4exp.ple.head_vocab_sizes
+tokenizer.ggml.model
+tokenizer.ggml.pre
+tokenizer.ggml.tokens
+tokenizer.ggml.token_type
+tokenizer.ggml.merges
+tokenizer.ggml.eos_token_id
+tokenizer.ggml.padding_token_id
+tokenizer.ggml.bos_token_id
+tokenizer.ggml.add_bos_token
+tokenizer.chat_template
+qwen4exp.ple.image_token_id
+general.quantized_by
+general.repo_url
+general.tags
+general.quantization_version
+general.file_type
+quantize.imatrix.file
+quantize.imatrix.dataset
+quantize.imatrix.entries_count
+quantize.imatrix.chunks_count
+split.no
+split.tensors.count
+split.count
