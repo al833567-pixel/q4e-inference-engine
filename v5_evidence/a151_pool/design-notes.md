@@ -18,7 +18,12 @@
 - build：flat mirror `D:\q4e_build\src`、`--clean-first`、**479 步、exit 0**（q4e-server＋test-arg-parser＋test-q4e-expert-cache 全重編；見 build.log）。
 - `test-q4e-expert-cache.exe`：**159 checks 全綠、exit 0**（legacy 98＋新 61；pool 容量上限/LRU 順序/promote+evict 轉移/hit 分佈/M distinct 各≥1 斷言＋disabled caps＋range＋reset）。
 - `test-arg-parser.exe`：**all tests OK、exit 0**（v4.1 回歸＋v5 fit 硬檢查，未動）。
-- build 號：＝flat mirror git rev count。flat HEAD 推進到 A-15.1 mirror commit（44→45）後重跑 CMake configure（build-info.cmake 於 configure 時取 `git rev-list --count HEAD`）→`--version` 實測報 **build 45**（末次 --version 輸出附於本檔尾、commit 2 補入）。
+- build 號：＝flat mirror git rev count。flat HEAD 推進到 A-15.1 mirror commit（44→45，flat commit `ed342e3`）後重跑 CMake configure（build-info.cmake 於 configure 時取 `git rev-list --count HEAD`）→二進位實測：
+
+  ```
+  version: 0.3.0-dev (build 45, commit ed342e3)
+  built with MSVC 19.44.35228.0 for Windows AMD64
+  ```
 
 ## 偏離/疑慮
 

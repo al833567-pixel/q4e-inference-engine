@@ -1,11 +1,13 @@
-﻿A-15.1 build log (selected lines)
-cmd: vcvars64 && cmake --build D:\q4e_build\build --clean-first --target q4e-server --target test-arg-parser --target test-q4e-expert-cache
+﻿A-15.1 final build log (selected lines)
+cmd: vcvars64 && cmake -S D:\q4e_build\src -B D:\q4e_build\build (reconfigure: build 44->45) + cmake --build --clean-first --target q4e-server --target test-arg-parser --target test-q4e-expert-cache
 steps: 479/479   exit: 0
-full log: D:\q4e_build\a151_build_full.log (164642 lines)
+binary: version: 0.3.0-dev (build 45, commit ed342e3)
+full log: D:\q4e_build\a151_build2_full.log (164642 lines)
 --- q4e-expert-cache compile steps ---
-[463/479] Building CXX object common\CMakeFiles\llama-common.dir\q4e-expert-cache.cpp.obj
+[386/479] Building CXX object common\CMakeFiles\llama-common.dir\q4e-expert-cache.cpp.obj
 [464/479] Building CXX object tests\CMakeFiles\test-q4e-expert-cache.dir\test-q4e-expert-cache.cpp.obj
 
 --- final steps ---
+[477/479] Linking CXX static library tools\ui\llama-ui.lib
 [478/479] Linking CXX static library tools\server\llama-server-impl.lib
 [479/479] Linking CXX executable bin\q4e-server.exe
