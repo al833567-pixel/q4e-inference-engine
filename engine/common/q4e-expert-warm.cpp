@@ -941,8 +941,8 @@ void q4e_expert_h2d::drain_once() {
     }
     // complete ready inflight jobs (FIFO); move the pool state (L2 -> L1, or L3 -> L2 reserve)
     for (auto it = inflight_.begin(); it != inflight_.end();) {
-        if (tick_ >= it->second.ready_tick) {
-            const job j = it->second;
+        if (tick_ >= it->ready_tick) {
+            const job j = *it;
             it = inflight_.erase(it);
             inflight_keys_.erase(key(j.layer, j.expert));
             done_.insert(key(j.layer, j.expert));
