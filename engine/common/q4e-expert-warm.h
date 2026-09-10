@@ -171,3 +171,84 @@ private:
 // pages; fires only when the expert weights are host-resident (GPU layers stay zero-I/O)
 // user_data must be a q4e_expert_warm * (or nullptr to no-op)
 bool q4e_expert_warm_cb_eval(struct ggml_tensor * t, bool ask, void * user_data);
+
+// v5 H2D promotion pipeline (A-15.3); deterministic tick clock, pure CPU, no thread
+// the real L2 -> L1 copy is the backend job (B-side CUDA); here only queue, state, stats
+// caller serializes hint/access/drain (A-15.5 wiring); no lock by design
+struct q4e_expert_h2d_backend {
+    virtual ~q4e_expert_h2d_backend() = default;
+    // copy one expert (layer, expert) of `bytes` into the L1 pool slot
+    virtual void copy_expert(int layer, int expert, int64_t bytes) {}
+};
+
+struct q4e_h2d_config {
+    int64_t expert_bytes = 0;        // bytes per expert copy (job size)
+    int     queue_cap    = 64;       // bounded FIFO; full -> drop
+    int64_t copy_latency = 1;        // ticks a copy stays inflight after issue
+    int     n_layers         = 48;   // range bounds when no pool is bound
+    int     n_experts_per_layer = 512;
+};
+
+// deterministic state machine: same tick/hint/access/drain sequence => same state (replayable)
+class q4e_expert_h2d {
+public:
+    q4e_expert_h2d(q4e_expert_h2d_backend * backend, const q4e_h2d_config & cfg = q4e_h2d_config());
+
+    void bind(q4e_expert_pool * pool) { pool_ = pool; } // state_of() read before issue, promote() on job done
+    q4e_expert_pool * pool() const { return pool_; }
+
+    void tick();  // advance the logical clock by 1 (caller driven; no wall clock)
+    int64_t now() const { return tick_; }
+
+    // ngram early promotion, before the actual access; false = dedup skipped or dropped
+    bool hint(int layer, int expert, int64_t bytes = -1);
+    // actual expert use: counts overlap while inflight, lazy-issues a job on miss
+    void access(int layer, int expert);
+
+    // test seam (no thread): issue queued jobs in FIFO, complete ready inflight jobs
+    void drain_once();
+    bool has_pending() const;
+    int  pending_count() const;
+
+    // stats
+    int64_t h2d_issued() const;
+    int64_t h2d_bytes() const;
+    int64_t h2d_completed() const;
+    int64_t h2d_dropped() const;
+    int64_t dedup_skips() const;
+    int64_t overlap_hits() const;
+    int64_t accesses() const;
+    // overlap_hits / max(1, accesses); window = whole pipeline life
+    double overlap_ratio() const;
+
+private:
+    struct job {
+        int     layer = 0;
+        int     expert = 0;
+        int64_t bytes = 0;
+        int64_t issue_tick = 0;
+        int64_t ready_tick = 0;
+    };
+    static uint64_t key(int layer, int expert);
+    bool in_range(int layer, int expert) const;
+    bool resident(int layer, int expert) const;
+    bool issue(int layer, int expert, int64_t bytes); // enqueue; false = dropped
+
+    q4e_expert_h2d_backend * backend_ = nullptr;
+    q4e_h2d_config cfg_;
+    q4e_expert_pool * pool_ = nullptr;
+    int64_t tick_ = 0;
+    std::deque<job> queued_;
+    std::unordered_set<uint64_t> queued_keys_;
+    std::deque<job> inflight_;
+    std::unordered_set<uint64_t> inflight_keys_;
+    std::unordered_set<uint64_t> done_; // residency set in standalone mode (no pool)
+
+    int64_t h2d_issued_ = 0;
+    int64_t h2d_bytes_ = 0;
+    int64_t h2d_completed_ = 0;
+    int64_t h2d_dropped_ = 0;
+    int64_t dedup_skips_ = 0;
+    int64_t overlap_hits_ = 0;
+    int64_t accesses_ = 0;
+};

@@ -843,3 +843,155 @@ bool q4e_expert_warm_cb_eval(struct ggml_tensor * t, bool ask, void * user_data)
     }
     return true;
 }
+
+//
+// v5 H2D promotion pipeline (A-15.3); deterministic tick clock, pure CPU
+//
+
+q4e_expert_h2d::q4e_expert_h2d(q4e_expert_h2d_backend * backend, const q4e_h2d_config & cfg) :
+    backend_(backend), cfg_(cfg) {
+}
+
+void q4e_expert_h2d::tick() {
+    ++tick_;
+}
+
+uint64_t q4e_expert_h2d::key(int layer, int expert) {
+    return ((uint64_t) (uint32_t) layer << 32) | (uint32_t) (expert + 1);
+}
+
+bool q4e_expert_h2d::in_range(int layer, int expert) const {
+    const int nl = pool_ != nullptr ? pool_->cfg().n_layers : cfg_.n_layers;
+    const int ne = pool_ != nullptr ? pool_->cfg().n_experts_per_layer : cfg_.n_experts_per_layer;
+    return layer >= 0 && layer < nl && expert >= 0 && expert < ne;
+}
+
+// L1 = resident: pool state when bound, else the done set (standalone mode)
+bool q4e_expert_h2d::resident(int layer, int expert) const {
+    if (pool_ != nullptr) {
+        return std::strcmp(pool_->state_of(layer, expert), "l1") == 0;
+    }
+    return done_.count(key(layer, expert)) > 0;
+}
+
+bool q4e_expert_h2d::issue(int layer, int expert, int64_t bytes) {
+    if ((int) queued_.size() >= cfg_.queue_cap) {
+        ++h2d_dropped_;
+        return false;
+    }
+    job j;
+    j.layer      = layer;
+    j.expert     = expert;
+    j.bytes      = bytes;
+    j.issue_tick = tick_;
+    queued_.push_back(j);
+    queued_keys_.insert(key(layer, expert));
+    return true;
+}
+
+bool q4e_expert_h2d::hint(int layer, int expert, int64_t bytes) {
+    if (!in_range(layer, expert)) {
+        return false;
+    }
+    const uint64_t k = key(layer, expert);
+    if (resident(layer, expert)) {
+        ++dedup_skips_;
+        return false;
+    }
+    if (queued_keys_.count(k) > 0 || inflight_keys_.count(k) > 0) {
+        ++dedup_skips_;
+        return false;
+    }
+    return issue(layer, expert, bytes >= 0 ? bytes : cfg_.expert_bytes);
+}
+
+void q4e_expert_h2d::access(int layer, int expert) {
+    if (!in_range(layer, expert)) {
+        return;
+    }
+    ++accesses_;
+    const uint64_t k = key(layer, expert);
+    if (resident(layer, expert)) {
+        return;
+    }
+    if (inflight_keys_.count(k) > 0) {
+        ++overlap_hits_; // this access overlapped the in-flight H2D copy
+        return;
+    }
+    if (queued_keys_.count(k) > 0) {
+        return; // copy not started yet: no overlap
+    }
+    issue(layer, expert, cfg_.expert_bytes); // L1 miss: lazy promotion
+}
+
+void q4e_expert_h2d::drain_once() {
+    // issue queued jobs in FIFO order; the copy starts now
+    while (!queued_.empty()) {
+        job j = queued_.front();
+        queued_.pop_front();
+        queued_keys_.erase(key(j.layer, j.expert));
+        if (backend_ != nullptr) {
+            backend_->copy_expert(j.layer, j.expert, j.bytes);
+        }
+        j.ready_tick = tick_ + cfg_.copy_latency;
+        inflight_.push_back(j);
+        inflight_keys_.insert(key(j.layer, j.expert));
+        ++h2d_issued_;
+        h2d_bytes_ += j.bytes;
+    }
+    // complete ready inflight jobs (FIFO); move the pool state (L2 -> L1, or L3 -> L2 reserve)
+    for (auto it = inflight_.begin(); it != inflight_.end();) {
+        if (tick_ >= it->second.ready_tick) {
+            const job j = it->second;
+            it = inflight_.erase(it);
+            inflight_keys_.erase(key(j.layer, j.expert));
+            done_.insert(key(j.layer, j.expert));
+            ++h2d_completed_;
+            if (pool_ != nullptr) {
+                pool_->promote(j.layer, j.expert);
+            }
+        } else {
+            ++it;
+        }
+    }
+}
+
+bool q4e_expert_h2d::has_pending() const {
+    return !queued_.empty() || !inflight_.empty();
+}
+
+int q4e_expert_h2d::pending_count() const {
+    return (int) queued_.size() + (int) inflight_.size();
+}
+
+int64_t q4e_expert_h2d::h2d_issued() const {
+    return h2d_issued_;
+}
+
+int64_t q4e_expert_h2d::h2d_bytes() const {
+    return h2d_bytes_;
+}
+
+int64_t q4e_expert_h2d::h2d_completed() const {
+    return h2d_completed_;
+}
+
+int64_t q4e_expert_h2d::h2d_dropped() const {
+    return h2d_dropped_;
+}
+
+int64_t q4e_expert_h2d::dedup_skips() const {
+    return dedup_skips_;
+}
+
+int64_t q4e_expert_h2d::overlap_hits() const {
+    return overlap_hits_;
+}
+
+int64_t q4e_expert_h2d::accesses() const {
+    return accesses_;
+}
+
+double q4e_expert_h2d::overlap_ratio() const {
+    return (double) overlap_hits_ / (double) (accesses_ > 0 ? accesses_ : 1);
+}

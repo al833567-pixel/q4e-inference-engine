@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -382,6 +383,242 @@ static void test_ngram_prefetch() {
     }
 }
 
+// v5 H2D promotion pipeline tests (A-15.3); deterministic tick clock, fake backend counts copies
+struct h2d_fake : public q4e_expert_h2d_backend {
+    int64_t calls = 0;
+    int64_t bytes = 0;
+    std::vector<std::pair<int, int>> order;
+    void copy_expert(int layer, int expert, int64_t n) override {
+        ++calls;
+        bytes += n;
+        order.push_back({layer, expert});
+    }
+};
+
+// exact counters: bytes, dedup (queued + resident), overlap window, FIFO order, ratio
+static void test_h2d_standalone_exact() {
+    q4e_h2d_config cfg;
+    cfg.expert_bytes = 1000;
+    cfg.queue_cap    = 8;
+    cfg.copy_latency = 2;
+    cfg.n_layers     = 2;
+    cfg.n_experts_per_layer = 8;
+    h2d_fake be;
+    q4e_expert_h2d h2d(&be, cfg);
+
+    CHECK(h2d.hint(0, 0));
+    CHECK(!h2d.hint(0, 0));  // dedup: already queued
+    h2d.access(0, 1);        // L1 miss: lazy issue
+    CHECK(!h2d.hint(0, 1));  // dedup: already queued
+    CHECK_EQ_I64(h2d.pending_count(), 2);
+
+    h2d.drain_once();        // issue both, FIFO; ready at tick 2
+    CHECK_EQ_I64(h2d.h2d_issued(), 2);
+    CHECK_EQ_I64(h2d.h2d_bytes(), 2000);
+    CHECK_EQ_I64(h2d.h2d_completed(), 0);
+
+    h2d.access(0, 0);        // inflight -> overlap
+    h2d.access(0, 1);        // inflight -> overlap
+    h2d.tick();
+    h2d.drain_once();        // still inflight (ready 2 > now 1)
+    h2d.access(0, 0);        // inflight -> overlap
+    h2d.tick();
+    h2d.drain_once();        // both complete
+    CHECK_EQ_I64(h2d.h2d_completed(), 2);
+    h2d.access(0, 0);        // resident -> no overlap, no re-issue
+    h2d.access(0, 1);
+    CHECK(!h2d.hint(0, 0));  // dedup: already resident (done set)
+    CHECK(h2d.hint(0, 2));   // left queued (pending)
+
+    CHECK_EQ_I64(h2d.dedup_skips(), 3);
+    CHECK_EQ_I64(h2d.overlap_hits(), 3);
+    CHECK_EQ_I64(h2d.accesses(), 6);
+    CHECK_EQ_I64(h2d.h2d_dropped(), 0);
+    CHECK(h2d.overlap_ratio() == 3.0 / 6.0);
+    CHECK_EQ_I64(be.calls, 2);
+    CHECK_EQ_I64(be.bytes, 2000);
+    CHECK(be.order.size() == 2 && be.order[0].second == 0 && be.order[1].second == 1);
+    CHECK(h2d.has_pending());
+    CHECK_EQ_I64(h2d.pending_count(), 1);
+}
+
+// bounded FIFO: full -> drop, counted; a dropped job may be retried once the queue frees
+static void test_h2d_queue_cap_drop() {
+    q4e_h2d_config cfg;
+    cfg.expert_bytes = 500;
+    cfg.queue_cap    = 2;
+    cfg.copy_latency = 1;
+    cfg.n_layers     = 1;
+    cfg.n_experts_per_layer = 4;
+    h2d_fake be;
+    q4e_expert_h2d h2d(&be, cfg);
+
+    CHECK(h2d.hint(0, 0));
+    CHECK(h2d.hint(0, 1));
+    CHECK(!h2d.hint(0, 2));  // queue full -> drop
+    CHECK(!h2d.hint(0, 3));  // queue full -> drop
+    CHECK_EQ_I64(h2d.h2d_dropped(), 2);
+    CHECK_EQ_I64(h2d.h2d_issued(), 0);
+
+    h2d.drain_once();
+    CHECK_EQ_I64(h2d.h2d_issued(), 2);
+    CHECK_EQ_I64(h2d.h2d_bytes(), 1000);
+    h2d.tick();
+    h2d.drain_once();
+    CHECK_EQ_I64(h2d.h2d_completed(), 2);
+
+    CHECK(h2d.hint(0, 2));   // retry after drop, queue free
+    h2d.drain_once();
+    CHECK_EQ_I64(h2d.h2d_issued(), 3);
+    CHECK_EQ_I64(h2d.h2d_bytes(), 1500);
+    CHECK_EQ_I64(h2d.dedup_skips(), 0);
+    CHECK_EQ_I64(h2d.accesses(), 0);
+    CHECK(h2d.overlap_ratio() == 0.0);
+}
+
+// pool binding: state_of() read before issue, promote() on job done;
+// L3 -> L2 fill reserve first, then L2 -> L1; already-L1 hints dedup
+static void test_h2d_pool_integration() {
+    q4e_expert_pool_config pcfg;
+    pcfg.n_layers            = 2;
+    pcfg.n_experts_per_layer = 8;
+    pcfg.l1_slots_per_layer  = 2;
+    pcfg.l2_slots_per_layer  = 8;
+    q4e_expert_pool pool(pcfg);
+
+    q4e_h2d_config cfg;
+    cfg.expert_bytes = 64;
+    cfg.queue_cap    = 8;
+    cfg.copy_latency = 1;
+    h2d_fake be;
+    q4e_expert_h2d h2d(&be, cfg);
+    h2d.bind(&pool);
+
+    CHECK(std::strcmp(pool.state_of(0, 0), "l3") == 0);
+    CHECK(h2d.hint(0, 0));         // L3: issue first job
+    CHECK(!h2d.hint(0, 0));        // dedup: in flight
+    h2d.drain_once();
+    CHECK_EQ_I64(h2d.h2d_issued(), 1);
+    h2d.access(0, 0);              // inflight -> overlap
+    CHECK_EQ_I64(h2d.overlap_hits(), 1);
+    h2d.tick();
+    h2d.drain_once();              // complete -> pool.promote: L3 -> L2
+    CHECK_EQ_I64(h2d.h2d_completed(), 1);
+    CHECK(std::strcmp(pool.state_of(0, 0), "l2") == 0);
+    CHECK_EQ_I64(pool.stats().l2_fills, 1);
+    CHECK_EQ_I64(pool.stats().l2_to_l1, 0);
+
+    h2d.access(0, 0);              // L2: not L1 yet -> issue second job
+    CHECK(!h2d.hint(0, 0));        // dedup: in flight
+    h2d.drain_once();
+    h2d.access(0, 0);              // inflight -> overlap
+    h2d.tick();
+    h2d.drain_once();              // complete -> pool.promote: L2 -> L1
+    CHECK(std::strcmp(pool.state_of(0, 0), "l1") == 0);
+    CHECK_EQ_I64(pool.stats().l2_to_l1, 1);
+    CHECK_EQ_I64(pool.stats().l1_evictions, 0);
+    h2d.access(0, 0);              // L1: resident, no overlap
+    CHECK(!h2d.hint(0, 0));        // dedup: already L1
+    h2d.access(0, 1);              // L3: lazy issue, left pending
+
+    CHECK_EQ_I64(h2d.h2d_issued(), 2);
+    CHECK_EQ_I64(h2d.h2d_bytes(), 128);
+    CHECK_EQ_I64(h2d.h2d_completed(), 2);
+    CHECK_EQ_I64(h2d.h2d_dropped(), 0);
+    CHECK_EQ_I64(h2d.dedup_skips(), 3);
+    CHECK_EQ_I64(h2d.overlap_hits(), 2);
+    CHECK_EQ_I64(h2d.accesses(), 5);
+    CHECK(h2d.overlap_ratio() == 2.0 / 5.0);
+    CHECK(std::strcmp(pool.state_of(0, 1), "l3") == 0);
+    CHECK(h2d.has_pending());
+    CHECK_EQ_I64(be.calls, 2);
+    CHECK_EQ_I64(be.bytes, 128);
+}
+
+// ngram early hints: FIFO issue order, hint/access dedup interaction both directions
+static void test_h2d_ngram_order_and_dedup() {
+    q4e_h2d_config cfg;
+    cfg.expert_bytes = 100;
+    cfg.queue_cap    = 8;
+    cfg.copy_latency = 1;
+    cfg.n_layers     = 1;
+    cfg.n_experts_per_layer = 16;
+    h2d_fake be;
+    q4e_expert_h2d h2d(&be, cfg);
+
+    // ngram early hints, before any access; FIFO issue order
+    CHECK(h2d.hint(0, 5));
+    CHECK(h2d.hint(0, 6));
+    h2d.drain_once();
+    CHECK_EQ_I64(h2d.h2d_issued(), 2);
+    CHECK_EQ_I64(be.calls, 2);
+    CHECK(be.order.size() == 2 && be.order[0].second == 5 && be.order[1].second == 6);
+
+    h2d.access(0, 5);              // early hint in flight -> overlap
+    CHECK_EQ_I64(h2d.overlap_hits(), 1);
+    CHECK(!h2d.hint(0, 5));        // dedup: in flight
+    CHECK(h2d.hint(0, 7));
+    h2d.tick();
+    h2d.drain_once();              // 5, 6 done; 7 issued
+    CHECK_EQ_I64(h2d.h2d_completed(), 2);
+    CHECK_EQ_I64(h2d.h2d_issued(), 3);
+    h2d.access(0, 6);              // resident now
+    h2d.access(0, 5);
+    h2d.access(0, 7);              // in flight -> overlap
+    CHECK_EQ_I64(h2d.overlap_hits(), 2);
+    h2d.tick();
+    h2d.drain_once();              // 7 done
+    h2d.access(0, 7);              // resident now
+
+    // access before hint: access lazy-issues, the hint then dedups
+    h2d.access(0, 8);
+    CHECK(!h2d.hint(0, 8));
+    h2d.drain_once();
+
+    CHECK_EQ_I64(h2d.h2d_issued(), 4);
+    CHECK_EQ_I64(h2d.h2d_bytes(), 400);
+    CHECK_EQ_I64(h2d.h2d_completed(), 3);
+    CHECK_EQ_I64(h2d.h2d_dropped(), 0);
+    CHECK_EQ_I64(h2d.dedup_skips(), 2);
+    CHECK_EQ_I64(h2d.accesses(), 6);
+    CHECK(h2d.overlap_ratio() == 2.0 / 6.0);
+    CHECK_EQ_I64(be.calls, 4);
+    CHECK_EQ_I64(be.bytes, 400);
+}
+
+// range guards + ratio edge + per-hint bytes override
+static void test_h2d_guards_and_edges() {
+    q4e_expert_pool_config pcfg;
+    pcfg.n_layers            = 2;
+    pcfg.n_experts_per_layer = 8;
+    q4e_expert_pool pool(pcfg);
+    h2d_fake be;
+    q4e_expert_h2d h2d(&be);
+    h2d.bind(&pool);
+    CHECK(!h2d.hint(9, 0));       // out of range: rejected, nothing counted
+    CHECK(!h2d.hint(0, 511));
+    h2d.access(9, 0);
+    h2d.access(0, 8);
+    CHECK_EQ_I64(h2d.accesses(), 0);
+    CHECK_EQ_I64(h2d.dedup_skips(), 0);
+    CHECK_EQ_I64(h2d.h2d_dropped(), 0);
+    CHECK(!h2d.has_pending());
+
+    q4e_expert_h2d solo(nullptr); // fresh: ratio 0, drain is a no-op
+    CHECK(solo.overlap_ratio() == 0.0);
+    solo.drain_once();
+    CHECK_EQ_I64(solo.h2d_issued(), 0);
+
+    q4e_h2d_config cfg;
+    cfg.expert_bytes = 10;
+    h2d_fake be2;
+    q4e_expert_h2d h2d2(&be2, cfg);
+    CHECK(h2d2.hint(0, 0, 777));  // per-hint bytes override wins
+    h2d2.drain_once();
+    CHECK_EQ_I64(h2d2.h2d_bytes(), 777);
+    CHECK_EQ_I64(be2.bytes, 777);
+}
+
 int main(int argc, char ** argv) {
     (void) argc;
     (void) argv;
@@ -406,6 +643,12 @@ int main(int argc, char ** argv) {
     test_touches_seen(heap.data());
     test_ngram_prefetch();
     test_real_gguf();
+
+    test_h2d_standalone_exact();
+    test_h2d_queue_cap_drop();
+    test_h2d_pool_integration();
+    test_h2d_ngram_order_and_dedup();
+    test_h2d_guards_and_edges();
 
     if (g_failures) {
         fprintf(stderr, "q4e-expert-warm: %d/%d checks FAILED\n", g_failures, g_checks);
