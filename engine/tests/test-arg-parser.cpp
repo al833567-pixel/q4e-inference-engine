@@ -304,12 +304,12 @@ static void test(void) {
     assert(params.lora_adapters[2].path == "file3\"3\".gguf");
     assert(params.lora_adapters[3].path == "file4\".gguf");
 
-    printf("test-arg-parser: test --q4e-moe-vram (valid + invalid usages)\n\n");
+    printf("test-arg-parser: test --q4e-moe-vram v5 semantics (N = expert count, valid + invalid usages)\n\n");
 
     {
         common_params q4e_params;
         q4e_params.model.path = "model_file.gguf"; // satisfy the required-model check (same as earlier blocks)
-        assert(q4e_params.q4e_moe_vram == 10); // default
+        assert(q4e_params.q4e_moe_vram == 5000); // v5 default: routed experts in the L1 VRAM pool
 
         argv = {"binary_name", "--q4e-moe-vram", "5"};
         assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
@@ -319,14 +319,14 @@ static void test(void) {
         assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
         assert(q4e_params.q4e_moe_vram == 0);
 
-        argv = {"binary_name", "--q4e-moe-vram", "999"};
+        argv = {"binary_name", "--q4e-moe-vram", "99999"};
         assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
-        assert(q4e_params.q4e_moe_vram == 999);
+        assert(q4e_params.q4e_moe_vram == 99999);
 
         argv = {"binary_name", "--q4e-moe-vram", "-1"};
         assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
 
-        argv = {"binary_name", "--q4e-moe-vram", "1000"};
+        argv = {"binary_name", "--q4e-moe-vram", "100000"}; // v5 range is 0-99999
         assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
 
         // retired MoE CPU-placement flags must no longer be recognized
@@ -337,6 +337,32 @@ static void test(void) {
         assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
 
         argv = {"binary_name", "-ncffn", "3"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+    }
+
+    printf("test-arg-parser: test --q4e-moe-ram (valid + invalid usages)\n\n");
+
+    {
+        common_params q4e_params;
+        q4e_params.model.path = "model_file.gguf";
+        assert(q4e_params.q4e_moe_ram == 4000); // v5 default: routed experts in the L2 pinned RAM pool
+
+        argv = {"binary_name", "--q4e-moe-ram", "0"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_moe_ram == 0);
+
+        argv = {"binary_name", "--q4e-moe-ram", "83"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_moe_ram == 83);
+
+        argv = {"binary_name", "--q4e-moe-ram", "99999"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+        assert(q4e_params.q4e_moe_ram == 99999);
+
+        argv = {"binary_name", "--q4e-moe-ram", "-1"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
+
+        argv = {"binary_name", "--q4e-moe-ram", "100000"};
         assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
     }
 
@@ -394,7 +420,7 @@ static void test(void) {
         assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
     }
 
-    printf("test-arg-parser: test --q4e-moe-vram override generation\n\n");
+    printf("test-arg-parser: test v4.1 --q4e-moe-vram override generation (K = layer count, build 42 path, regression)\n\n");
 
     {
         std::vector<llama_model_tensor_buft_override> ovs;
@@ -453,6 +479,65 @@ static void test(void) {
               "parse --q4e-moe-vram 999");
         llm_insert_q4e_moe_vram_overrides(48, 999, q4e_params2.tensor_buft_overrides);
         check(q4e_params2.tensor_buft_overrides.front().pattern == nullptr, "k >= n_layers leaves buffer null-first");
+    }
+
+    printf("test-arg-parser: test v5 --q4e-moe-vram N=expert count + fit formulas (hard checks)\n\n");
+
+    {
+        // assert() may be compiled out, so use hard checks (same pattern as the padded-buffer block)
+        auto check = [](bool ok, const char * what) {
+            if (!ok) {
+                printf("test-arg-parser: CHECK FAILED: %s\n", what);
+                std::exit(1);
+            }
+        };
+
+        // per-expert bytes from the qwen4exp model: (450 + 450 + 600) MiB / 512 experts
+        const int64_t MiB = 1024 * 1024;
+        const int64_t expert_bytes = 1550 * MiB / 512;
+
+        // R = ceil(N / n_layers); ceil(5000/48) = 105; pool = 105 * 48 = 5040
+        const auto vram = common_q4e_fit_vram(48, 512, expert_bytes, 5000, 1024 * 1024 * 1024);
+        check(vram.per_layer_pool == 105, "vram R = ceil(5000/48) = 105");
+        check(vram.pool_total == 5040, "vram pool total = 105 * 48");
+        check(vram.required_mib == (5044 * expert_bytes + MiB - 1) / MiB, "vram required MiB = ceil(pool * bytes / MiB)");
+        check(vram.fits && vram.error.empty(), "vram fits when free is large");
+
+        // not-fit: required > free, clear error text, no silent lowering of the pool
+        const auto vram_fail = common_q4e_fit_vram(48, 512, expert_bytes, 5000, 1000);
+        check(!vram_fail.fits, "vram not-fit when free is small");
+        check(vram_fail.per_layer_pool == 105 && vram_fail.pool_total == 5040, "vram pool size unchanged on not-fit");
+        check(vram_fail.error.find("--q4e-moe-vram") != std::string::npos, "vram error names the flag");
+        check(vram_fail.error.find("does not fit") != std::string::npos, "vram error says does not fit");
+        check(vram_fail.error.find("MiB free") != std::string::npos, "vram error reports free MiB");
+
+        // exact boundary: required == free still fits
+        const auto vram_edge = common_q4e_fit_vram(48, 512, expert_bytes, 5000, vram.required_mib);
+        check(vram_edge.fits && vram_edge.error.empty(), "vram fits at exact boundary");
+
+        // pool capped at the per-layer expert count (N = 99999 -> R capped at 512)
+        const auto vram_cap = common_q4e_fit_vram(48, 512, expert_bytes, 99999, 1024 * 1024 * 1024);
+        check(vram_cap.per_layer_pool == 512, "vram R capped at n_expert_per_layer");
+        check(vram_cap.pool_total == 48 * 512, "vram pool total capped at 48 * 512");
+
+        // N = 0: pool off, zero required
+        const auto vram_zero = common_q4e_fit_vram(48, 512, expert_bytes, 0, 0);
+        check(vram_zero.per_layer_pool == 0 && vram_zero.required_mib == 0 && vram_zero.fits, "vram N=0 -> zero pool, fits");
+
+        // L2: ceil(4000/48) = 84; ceil(4033/48) = 85
+        const auto ram = common_q4e_fit_ram(48, 512, expert_bytes, 4000, 1024 * 1024 * 1024);
+        check(ram.per_layer_pool == 84, "ram R = ceil(4000/48) = 84");
+        check(ram.pool_total == 4032, "ram pool total = 84 * 48");
+        check(ram.fits && ram.error.empty(), "ram fits when free is large");
+
+        const auto ram_fail = common_q4e_fit_ram(48, 512, expert_bytes, 4000, 1000);
+        check(!ram_fail.fits, "ram not-fit when free is small");
+        check(ram_fail.per_layer_pool == 84, "ram pool size unchanged on not-fit");
+        check(ram_fail.error.find("--q4e-moe-ram") != std::string::npos, "ram error names the flag");
+        check(ram_fail.error.find("does not fit") != std::string::npos, "ram error says does not fit");
+
+        const auto ram85 = common_q4e_fit_ram(48, 512, expert_bytes, 4033, 1024 * 1024 * 1024);
+        check(ram85.per_layer_pool == 85, "ram R = ceil(4033/48) = 85");
     }
 
 // skip this part on windows, because setenv is not supported

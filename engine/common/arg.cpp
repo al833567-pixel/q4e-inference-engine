@@ -2779,18 +2779,31 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_OVERRIDE_TENSOR"));
     add_opt(common_arg(
-        {"--q4e-moe-vram"}, "K",
+        {"--q4e-moe-vram"}, "N",
         string_format(
-            "keep the Mixture of Experts (MoE) weights of the last K layers in VRAM, move the rest to the CPU\n"
-            "(default: %d; valid range 0-999; K >= n_layers keeps all expert weights in VRAM, K = 0 keeps all in the CPU)",
+            "v5: number of routed MoE experts resident in the L1 VRAM pool, across all layers\n"
+            "(per-layer pool R = ceil(N / n_layers); default: %d; valid range 0-99999; load aborts if VRAM is too small, never lowered silently)",
             params.q4e_moe_vram),
         [](common_params & params, int value) {
-            if (value < 0 || value > 999) {
-                throw std::invalid_argument("K must be in range 0-999");
+            if (value < 0 || value > 99999) {
+                throw std::invalid_argument("N must be in range 0-99999");
             }
             params.q4e_moe_vram = value;
         }
     ).set_env("Q4E_MOE_VRAM"));
+    add_opt(common_arg(
+        {"--q4e-moe-ram"}, "N2",
+        string_format(
+            "v5: number of routed MoE experts resident in the L2 pinned RAM pool, across all layers\n"
+            "(default: %d; valid range 0-99999; load aborts if RAM is too small, never lowered silently)",
+            params.q4e_moe_ram),
+        [](common_params & params, int value) {
+            if (value < 0 || value > 99999) {
+                throw std::invalid_argument("N2 must be in range 0-99999");
+            }
+            params.q4e_moe_ram = value;
+        }
+    ).set_env("Q4E_MOE_RAM"));
     add_opt(common_arg(
         {"--q4e-prefetch"}, "on|off",
         "live expert page-warm prefetch, \"on\" or \"off\" (default: on)",

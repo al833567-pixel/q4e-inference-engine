@@ -1338,6 +1338,41 @@ static bool common_q4e_moe_vram_check(const char * path_model, int32_t k,
     return true;
 }
 
+// v5 fit model (A-15.0): pure math over expert counts, no GPU or model load needed
+static int64_t common_q4e_pool_per_layer(int n, int n_layers) {
+    if (n_layers <= 0 || n <= 0) {
+        return 0;
+    }
+    return (n + n_layers - 1) / n_layers; // ceil
+}
+
+static common_q4e_fit_result common_q4e_fit_common(const char * flag, int n_layers, int n_expert_per_layer,
+                                                   int64_t expert_bytes, int n, int64_t free_mib) {
+    common_q4e_fit_result res;
+    res.per_layer_pool = common_q4e_pool_per_layer(n, n_layers);
+    if (n_expert_per_layer > 0 && res.per_layer_pool > n_expert_per_layer) {
+        res.per_layer_pool = n_expert_per_layer; // pool cannot exceed the expert count
+    }
+    res.pool_total     = res.per_layer_pool * n_layers;
+    res.required_mib   = (res.pool_total * expert_bytes + (1024 * 1024 - 1)) / (1024 * 1024);
+    if (res.required_mib > free_mib) {
+        char err[256];
+        snprintf(err, sizeof(err), "%s n=%d does not fit: pool needs %" PRId64 " MiB, only %" PRId64 " MiB free",
+                 flag, n, res.required_mib, free_mib);
+        res.fits  = false;
+        res.error = err;
+    }
+    return res;
+}
+
+common_q4e_fit_result common_q4e_fit_vram(int n_layers, int n_expert_per_layer, int64_t expert_bytes, int n_vram, int64_t free_mib) {
+    return common_q4e_fit_common("--q4e-moe-vram", n_layers, n_expert_per_layer, expert_bytes, n_vram, free_mib);
+}
+
+common_q4e_fit_result common_q4e_fit_ram(int n_layers, int n_expert_per_layer, int64_t expert_bytes, int n_ram, int64_t free_mib) {
+    return common_q4e_fit_common("--q4e-moe-ram", n_layers, n_expert_per_layer, expert_bytes, n_ram, free_mib);
+}
+
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
     // --q4e-moe-vram: needs n_layers, so it runs before the real load; CPU-only is a no-op

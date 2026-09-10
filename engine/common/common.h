@@ -477,7 +477,8 @@ struct common_params {
     bool    fit_params_print   = false; // print the estimated required memory to run the model
     int32_t fit_params_min_ctx = 4096;  // minimum context size to set when trying to reduce memory use
 
-    int32_t q4e_moe_vram       = 10;    // keep MoE experts of the last K layers in VRAM, rest on CPU buft (0 = all on CPU)
+    int32_t q4e_moe_vram       = 5000;  // v5: routed MoE experts resident in L1 VRAM pool (per-layer pool R = ceil(N/n_layers)); 0 = pool off
+    int32_t q4e_moe_ram        = 4000;  // v5: routed MoE experts resident in L2 pinned RAM (0 = L2 off)
     bool    q4e_prefetch       = true;  // live expert page-warm prefetch (A-14.1); off = A-9 hook only
     bool    q4e_ngram_prefetch = true;  // ngram (PLE table) row prefetch (A-14.4); needs q4e_prefetch
 
@@ -1150,7 +1151,22 @@ inline void llm_add_n_cpu_ffn_overrides(int n, const char * ffn_regex, std::vect
     }
 }
 
-// --q4e-moe-vram: move expert weights of the first n_layers - k layers to the CPU buft; k >= n_layers: no override
+// v5 fit model (A-15.0): pure math over expert counts and per-expert size, no GPU needed
+struct common_q4e_fit_result {
+    int64_t per_layer_pool   = 0;   // L1 pool slots R = ceil(n / n_layers)
+    int64_t pool_total       = 0;   // R * n_layers (capped at n_expert_per_layer per layer)
+    int64_t required_mib     = 0;   // resident expert bytes, rounded up to MiB
+    bool    fits             = true;
+    std::string error;              // clear message when fits == false
+};
+
+// L1 VRAM pool fit: n_vram = routed experts to keep in VRAM across all layers
+common_q4e_fit_result common_q4e_fit_vram(int n_layers, int n_expert_per_layer, int64_t expert_bytes, int n_vram, int64_t free_mib);
+
+// L2 pinned RAM fit: n_ram = routed experts to keep in pinned RAM across all layers
+common_q4e_fit_result common_q4e_fit_ram(int n_layers, int n_expert_per_layer, int64_t expert_bytes, int n_ram, int64_t free_mib);
+
+// --q4e-moe-vram v4.1 path (build 42, frozen): move expert weights of the first n_layers - k layers to the CPU buft; k >= n_layers: no override
 inline void llm_add_q4e_moe_vram_overrides(int n_layers, int k, std::vector<llama_model_tensor_buft_override> & overrides) {
     const int n_cpu = n_layers - k;
     if (n_cpu <= 0) {
