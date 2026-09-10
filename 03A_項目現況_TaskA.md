@@ -42,7 +42,7 @@
 
 | 項 | 名稱 | 內容／驗收 |
 |---|---|---|
-| **A-15.0** | v5 設計拍板＋參數語義 | 重定義 `--q4e-moe-vram N`（＝VRAM 駐留 routed 專家數，預設 5000≈104/層）＋新 `--q4e-moe-ram N2`（L2，預設 4000）＋三層定義＋LRU 逐出（L2 副本保留→L1 逐出 metadata no-op）＋VRAM-fit/RAM-fit 公式；驗收＝設計文件＋參數解析/fit 單元測試 |
+| **A-15.0** ✅ | v5 設計拍板＋參數語義（done, build 44/fa862d4, test 全綠） | 重定義 `--q4e-moe-vram N`（＝VRAM 駐留 routed 專家數，預設 5000≈104/層）＋新 `--q4e-moe-ram N2`（L2，預設 4000）＋三層定義＋LRU 逐出（L2 副本保留→L1 逐出 metadata no-op）＋VRAM-fit/RAM-fit 公式；驗收＝設計文件＋參數解析/fit 單元測試（全綠，[v5_evidence/a150_design](v5_evidence/a150_design/)） |
 | **A-15.1** | 專家 pool 駐留管理器 | 擴充 `q4e-expert-cache`：per-(layer,expert) L1/L2/L3＋per-layer LRU pool（R 槽）＋promote/evict＋**hit 分佈（L1/L2/L3）＋真實 M 計數**；驗收＝C++ 全綠＋單元測試 |
 | **A-15.3** | H2D 提升管線 | 改指 `q4e-expert-warm`：pinned staging＋非同步 H2D 進 pool 槽＋重疊度量＋dedup＋ngram 提前提升；驗收＝C++ 全綠＋測試（H2D bytes/重疊比） |
 | **A-15.2**（core，最高風險） | graph 手術 | `qwen4exp` arch：每層 expert **pool tensor**（gate/up×[2560,640,R]、down×[640,2560,R]）＋**id-remap**（global→pool slot）＋**promotion op**（H2D＋slot→global 映射）＋`MUL_MAT_ID` over pool（**48 層全 GPU**）；驗收＝C++ 全綠＋**oracle 對答案**＋B 側載入成功 |
@@ -94,7 +94,8 @@
 5. **CJK 路徑 ninja 增量**：偶發 stale→刪 `.ninja_log` 重跑（A-9 本輪未觸發；B-1 曾觸發）。
 6. **CreateFileMapping 權限**（A-14.1 backend 適用）：handle 以 `GENERIC_READ` 開啟時 mapping 必 **`PAGE_READONLY`**（`PAGE_READWRITE`→ERROR_ACCESS_DENIED→0xC0000409）。
 7. **沙箱**：本 session＝danger-full-access＋approval disabled；build 正常。
-8. **header 依賴追蹤缺失**：`engine/build-msvc` 無 ninja .d depfile（CJK/ACP-950 環境）→header 改動不觸發重編→stale .obj（ODR 不一致）；**紀律：改到 header 後 build 必 `--clean-first`（或核對 .obj mtime）**；2026-09-08 實踩（S6 e2e 假失敗）→`S6-rebuild.log` 修復證據（暫存 log 已清除、歸檔 git `bcaf1c9`，`git show bcaf1c9:S6-rebuild.log` 取回）。
+8. **header 依賴追蹤缺失**：`engine/build-msvc` 無 ninja .d depfile（CJK/ACP-950 環境）→header 改動不觸發重編→stale .obj（ODR 不一致）；**紀律：改到 header 後 build 必 `--clean-first`（或核對 .obj mtime）**；2026-09-08 實踩（S6 e2e 假失敗）→`S6-rebuild.log` 修復證據（暫存 log 已清除、歸檔 git `bcaf1c9`，`git show bcaf1c9:S6-rebuild.log` 取回）；**2026-09-10 A-15.0 再踩（`D:\q4e_build\build` 樹）：common.h 改動後增量 build 只重編 3 檔→混布局→兩個 exe 啟動即 AV（0xC0000005，無輸出）→`--clean-first` 全量 477 步後全綠；證據 [v5_evidence/a150_design/build.log](v5_evidence/a150_design/build.log)**。
+9. **FLAT MIRROR 同步紀律（v5 起，`D:\q4e_build`）**：build 源＝`D:\q4e_build\src`（flat 佈局、CMAKE_HOME_DIRECTORY），**非** repo `engine/` 子樹；同步＝`Copy-Item` repo `engine/<path>` → `D:\q4e_build\src\<path>`，`git hash-object` 對 `git rev-parse <commit>:engine/<path>` 驗證 byte-exact；**Copy-Item 保留來源 mtime→ninja 視為未變→靜默 no-op**→同步後必 touch（設 `LastWriteTime`）再 build；build 必包 `vcvars64.bat`；kill 掉的中間 build 可能留壞 `.cu.obj`（LNK1123）→刪該 CMakeFiles 目錄 .obj 重建。
 
 ## 五、指針
 

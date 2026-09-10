@@ -55,7 +55,7 @@ fit        = (required_mib <= free_mib)
 
 - **VRAM-fit**：`required_mib(N) ≤ GPU free`；否則跳錯。完整 VRAM 預算＝required(N)＋非 MoE ≈4,342＋ctx/compute（既有 `common_get_device_memory_data` 管路量，A-15.1 接）。
 - **RAM-fit**：`required_mib(N2) ≤ RAM free`；否則跳錯。
-- 數值例（expert_bytes＝1550×2²⁰÷512）：N=5000→R=105、pool=5040、required≈**471,226 MiB（≈460.2 GiB）**；N2=4000→R=84、pool=4032、required≈**12,216 MiB（≈11.9 GiB）**。
+- 數值例（expert_bytes＝1550×2²⁰÷512）：N=5000→R=105、pool=5040、required≈**15,258 MiB（≈14.9 GiB）**；N2=4000→R=84、pool=4032、required≈**12,207 MiB（≈11.9 GiB）**。
 - **不悄悄降**：not-fit 時 pool 尺寸保持（跳錯）；錯誤文字含旗標名、required/free MiB。
 
 ### C++ 簽名（已實作，`common.h`/`common.cpp`）

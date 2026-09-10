@@ -500,7 +500,7 @@ static void test(void) {
         const auto vram = common_q4e_fit_vram(48, 512, expert_bytes, 5000, 1024 * 1024 * 1024);
         check(vram.per_layer_pool == 105, "vram R = ceil(5000/48) = 105");
         check(vram.pool_total == 5040, "vram pool total = 105 * 48");
-        check(vram.required_mib == (5044 * expert_bytes + MiB - 1) / MiB, "vram required MiB = ceil(pool * bytes / MiB)");
+        check(vram.required_mib == (5040 * expert_bytes + MiB - 1) / MiB, "vram required MiB = ceil(pool * bytes / MiB)");
         check(vram.fits && vram.error.empty(), "vram fits when free is large");
 
         // not-fit: required > free, clear error text, no silent lowering of the pool
