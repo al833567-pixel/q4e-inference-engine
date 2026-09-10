@@ -114,6 +114,83 @@ private:
     int64_t hook_skips_device_ = 0;
 };
 
+// v5 pool residency manager (A-15.1); pure CPU bookkeeping, no CUDA calls
+// L1 = VRAM pool slots, L2 = pinned RAM (copy kept on L1 evict), L3 = SSD (untracked)
+// L2->L1 H2D copy and L3->L2 SSD read are A-15.3; here only state moves + stats
+struct q4e_expert_pool_config {
+    int n_layers = 48;
+    int n_experts_per_layer = 512;
+    int l1_slots_per_layer = 105; // R = ceil(q4e_moe_vram / n_layers), capped at n_experts_per_layer
+    int l2_slots_per_layer = 84;  // ceil(q4e_moe_ram / n_layers), capped at n_experts_per_layer
+};
+
+struct q4e_expert_pool_stats {
+    int64_t accesses = 0;
+    int64_t hits_l1 = 0;
+    int64_t hits_l2 = 0;
+    int64_t hits_l3 = 0;
+    int64_t l1_evictions = 0; // metadata no-op; L2 copy kept if present
+    int64_t l2_evictions = 0; // slot freed; expert may stay L1, else falls to L3
+    int64_t l3_reads = 0;     // SSD -> L2 fill
+    int64_t l2_fills = 0;     // L3 -> L2
+    int64_t l2_to_l1 = 0;     // promotion; H2D copy is A-15.3
+    int64_t rounds = 0;
+    int64_t m_sum = 0;        // sum of per-round distinct expert count (M)
+    int64_t m_max = 0;        // max per-round distinct expert count
+};
+
+// deterministic state machine: same input sequence => same state (replayable)
+struct q4e_expert_pool {
+    explicit q4e_expert_pool(const q4e_expert_pool_config & cfg = q4e_expert_pool_config());
+
+    // one expert access at layer; returns tier hit: 0=L1, 1=L2, 2=L3
+    // L2/L3 hit promotes to L1 (L1 LRU evicted, metadata no-op); L3 hit fills L2 first
+    int64_t access(int layer, int expert);
+    // explicit state move (A-15.3 hook): L3 -> L2 fill reserve, or L2 -> L1 promotion
+    void promote(int layer, int expert);
+    // one forward round at layer: distinct expert count (M) committed on end_round
+    void begin_round(int layer);
+    void end_round(int layer);
+
+    const char * state_of(int layer, int expert) const; // "l1" | "l2" | "l3"
+    q4e_expert_pool_stats stats() const;
+    void reset();
+
+    // ceil(n_experts / n_layers), capped at n_experts_per_layer
+    static int per_layer_slots(int64_t n_experts, int n_layers, int n_experts_per_layer);
+
+    const q4e_expert_pool_config & cfg() const { return cfg_; }
+
+private:
+    void l1_insert(int layer, int expert);
+    void l2_insert(int layer, int expert);
+    void check_layer(int layer) const;
+    void check_expert(int expert) const;
+
+    q4e_expert_pool_config cfg_;
+    struct layer_state {
+        std::list<int> l1_order; // front = LRU, back = MRU
+        std::unordered_map<int, std::list<int>::iterator> l1_pos;
+        std::list<int> l2_order;
+        std::unordered_map<int, std::list<int>::iterator> l2_pos;
+        std::set<int> round_ids;
+        bool round_active = false;
+    };
+    std::vector<layer_state> layers_;
+    int64_t accesses_ = 0;
+    int64_t hits_l1_ = 0;
+    int64_t hits_l2_ = 0;
+    int64_t hits_l3_ = 0;
+    int64_t l1_evictions_ = 0;
+    int64_t l2_evictions_ = 0;
+    int64_t l3_reads_ = 0;
+    int64_t l2_fills_ = 0;
+    int64_t l2_to_l1_ = 0;
+    int64_t rounds_ = 0;
+    int64_t m_sum_ = 0;
+    int64_t m_max_ = 0;
+};
+
 struct ggml_tensor;
 
 // layer id of a MoE expert tensor name ("blk.N.ffn_*_exps..."); -1 if not a MoE layer

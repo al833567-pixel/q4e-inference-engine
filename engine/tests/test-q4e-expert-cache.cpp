@@ -457,6 +457,184 @@ static void test_cb_eval_host_only() {
     }
 }
 
+//
+// A-15.1: v5 pool residency manager (q4e_expert_pool)
+//
+
+static q4e_expert_pool_config make_pool_cfg(int l1 = 3, int l2 = 5, int n_layers = 2, int n_experts = 16) {
+    q4e_expert_pool_config c;
+    c.n_layers = n_layers;
+    c.n_experts_per_layer = n_experts;
+    c.l1_slots_per_layer = l1;
+    c.l2_slots_per_layer = l2;
+    return c;
+}
+
+// test_pool_per_layer_slots_ceil_and_cap: ceil(n/48) per design, capped at 512
+static void test_pool_per_layer_slots_ceil_and_cap() {
+    CHECK_EQ_I64(q4e_expert_pool::per_layer_slots(5000, 48, 512), 105);
+    CHECK_EQ_I64(q4e_expert_pool::per_layer_slots(4000, 48, 512), 84);
+    CHECK_EQ_I64(q4e_expert_pool::per_layer_slots(48, 48, 512), 1);
+    CHECK_EQ_I64(q4e_expert_pool::per_layer_slots(47, 48, 512), 1);
+    CHECK_EQ_I64(q4e_expert_pool::per_layer_slots(24576, 48, 512), 512);
+    CHECK_EQ_I64(q4e_expert_pool::per_layer_slots(99999, 48, 512), 512);
+    CHECK_EQ_I64(q4e_expert_pool::per_layer_slots(0, 48, 512), 0);
+}
+
+// test_pool_capacity_bounded: residency stays within l1+l2 slots, rest falls to l3
+static void test_pool_capacity_bounded() {
+    q4e_expert_pool c(make_pool_cfg(3, 5, 1, 16));
+    for (int e = 0; e < 16; ++e) {
+        c.access(0, e);
+    }
+    int n_l1 = 0, n_l2 = 0, n_l3 = 0;
+    for (int e = 0; e < 16; ++e) {
+        const char * st = c.state_of(0, e);
+        if (strcmp(st, "l1") == 0) {
+            ++n_l1;
+        } else if (strcmp(st, "l2") == 0) {
+            ++n_l2;
+        } else {
+            ++n_l3;
+        }
+    }
+    const q4e_expert_pool_stats s = c.stats();
+    CHECK_EQ_I64(n_l1, 3);
+    CHECK(n_l2 <= 5);
+    CHECK_EQ_I64(n_l1 + n_l2 + n_l3, 16);
+    CHECK_EQ_I64(s.hits_l3, 16);
+    CHECK_EQ_I64(s.l1_evictions, 13);
+    CHECK_EQ_I64(s.l2_evictions, 11);
+}
+
+// test_pool_lru_order: reuse refreshes; eviction picks least recently used
+static void test_pool_lru_order() {
+    q4e_expert_pool c(make_pool_cfg(2, 4, 1, 16));
+    c.access(0, 1);
+    c.access(0, 2);
+    c.access(0, 1); // 1 becomes MRU: l1 order LRU->MRU: 2, 1
+    c.access(0, 3); // evict 2, not 1; 2 keeps its L2 copy
+    CHECK_EQ_STR(c.state_of(0, 1), "l1");
+    CHECK_EQ_STR(c.state_of(0, 3), "l1");
+    CHECK_EQ_STR(c.state_of(0, 2), "l2");
+    const q4e_expert_pool_stats s = c.stats();
+    CHECK_EQ_I64(s.hits_l1, 1);
+    CHECK_EQ_I64(s.hits_l3, 3);
+    CHECK_EQ_I64(s.l1_evictions, 1);
+}
+
+// test_pool_promote_transitions: L3->L2 fill, L2->L1, L1 no-op; L1 evict keeps L2
+static void test_pool_promote_transitions() {
+    q4e_expert_pool c(make_pool_cfg(2, 4, 1, 16));
+    CHECK_EQ_STR(c.state_of(0, 7), "l3");
+    c.promote(0, 7); // L3 -> L2 fill reserve
+    CHECK_EQ_STR(c.state_of(0, 7), "l2");
+    c.promote(0, 7); // L2 -> L1 (H2D copy is A-15.3)
+    CHECK_EQ_STR(c.state_of(0, 7), "l1");
+    c.promote(0, 7); // already L1: no-op
+    const q4e_expert_pool_stats s = c.stats();
+    CHECK_EQ_STR(c.state_of(0, 7), "l1");
+    CHECK_EQ_I64(s.l2_fills, 1);
+    CHECK_EQ_I64(s.l2_to_l1, 1);
+    // L1 eviction is a metadata no-op: evicted expert keeps its L2 state
+    c.access(0, 8);
+    c.access(0, 9); // evict 7 from L1
+    CHECK_EQ_STR(c.state_of(0, 7), "l2");
+    CHECK_EQ_STR(c.state_of(0, 9), "l1");
+    CHECK_EQ_I64(c.stats().l1_evictions, 1);
+}
+
+// test_pool_hit_distribution: hits split by tier of residence at access time
+static void test_pool_hit_distribution() {
+    q4e_expert_pool c(make_pool_cfg(2, 4, 1, 16));
+    c.access(0, 1); // l3
+    c.access(0, 1); // l1
+    c.access(0, 2); // l3
+    c.access(0, 3); // l3, evict 1 from l1 (1 keeps l2)
+    c.access(0, 1); // l2 hit -> promoted to l1
+    const q4e_expert_pool_stats s = c.stats();
+    CHECK_EQ_I64(s.accesses, 5);
+    CHECK_EQ_I64(s.hits_l1, 1);
+    CHECK_EQ_I64(s.hits_l2, 1);
+    CHECK_EQ_I64(s.hits_l3, 3);
+    CHECK_EQ_I64(s.l3_reads, 3);
+    CHECK_EQ_I64(s.l2_to_l1, 1);
+    CHECK_EQ_STR(c.state_of(0, 1), "l1");
+}
+
+// test_pool_round_m_distinct: per-round distinct expert count, dedup within round
+static void test_pool_round_m_distinct() {
+    q4e_expert_pool c(make_pool_cfg(4, 8, 2, 16));
+    c.begin_round(0);
+    c.access(0, 1);
+    c.access(0, 1); // duplicate, counted once
+    c.access(0, 2);
+    c.end_round(0);
+    c.begin_round(0);
+    c.access(0, 5);
+    c.access(0, 6);
+    c.access(0, 7);
+    c.access(0, 8);
+    c.access(0, 9); // 5 distinct, more than l1 slots (4)
+    c.end_round(0);
+    q4e_expert_pool_stats s = c.stats();
+    CHECK_EQ_I64(s.rounds, 2);
+    CHECK_EQ_I64(s.m_sum, 7);
+    CHECK_EQ_I64(s.m_max, 5);
+    // access outside a round does not extend any round
+    c.access(0, 3);
+    CHECK_EQ_I64(c.stats().m_sum, 7);
+    CHECK_EQ_I64(c.stats().rounds, 2);
+    // end_round without begin_round is a no-op
+    c.end_round(1);
+    CHECK_EQ_I64(c.stats().rounds, 2);
+}
+
+// test_pool_disabled_caps: l1=0 or l2=0 keeps experts at the lower tier
+static void test_pool_disabled_caps() {
+    q4e_expert_pool c(make_pool_cfg(0, 2, 1, 16));
+    c.access(0, 1);
+    CHECK_EQ_STR(c.state_of(0, 1), "l2");
+    CHECK_EQ_I64(c.stats().hits_l3, 1);
+    CHECK_EQ_I64(c.stats().l1_evictions, 0);
+    c.access(0, 1);
+    CHECK_EQ_I64(c.stats().hits_l2, 1);
+    q4e_expert_pool d(make_pool_cfg(0, 0, 1, 16));
+    d.access(0, 1);
+    CHECK_EQ_STR(d.state_of(0, 1), "l3");
+    CHECK_EQ_I64(d.stats().l2_fills, 0);
+    CHECK_EQ_I64(d.stats().hits_l3, 1);
+}
+
+// test_pool_range_checks
+static void test_pool_range_checks() {
+    q4e_expert_pool c(make_pool_cfg());
+    CHECK_THROWS(c.access(99, 1));
+    CHECK_THROWS(c.access(0, 99999));
+    CHECK_THROWS(c.access(0, Q4E_EXPERT_SHARED_ID));
+    CHECK_THROWS(c.promote(0, -2));
+    CHECK_THROWS(c.begin_round(99));
+    CHECK_THROWS(c.end_round(99));
+}
+
+// test_pool_reset
+static void test_pool_reset() {
+    q4e_expert_pool c(make_pool_cfg(2, 3, 1, 16));
+    c.access(0, 1);
+    c.begin_round(0);
+    c.access(0, 2);
+    c.end_round(0);
+    c.reset();
+    CHECK_EQ_STR(c.state_of(0, 1), "l3");
+    CHECK_EQ_STR(c.state_of(0, 2), "l3");
+    const q4e_expert_pool_stats s = c.stats();
+    CHECK_EQ_I64(s.accesses, 0);
+    CHECK_EQ_I64(s.hits_l1, 0);
+    CHECK_EQ_I64(s.hits_l2, 0);
+    CHECK_EQ_I64(s.hits_l3, 0);
+    CHECK_EQ_I64(s.rounds, 0);
+}
+
 int main(int argc, char ** argv) {
     (void) argc;
     (void) argv;
@@ -479,6 +657,15 @@ int main(int argc, char ** argv) {
     test_occupancy_bounded_by_capacity();
     test_cb_eval_rejects_non_moe();
     test_cb_eval_host_only();
+    test_pool_per_layer_slots_ceil_and_cap();
+    test_pool_capacity_bounded();
+    test_pool_lru_order();
+    test_pool_promote_transitions();
+    test_pool_hit_distribution();
+    test_pool_round_m_distinct();
+    test_pool_disabled_caps();
+    test_pool_range_checks();
+    test_pool_reset();
     if (g_failures) {
         fprintf(stderr, "q4e-expert-cache: %d/%d checks FAILED\n", g_failures, g_checks);
         return 1;

@@ -232,6 +232,197 @@ void q4e_expert_cache::reset() {
 }
 
 //
+// v5 pool residency manager (A-15.1); pure CPU bookkeeping, H2D/SSD moves are A-15.3
+//
+
+q4e_expert_pool::q4e_expert_pool(const q4e_expert_pool_config & cfg) :
+    cfg_(cfg),
+    layers_((std::size_t) std::max(cfg.n_layers, 0)) {
+    if (cfg_.l1_slots_per_layer > cfg_.n_experts_per_layer) {
+        cfg_.l1_slots_per_layer = cfg_.n_experts_per_layer;
+    }
+    if (cfg_.l2_slots_per_layer > cfg_.n_experts_per_layer) {
+        cfg_.l2_slots_per_layer = cfg_.n_experts_per_layer;
+    }
+}
+
+void q4e_expert_pool::check_layer(int layer) const {
+    if (layer < 0 || layer >= cfg_.n_layers) {
+        throw std::invalid_argument("q4e_expert_pool: layer out of range");
+    }
+}
+
+void q4e_expert_pool::check_expert(int expert) const {
+    if (expert < 0 || expert >= cfg_.n_experts_per_layer) {
+        throw std::invalid_argument("q4e_expert_pool: expert id out of range");
+    }
+}
+
+void q4e_expert_pool::l1_insert(int layer, int expert) {
+    if (cfg_.l1_slots_per_layer <= 0) {
+        return;
+    }
+    layer_state & ls = layers_[(std::size_t) layer];
+    if (ls.l1_pos.count(expert)) {
+        lru_move_to_end(ls.l1_order, ls.l1_pos, expert);
+        return;
+    }
+    if (ls.l1_order.size() >= (std::size_t) cfg_.l1_slots_per_layer && !ls.l1_order.empty()) {
+        // evict L1 LRU; metadata no-op, L2 copy kept if present
+        lru_pop_front(ls.l1_order, ls.l1_pos);
+        ++l1_evictions_;
+    }
+    lru_insert(ls.l1_order, ls.l1_pos, expert);
+}
+
+void q4e_expert_pool::l2_insert(int layer, int expert) {
+    if (cfg_.l2_slots_per_layer <= 0) {
+        return;
+    }
+    layer_state & ls = layers_[(std::size_t) layer];
+    if (ls.l2_pos.count(expert)) {
+        lru_move_to_end(ls.l2_order, ls.l2_pos, expert);
+        return;
+    }
+    if (ls.l2_order.size() >= (std::size_t) cfg_.l2_slots_per_layer && !ls.l2_order.empty()) {
+        // free L2 LRU slot; expert may stay L1, else falls to L3
+        lru_pop_front(ls.l2_order, ls.l2_pos);
+        ++l2_evictions_;
+    }
+    lru_insert(ls.l2_order, ls.l2_pos, expert);
+    ++l2_fills_;
+}
+
+int64_t q4e_expert_pool::access(int layer, int expert) {
+    check_layer(layer);
+    check_expert(expert);
+    layer_state & ls = layers_[(std::size_t) layer];
+    ++accesses_;
+    if (ls.round_active) {
+        ls.round_ids.insert(expert);
+    }
+    if (ls.l1_pos.count(expert)) {
+        lru_move_to_end(ls.l1_order, ls.l1_pos, expert);
+        ++hits_l1_;
+        return 0;
+    }
+    if (ls.l2_pos.count(expert)) {
+        ++hits_l2_;
+        lru_move_to_end(ls.l2_order, ls.l2_pos, expert); // H2D read refreshes L2
+        l1_insert(layer, expert);
+        ++l2_to_l1_;
+        return 1;
+    }
+    ++hits_l3_;
+    ++l3_reads_;
+    l2_insert(layer, expert); // fill L2 reserve; no-op when l2 slots = 0
+    l1_insert(layer, expert);
+    return 2;
+}
+
+void q4e_expert_pool::promote(int layer, int expert) {
+    check_layer(layer);
+    check_expert(expert);
+    layer_state & ls = layers_[(std::size_t) layer];
+    if (ls.l1_pos.count(expert)) {
+        lru_move_to_end(ls.l1_order, ls.l1_pos, expert); // already resident
+        return;
+    }
+    if (ls.l2_pos.count(expert)) {
+        lru_move_to_end(ls.l2_order, ls.l2_pos, expert);
+        l1_insert(layer, expert);
+        ++l2_to_l1_; // H2D copy by A-15.3
+        return;
+    }
+    l2_insert(layer, expert); // L3 -> L2 fill reserve; SSD read by A-15.3
+}
+
+void q4e_expert_pool::begin_round(int layer) {
+    check_layer(layer);
+    layer_state & ls = layers_[(std::size_t) layer];
+    ls.round_ids.clear();
+    ls.round_active = true;
+}
+
+void q4e_expert_pool::end_round(int layer) {
+    check_layer(layer);
+    layer_state & ls = layers_[(std::size_t) layer];
+    if (!ls.round_active) {
+        return;
+    }
+    ls.round_active = false;
+    const int64_t m = (int64_t) ls.round_ids.size();
+    ls.round_ids.clear();
+    ++rounds_;
+    m_sum_ += m;
+    if (m > m_max_) {
+        m_max_ = m;
+    }
+}
+
+const char * q4e_expert_pool::state_of(int layer, int expert) const {
+    if (layer < 0 || layer >= cfg_.n_layers) {
+        return "l3";
+    }
+    const layer_state & ls = layers_[(std::size_t) layer];
+    if (ls.l1_pos.count(expert)) {
+        return "l1";
+    }
+    if (ls.l2_pos.count(expert)) {
+        return "l2";
+    }
+    return "l3";
+}
+
+q4e_expert_pool_stats q4e_expert_pool::stats() const {
+    q4e_expert_pool_stats s;
+    s.accesses = accesses_;
+    s.hits_l1 = hits_l1_;
+    s.hits_l2 = hits_l2_;
+    s.hits_l3 = hits_l3_;
+    s.l1_evictions = l1_evictions_;
+    s.l2_evictions = l2_evictions_;
+    s.l3_reads = l3_reads_;
+    s.l2_fills = l2_fills_;
+    s.l2_to_l1 = l2_to_l1_;
+    s.rounds = rounds_;
+    s.m_sum = m_sum_;
+    s.m_max = m_max_;
+    return s;
+}
+
+void q4e_expert_pool::reset() {
+    for (auto & ls : layers_) {
+        ls.l1_order.clear();
+        ls.l1_pos.clear();
+        ls.l2_order.clear();
+        ls.l2_pos.clear();
+        ls.round_ids.clear();
+        ls.round_active = false;
+    }
+    accesses_ = 0;
+    hits_l1_ = 0;
+    hits_l2_ = 0;
+    hits_l3_ = 0;
+    l1_evictions_ = 0;
+    l2_evictions_ = 0;
+    l3_reads_ = 0;
+    l2_fills_ = 0;
+    l2_to_l1_ = 0;
+    rounds_ = 0;
+    m_sum_ = 0;
+    m_max_ = 0;
+}
+
+int q4e_expert_pool::per_layer_slots(int64_t n_experts, int n_layers, int n_experts_per_layer) {
+    if (n_experts <= 0 || n_layers <= 0) {
+        return 0;
+    }
+    const int64_t r = (n_experts + n_layers - 1) / n_layers;
+    return (int) (r < (int64_t) n_experts_per_layer ? r : (int64_t) n_experts_per_layer);
+}
+
+//
 // eval hook: touch() on the real router selection
 //
 

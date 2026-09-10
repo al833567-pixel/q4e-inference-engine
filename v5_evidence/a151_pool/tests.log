@@ -1,0 +1,266 @@
+﻿=== test-q4e-expert-cache.exe (exit 0) ===
+q4e-expert-cache: all 159 checks passed
+
+=== test-arg-parser.exe (exit 0) ===
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+error while handling argument "-m": expected value for argument
+System.Management.Automation.RemoteException
+usage:
+-m,    --model FNAME                    model path to load
+                                        (env: LLAMA_ARG_MODEL)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "-ngl": invalid stoi argument
+System.Management.Automation.RemoteException
+usage:
+-ngl,  --gpu-layers, --n-gpu-layers N   max. number of layers to store in VRAM, either an exact number,
+                                        'auto', or 'all' (default: auto)
+                                        (env: LLAMA_ARG_N_GPU_LAYERS)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "-sm": invalid value
+System.Management.Automation.RemoteException
+usage:
+-sm,   --split-mode {none,layer,row,tensor}
+                                        how to split the model across multiple GPUs, one of:
+                                        - none: use one GPU only
+                                        - layer (default): split layers and KV across GPUs (pipelined)
+                                        - row: split weight across GPUs by rows (parallelized)
+                                        - tensor: split weights and KV across GPUs (parallelized,
+                                        EXPERIMENTAL)
+                                        (env: LLAMA_ARG_SPLIT_MODE)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--repeat-last-n": error: invalid repeat-last-n = -1
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--repeat-last-n N                       last n tokens to consider for penalize (default: 64, 0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--dry-penalty-last-n": error: invalid dry-penalty-last-n = -1
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--dry-penalty-last-n N                  set DRY penalty for the last n tokens (default: 64, 0 = disable)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--repeat-penalty": error: repeat-penalty must be finite and greater than 0
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--repeat-penalty N                      penalize repeat sequence of tokens (default: 1.00, 1.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--repeat-penalty": error: repeat-penalty must be finite and greater than 0
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--repeat-penalty N                      penalize repeat sequence of tokens (default: 1.00, 1.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--repeat-penalty": error: repeat-penalty must be finite and greater than 0
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--repeat-penalty N                      penalize repeat sequence of tokens (default: 1.00, 1.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--repeat-penalty": error: repeat-penalty must be finite and greater than 0
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--repeat-penalty N                      penalize repeat sequence of tokens (default: 1.00, 1.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--repeat-penalty": error: repeat-penalty must be finite and greater than 0
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--repeat-penalty N                      penalize repeat sequence of tokens (default: 1.00, 1.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--frequency-penalty": error: frequency-penalty must be finite
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--frequency-penalty N                   repeat alpha frequency penalty (default: 0.00, 0.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--frequency-penalty": error: frequency-penalty must be finite
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--frequency-penalty N                   repeat alpha frequency penalty (default: 0.00, 0.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--frequency-penalty": error: frequency-penalty must be finite
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--frequency-penalty N                   repeat alpha frequency penalty (default: 0.00, 0.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--presence-penalty": error: presence-penalty must be finite
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--presence-penalty N                    repeat alpha presence penalty (default: 0.00, 0.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--presence-penalty": error: presence-penalty must be finite
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--presence-penalty N                    repeat alpha presence penalty (default: 0.00, 0.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--presence-penalty": error: presence-penalty must be finite
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+usage:
+--presence-penalty N                    repeat alpha presence penalty (default: 0.00, 0.0 = disabled)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error: invalid argument: --draft
+error while handling argument "-lm": invalid value
+System.Management.Automation.RemoteException
+usage:
+-lm,   --load-mode MODE                 model loading mode (default: auto)
+                                        - auto: mmap, unless a device does not support it
+                                        - none: no special loading mode
+                                        - mmap: memory-map model (if mmap disabled, slower load but may reduce
+                                        pageouts if not using mlock)
+                                        - mlock: force system to keep model in RAM rather than swapping or
+                                        compressing
+                                        - mmap+mlock: mmap + force system to keep model in RAM rather than
+                                        swapping or compressing
+                                        - dio: use DirectIO if available
+                                        
+                                        (env: LLAMA_ARG_LOAD_MODE)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--spec-synth-len": invalid value
+System.Management.Automation.RemoteException
+usage:
+--spec-synth-len L                      target mean synthetic acceptance length, including the target token
+                                        (benchmarking only)
+                                        (env: LLAMA_ARG_SPEC_SYNTH_LEN)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--q4e-moe-vram": N must be in range 0-99999
+System.Management.Automation.RemoteException
+usage:
+--q4e-moe-vram N                        v5: number of routed MoE experts resident in the L1 VRAM pool, across
+                                        all layers
+                                        (per-layer pool R = ceil(N / n_layers); default: 99999; valid range
+                                        0-99999; load aborts if VRAM is too small, never lowered silently)
+                                        (env: Q4E_MOE_VRAM)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--q4e-moe-vram": N must be in range 0-99999
+System.Management.Automation.RemoteException
+usage:
+--q4e-moe-vram N                        v5: number of routed MoE experts resident in the L1 VRAM pool, across
+                                        all layers
+                                        (per-layer pool R = ceil(N / n_layers); default: 99999; valid range
+                                        0-99999; load aborts if VRAM is too small, never lowered silently)
+                                        (env: Q4E_MOE_VRAM)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error: invalid argument: -ncmoe
+error: invalid argument: -cmoe
+error: invalid argument: -ncffn
+error while handling argument "--q4e-moe-ram": N2 must be in range 0-99999
+System.Management.Automation.RemoteException
+usage:
+--q4e-moe-ram N2                        v5: number of routed MoE experts resident in the L2 pinned RAM pool,
+                                        across all layers
+                                        (default: 99999; valid range 0-99999; load aborts if RAM is too small,
+                                        never lowered silently)
+                                        (env: Q4E_MOE_RAM)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--q4e-moe-ram": N2 must be in range 0-99999
+System.Management.Automation.RemoteException
+usage:
+--q4e-moe-ram N2                        v5: number of routed MoE experts resident in the L2 pinned RAM pool,
+                                        across all layers
+                                        (default: 99999; valid range 0-99999; load aborts if RAM is too small,
+                                        never lowered silently)
+                                        (env: Q4E_MOE_RAM)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--q4e-prefetch": --q4e-prefetch: expected on or off
+System.Management.Automation.RemoteException
+usage:
+--q4e-prefetch on|off                   live expert page-warm prefetch, "on" or "off" (default: on)
+                                        (env: Q4E_PREFETCH)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+error while handling argument "--q4e-ngram-prefetch": --q4e-ngram-prefetch: expected on or off
+System.Management.Automation.RemoteException
+usage:
+--q4e-ngram-prefetch on|off             ngram (PLE table) row prefetch, "on" or "off" (default: on; requires
+                                        --q4e-prefetch)
+                                        (env: Q4E_NGRAM_PREFETCH)
+System.Management.Automation.RemoteException
+System.Management.Automation.RemoteException
+to show complete usage, run with -h
+test-arg-parser: make sure there is no duplicated arguments in any examples
+
+test-arg-parser: test invalid usage
+
+test-arg-parser: test valid usage
+
+test-arg-parser: test --q4e-moe-vram v5 semantics (N = expert count, valid + invalid usages)
+
+test-arg-parser: test --q4e-moe-ram (valid + invalid usages)
+
+test-arg-parser: test --q4e-prefetch (valid + invalid usages)
+
+test-arg-parser: test --q4e-ngram-prefetch (valid + invalid usages)
+
+test-arg-parser: test v4.1 --q4e-moe-vram override generation (K = layer count, build 42 path, regression)
+
+test-arg-parser: test --q4e-moe-vram override insertion into padded buffer
+
+test-arg-parser: test v5 --q4e-moe-vram N=expert count + fit formulas (hard checks)
+
+test-arg-parser: skip on windows build
+test-arg-parser: test download functions
+
+test-arg-parser: test good URL
+
+test-arg-parser: test bad URL
+
+test-arg-parser: test max size error
+  expected error: error: cannot make GET request
+
+test-arg-parser: all tests OK
+
+
