@@ -2298,6 +2298,118 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     return moe_out;
 }
 
+ggml_tensor * llm_graph_context::build_moe_ffn_pool(
+          ggml_tensor * cur,
+          ggml_tensor * gate_inp,
+          ggml_tensor * up_pool,
+          ggml_tensor * gate_pool,
+          ggml_tensor * down_pool,
+                int64_t n_expert,
+                int64_t n_expert_used,
+        llm_ffn_op_type type_op,
+               bool    norm_w,
+              float    w_scale,
+       llama_expert_gating_func_type gating_op,
+                int    il) const {
+    GGML_ASSERT(type_op == LLM_FFN_SILU);
+    GGML_ASSERT(gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX);
+    GGML_ASSERT(up_pool && gate_pool && down_pool);
+
+    const int64_t n_embd   = cur->ne[0];
+    const int64_t n_tokens = cur->ne[1];
+    const int64_t n_slots  = up_pool->ne[2];
+
+    ggml_tensor * logits = build_lora_mm(gate_inp, cur); // [n_expert, n_tokens]
+    cb(logits, "ffn_moe_logits", il);
+
+    ggml_tensor * probs = ggml_soft_max(ctx0, logits); // [n_expert, n_tokens]
+    cb(probs, "ffn_moe_probs", il);
+
+    ggml_tensor * selected_experts = ggml_argsort_top_k(ctx0, probs, n_expert_used); // [n_expert_used, n_tokens]
+    cb(selected_experts, "ffn_moe_topk", il);
+
+    probs = ggml_reshape_3d(ctx0, probs, 1, n_expert, n_tokens);
+    ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]
+    cb(weights, "ffn_moe_weights", il);
+
+    if (norm_w) {
+        weights = ggml_reshape_2d(ctx0, weights, n_expert_used, n_tokens);
+        ggml_tensor * weights_sum = ggml_sum_rows(ctx0, weights); // [1, n_tokens]
+        cb(weights_sum, "ffn_moe_weights_sum", il);
+
+        weights_sum = ggml_clamp(ctx0, weights_sum, 6.103515625e-5, INFINITY);
+        cb(weights_sum, "ffn_moe_weights_sum_clamped", il);
+
+        weights = ggml_div(ctx0, weights, weights_sum); // [n_expert_used, n_tokens]
+        cb(weights, "ffn_moe_weights_norm", il);
+
+        weights = ggml_reshape_3d(ctx0, weights, 1, n_expert_used, n_tokens);
+    }
+    if (w_scale != 0.0f && w_scale != 1.0f) {
+        weights = ggml_scale(ctx0, weights, w_scale);
+        cb(weights, "ffn_moe_weights_scaled", il);
+    }
+
+    // static remap: id < R -> slot id; id >= R -> slot 0 with zero weight
+    // no scalar add in ggml.h, so R is carried by a 1-element constant tensor
+    ggml_tensor * ids_f = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
+    ggml_tensor * in_pool = ggml_clamp(ctx0, ggml_scale_bias(ctx0, ids_f, -1.0f, float(n_slots)), 0.0f, 1.0f); // 1 if id < R else 0
+    cb(in_pool, "ffn_moe_pool_mask", il);
+
+    ggml_tensor * pool_ids = ggml_cast(ctx0, ggml_mul(ctx0, ids_f, in_pool), GGML_TYPE_I32);
+    cb(pool_ids, "ffn_moe_pool_ids", il);
+
+    // weights is [1, k, n]; in_pool is [k, n] - reshape to match before the broadcast
+    ggml_tensor * in_pool3 = ggml_reshape_3d(ctx0, in_pool, 1, n_expert_used, n_tokens);
+    weights = ggml_mul(ctx0, weights, in_pool3); // zero out out-of-pool contributions
+    cb(weights, "ffn_moe_weights_pool", il);
+
+    ggml_build_forward_expand(gf, weights);
+
+    cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
+
+    ggml_tensor * up = build_lora_mm_id(up_pool, cur, pool_ids, nullptr); // [n_ff, n_expert_used, n_tokens]
+    cb(up, "ffn_moe_up", il);
+
+    ggml_tensor * gate = build_lora_mm_id(gate_pool, cur, pool_ids, nullptr); // [n_ff, n_expert_used, n_tokens]
+    cb(gate, "ffn_moe_gate", il);
+
+    cur = ggml_swiglu_split(ctx0, gate, up);
+    cb(cur, "ffn_moe_swiglu", il);
+
+    ggml_tensor * experts = build_lora_mm_id(down_pool, cur, pool_ids, nullptr); // [n_embd, n_expert_used, n_tokens]
+    cb(experts, "ffn_moe_down", il);
+
+    experts = ggml_mul(ctx0, experts, weights);
+    cb(experts, "ffn_moe_weights_pool_mul", il);
+
+    ggml_build_forward_expand(gf, experts);
+
+    ggml_tensor * cur_experts[LLAMA_MAX_EXPERTS] = { nullptr };
+
+    assert(n_expert_used > 0);
+
+    for (uint32_t i = 0; i < n_expert_used; ++i) {
+        cur_experts[i] = ggml_view_2d(ctx0, experts, n_embd, n_tokens, experts->nb[2], i*experts->nb[1]);
+        ggml_build_forward_expand(gf, cur_experts[i]);
+    }
+
+    ggml_tensor * moe_out = cur_experts[0];
+    for (uint32_t i = 1; i < n_expert_used; ++i) {
+        moe_out = ggml_add(ctx0, moe_out, cur_experts[i]);
+        ggml_build_forward_expand(gf, moe_out);
+    }
+
+    if (n_expert_used == 1) {
+        // avoid returning a non-contiguous tensor
+        moe_out = ggml_cont(ctx0, moe_out);
+    }
+
+    cb(moe_out, "ffn_moe_out_pool", il);
+
+    return moe_out;
+}
+
 // input embeddings with optional lora
 ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd) const {
     const int64_t n_embd_inp = hparams.n_embd_inp();

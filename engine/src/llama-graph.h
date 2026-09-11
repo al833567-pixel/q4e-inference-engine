@@ -980,6 +980,24 @@ struct llm_graph_qkv {
     ggml_tensor * v; // [n_embd_head, n_head_kv, n_tokens]
 };
 
+// q4e v5 pool path (A-15.2a) static slot map
+// slot i holds global expert i (i < n_slots); ids >= n_slots are out of pool
+// out-of-pool ids map to slot 0 and carry zero weight (contribution 0)
+inline int64_t q4e_pool_slot_of(int64_t expert_id, int64_t n_slots) {
+    return expert_id < n_slots ? expert_id : 0;
+}
+
+// count ids that are out of the pool (A-15.2b promotes them instead of zeroing)
+inline int64_t q4e_pool_count_out_of_pool(const int32_t * ids, int64_t n_ids, int64_t n_slots) {
+    int64_t count = 0;
+    for (int64_t i = 0; i < n_ids; ++i) {
+        if (ids[i] >= n_slots) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 struct llm_graph_context {
     const llm_arch arch;
 
@@ -1116,6 +1134,23 @@ struct llm_graph_context {
              ggml_tensor * gate_exps_s = nullptr,
              ggml_tensor * down_exps_s = nullptr,
              ggml_tensor * selected_experts_in = nullptr) const;
+
+    // q4e v5 pool path (A-15.2a): MoE FFN over the per-layer expert pool (R slots)
+    // up_pool/gate_pool: [n_ff, n_embd, R]; down_pool: [n_embd, n_ff, R]
+    // static slot map: slot i = global expert i (i < R); id >= R contributes 0
+    ggml_tensor * build_moe_ffn_pool(
+             ggml_tensor * cur,
+             ggml_tensor * gate_inp,
+             ggml_tensor * up_pool,
+             ggml_tensor * gate_pool,
+             ggml_tensor * down_pool,
+                 int64_t   n_expert,
+                 int64_t   n_expert_used,
+         llm_ffn_op_type   type_op,
+                    bool   norm_w,
+                   float   w_scale,
+          llama_expert_gating_func_type gating_op,
+                     int   il) const;
 
     ggml_tensor * build_moe_ffn(
              ggml_tensor * cur,
