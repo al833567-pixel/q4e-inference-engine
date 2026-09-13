@@ -99,6 +99,8 @@ add_library(${TARGET}
     q4e-expert-cache.cpp
     q4e-expert-warm.cpp
     q4e-expert-cache.h
+    q4e-global-pool.cpp
+    q4e-global-pool.h
     q4e-ngram.cpp
     q4e-ngram.h
     reasoning-budget.cpp
