@@ -1,117 +1,27 @@
-# 推理工具 — 項目現況 · Task A（無 GPU，較聰明 AI）
+# 推理工具 — 項目現況 · Task A (v6 主線)
 
-> 更新：2026-09-08（**本檔只留未完成項目**；已完成工作→[已完成工作.md](已完成工作.md)；commit 全錄→`git log --oneline`）
-> **新策略（2026-09-06 拍板）＝A-14 全 C++ 化**：交付鏈（工具＋測試＋e2e＋bench）100% C++，我們的工作範圍零 .py/.ps1（上游 `engine/*.py` 不納入；`legacy_v1/*.py` 於 C++ 替代全綠後刪除、證據保留）。
-> 姊妹檔：[03B_項目現況_TaskB.md](03B_項目現況_TaskB.md)（GPU 側）
-> 關聯：[02_實作項目工作規劃.md](02_實作項目工作規劃.md)；[01_架構系統資料.md](01_架構系統資料.md)
+## 〇、Task A 角色
+無 GPU 可用：設計＋寫碼（C++）＋CPU build＋測試＋交付包。判斷權全在 A 側。
 
-## 〇、Task A 的角色
+## 一、當前狀態
+v6 架構（全局動態池 + VRAM Gather + 三層快取）已於 `01_架構系統資料.md` 拍板定案。
+歷史版本 (v4.1/v5) 已全面廢棄，不保留任何歷史程式碼與除錯紀錄。
+下一步：啟動 **A-16.0 (v6 設計拍板＋參數語義)**。
 
-**無 GPU 可用、較聰明 AI**：設計＋寫碼（**q4e 核心 C++**）＋CPU build＋C++ 測試＋交付包。全部工作可在無 GPU 環境完成。判斷權全在 A 側。
-
-## 一、未完成項目（A-14 全 C++ 化；子項含原 A-10/A-13）
-
-| 子項 | 名稱 | 狀態 | 內容／驗收 |
+## 二、v6 待辦項目
+| 項 | 名稱 | 狀態 | 內容／驗收 |
 |---|---|---|---|
-| **A-14.4**（＝A-13） | ngram live 接線＋diag 4 階段／accept P1–P4 C++ 化 | **✓（`5b09765` engine 接線＋`c92606e` q4e-ngram 工具；evidence_a144）** | ngram 預測 hint→prefetch；解鎖 M-C #5（N-gram 預取 t/s 掉 <1%） |
-| **A-14.5** | 清理：刪 `legacy_v1/*.py`（8）＋`a9_e2e.ps1`＋2 temp smoke（**12 刪除**；輸出證據保留）；**保留** `legacy_v1/evidence/`＋B9 報告 | **✓（`4e08ef2`）** | 交付樹零 .py/.ps1（上游 `engine/` 除外，文件註明） |
-| **A-14.6** | 終門：交付包宣告「全 C++」＋README/02/03A/03B/已完成工作/RUNBOOK 全落地 | **✓（本次 commit）** | A-12 交付條件 |
+| A-16.0 | v6 設計拍板＋參數語義 | ⏳ | 重定義 `--q4e-moe-vram N` (全局池)；新增 `--q4e-staging-mb S`、`--q4e-layer-floor F`；VRAM-fit 公式。 |
+| A-16.1 | 全局動態池管理器 | ⏳ | Global LRU＋Layer-Aware Floor (防層間擠壓)＋M 計數。 |
+| A-16.2 | VRAM 內 Gather 設計 | ⏳ | Staging Buffer 雙緩衝 (A/B) 管理邏輯＋CUDA Kernel 介面定義。 |
+| A-16.3 | H2D 提升管線 | ⏳ | L2 Pinned RAM＋SSD→L2 fill＋非同步 H2D。 |
+| A-16.4 | Graph 手術 (最高風險) | ⏳ | 48 層全 GPU＋動態 slot 映射＋promotion op。 |
+| A-16.5 | Server 接線＋stats | ⏳ | L1/L2/L3 命中＋Gather 統計。 |
+| A-16.6 | e2e/bench v6 | ⏳ | 客戶端工具更新。 |
+| A-16.7 | 交付包 v6 | ⏳ | 文件與腳本落地。 |
 
-> **執行順序（v4.1，全 ✓）**：A-14.0 ✓ → A-14.1 ✓ → A-14.2 ✓ → A-14.3 ✓ → **A-12（交付 v4.1）✓** → A-14.4 ✓ → **A-14.5 ✓（`4e08ef2`）** → **A-14.6 ✓（本次 commit）**；**Task A（v4.1）全項 ✓（2026-09-08）；剩 B-8（Task B，[03B](03B_項目現況_TaskB.md)）**
-> **範圍拍板（2026-09-06）**：上游 `engine/*.py` 218 檔（conversion/gguf-py/scripts/server tests/examples）＝**不納入**；`legacy_v1/*.py` C++ 替代全綠後**刪除**（evidence 保留）；`config.yaml` 已移除（設定＝q4e-server CLI flags）。
-> **Task A（v4.1）全項完成（2026-09-08）；B-8 後接 v5（B 方案，三層全 GPU）＝A-15.0~A-15.7（見下）**。
-
-## 一-B8、B-8-2 修復＋H1/H2 裁決（A 側交付，2026-09-09~09-10）
-
-| 項 | 狀態 | 證據/commit |
-|---|---|---|
-| **B-8-2 crash 修復**（`k<n_layers` 載入 abort） | **✓（round 1）** | null-terminator 補上；`0ccc16c`＋build 39——實機生效但 override 仍 **no-op**（VRAM-fit 實測 78,431/78,768 MiB） |
-| **H1/H2 裁決＝H1 成立** | **✓（2026-09-10）** | 真根因＝`common_params_parse_ex`(arg.cpp:945-949) 先把 `tensor_buft_overrides` **pad 到 4096 個 null**、其後 q4e pattern append 在 null 之後→loader null-terminated loop 套用到 **0 筆**；regex 本身無誤（`s4_regex_probe` 雙引擎實測）；**裁決＋per-buft breakdown＋新預期 VRAM＝[b8_evidence/stepA_h1h2/adjudication.md](b8_evidence/stepA_h1h2/adjudication.md)** |
-| **修復 round 2**（insert 前於首個 null） | **✓ A 側交付** | `llm_insert_q4e_moe_vram_overrides`(common.h)＋`common.cpp:1311` 改呼叫；test-arg-parser 新增 padded-buffer insert hard-check 區塊；**`207fe88`** |
-| 重構 q4e-server（CUDA） | **✓ build 42** | `version: 0.3.0-dev (build 42, commit 207fe88)`；build 樹＝`D:\q4e_build` ASCII 鏡像 |
-| test-arg-parser 回歸 | **✓ 全綠** | exit 0 `all tests OK`（含新區塊；09-10 複驗 log＝`stepA_h1h2/s5_fix_testargparser.log`） |
-| **新預期 VRAM（B 側驗證線）** | **21,315 MiB** | fit `no_alloc` 投影＝model **20,106.45 on CUDA0**（＝78,056−57,950 吻合）＋ctx/compute ≈1,208.6（ctx 2048/parallel 1）；B 側預期 VRAM-fit 通過＋health 200＋實占 ≈20,1xx–21,3xx MiB |
-| **B 側重驗（Task B，A 側不做）** | 🔓 解鎖 | 前置＝**用戶再釋放 GPU**（llama-server PID 13392 已回來占 23,680/24,576 MiB；絕不殺）；環境警示＝GPU 驅動慢性 WATCHDOG＋9/10 BSOD（adjudication.md）；B-8-2 原文→B-8-3…B-8-7（見 [03B](03B_項目現況_TaskB.md)） |
-| **範圍聲明** | — | `s6_diag` 診斷實際觸及 GPU＝**超出 A 側「無 GPU」範圍**；裁決只採 CPU 側證據（fit no_alloc 投影＋loader placement 帳目＋override log）；GPU 實機驗收＝Task B |
-
-> **build 環境紀錄（2026-09-09 實證）**：本 session launched process ANSI codepage＝950（Big5）且 `chcp 65001` 無效→ninja ANSI API 無法解析 UTF-8 build.ninja 的 CJK 路徑（`FindFirstFileExA(...AI研究...): syntax is incorrect`）；舊沙箱期 build-cuda 另含 `D$:` 驅動引用（D$ 非有效驅動）。**結論：workspace CJK build 樹本環境不可用；A 側 build 位置＝`D:\q4e_build`（ASCII 樹：`src`＝engine 鏡像（含 `.git`）＋`build`）**；build number 來源＝configure 時 `git rev-list --count HEAD`（需 `.git` 鏡像）。
-
-## 一-B8-4、B-8-4 硬線 FAIL 裁決＋修復（A 側，2026-09-12）
-
-| 項 | 狀態 | 證據 |
-|---|---|---|
-| **B-8-4 FAIL**（B 側回報） | **✓ 已裁決（修復交付、待 GPU 重驗）** | ON **1.6366** < OFF **2.3002** t/s（B-8-5/7 全綠；門 2 overlap 0.9299 ✅；門 3 未量） |
-| **階段目標（新、9/12 夜）** | **B-8 跑完 → 確定命中率 → 才判斷 V5 必要性** | 現行 build 47／min-freq gate **不改**照跑；命中率＝快層命中率 `(hits_vram+hits_ram)/touches`＋SSD miss 率 `hits_ssd/touches`＋`prefetch_overlap_ratio`（ON 相 `b8_6_stats.json`）；**決策表（adjudication §5.0）**：高命中率+ON<OFF＝v4.1 有天花板→建議 V5；低命中率＝cache 失效→建議 V5；高命中率+ON≥OFF＝V5 暫不急需；**兩組數（命中率+ON/OFF）齊前不下 V5 結論** |
-| **根因裁決** | **✓（v4.1 warm 策略淨負向）** | distinct 工作集 10,091 expert 各 cold-warm 一次＝**31.6 GB 純盤 I/O**，其中一次性（one-shot）expert 對 compute 零幫助（OFF 也只讀一次）→搶共享 SATA 帶寬＋擠出 hot 頁；證據鏈：B-8-4 stats（io_issued=10091/bytes=31.6 GB/drops=0）＋A-14.3 CPU A/B（ON 0.845/OFF 1.682）＋A-14.1（io 40.8 GB/drops 4181）＋OFF≈367 MB/s≈SATA 滿 |
-| **修復 B-8-4-F1** | **✓ A 側實作** | **min-freq warm gate**：prev-token reuse warm 只 warm 選中 ≥N 次 expert；新旗標 `--q4e-warm-min-freq N`（預設 1＝舊行為凍結；**B 側重跑用 N=2**）；stats 新增 `prefetch_warm_gated`/`prefetch_min_freq`；7 檔 additive 變更（與 A-15.2b WIP 正交，未 commit） |
-| **build 47** | **✓** | `D:\q4e_build`（mirror HEAD `5efd937`）：`q4e-server.exe` 44,072,448 B＋`q4e-bench.exe`＋`test-q4e-expert-warm.exe`；`--version`＝`0.3.0-dev (build 47, commit 5efd937)` MSVC 19.44 |
-| **單元測試** | **✓ 全綠** | test-q4e-expert-warm **195 checks**（含新 `test_freq_gate` 17 斷言；凍結節不變）＋test-q4e-expert-cache **159 checks**＋test-arg-parser **all tests OK**（exit 0） |
-| **CPU A/B 驗證** | **✓ 完成（OFF 已補測）** | **OFF＝0.882 t/s**（`cpu_ab3_off`、290.3 s/256、q4e 關）；ON（gate）＝**<0.285（run 2 超時）/0.4916（run 1 淨態）**；A-14.3 OFF 1.682/ON 0.845；**每組 ON<OFF（含 gate 後）＋warm thread 把 ON 推過超時邊界（OFF 無此問題）→ gate 單獨大概率不足以翻轉 ON<OFF；v4.1 warm backend 在本硬體淨負向→v2 備案（warm 預設停用／I/O rate cap／真 lookahead）大概率需要**；gate 生效實證＝stats（`warm_gated=14,328`）＋195 checks 全綠；B 側 GPU 仍為交付門 |
-| **裁決文件** | **✓** | [b8_evidence/stepA_b84/adjudication.md](b8_evidence/stepA_b84/adjudication.md)（含 B 側零判斷重跑指示：B-8-1~7 原樣＋B-8-2 加 `--q4e-warm-min-freq 2`；門 3 維持 GPU 量） |
-
-## 一-v5、未完成項目（B 方案＝三層全 GPU MoE；2026-09-08 拍板，完整版）
-
-> 目標：v4.1「K 層 GPU＋38 層 CPU 算」→ **48 層 expert 全 GPU 算＋專家級動態駐留**（L1 VRAM pool＋L2 pinned RAM＋L3 SSD；miss→H2D 提升、LRU 逐出；重用 warm 管線＋ngram hint）。細節／驗收／風險見 [02 §二 v5 表](02_實作項目工作規劃.md)。
-
-| 項 | 名稱 | 內容／驗收 |
-|---|---|---|
-| **A-15.0** ✅ | v5 設計拍板＋參數語義（done, build 44/fa862d4, test 全綠） | 重定義 `--q4e-moe-vram N`（＝VRAM 駐留 routed 專家數，預設 5000≈104/層）＋新 `--q4e-moe-ram N2`（L2，預設 4000）＋三層定義＋LRU 逐出（L2 副本保留→L1 逐出 metadata no-op）＋VRAM-fit/RAM-fit 公式；驗收＝設計文件＋參數解析/fit 單元測試（全綠，[v5_evidence/a150_design](v5_evidence/a150_design/)） |
-| **A-15.1** ✅ | 專家 pool 駐留管理器（done, build 45/ef02cd5, test 全綠） | 擴充 `q4e-expert-cache`（新 struct `q4e_expert_pool`，legacy v2 契約不動）：per-(layer,expert) L1/L2/L3（狀態派生）＋per-layer LRU pool（R 槽、L1 逐出＝metadata no-op、L2 副本保留）＋promote/evict（A-15.3 hook）＋**hit 分佈（hits_L1/L2/L3）＋真實 M 計數（round 去重，m_sum/m_max）**；驗收＝C++ 全綠＋9 新單元測試（159 checks）＋test-arg-parser 回歸（[v5_evidence/a151_pool](v5_evidence/a151_pool/)） |
-| **A-15.3** ✅ | H2D 提升管線（done, build 46/0f9fc74, test 全綠） | 改指 `q4e-expert-warm`（v4.1 凍結，同檔追加）：新 class `q4e_expert_h2d`＋可注入 copy backend（B 側 CUDA）＋有界 FIFO job queue（queued→inflight→done、full→drop）＋dedup（inflight/已 L1；dropped 可重試）＋**邏輯 tick 重疊度量**（overlap_hits/accesses，無 wall clock）＋ngram 提前提升 hint＋pool `state_of`/`promote` hook（L3→L2 fill 預留＋L2→L1 兩段）；驗收＝C++ 全綠＋93 新硬斷言（H2D bytes/重疊比/dedup/提前提升/queue cap）＋test-q4e-expert-cache 159＋test-arg-parser 回歸全綠（[v5_evidence/a153_h2d](v5_evidence/a153_h2d/)） |
-| **A-15.2a** ✅ | pool-path MoE FFN（graph 手術，最高風險） | A-15.2a done（build 46, 6d39225；oracle 全綠；剩餘 A-15.2b）：新增 `build_moe_ffn_pool`（`llama-graph.{h,cpp}`，v4.1 凍結 `build_moe_ffn` 不動）＝per-layer **R-slot pool tensor**（gate/up×[n_ff,n_embd,R]、down×[n_embd,n_ff,R]）＋**靜態 id-remap**（slot i＝global expert i、i<R；out-of-pool→slot 0＋權重清零）＋`MUL_MAT_ID` over pool；靜態 helper `q4e_pool_slot_of`/`q4e_pool_count_out_of_pool`；驗收＝C++ 全綠（1841 checks）＋**oracle 對答案**（T1 all-in-pool pool vs full 位元一致 0.0≤1e-4、T2 out-of-pool count=8、T3 混合 count=4、helper=3）＋回歸 cache/warm/arg-parser 全綠（[v5_evidence/a152a_poolpath](v5_evidence/a152a_poolpath/)）；**剩餘 A-15.2b**＝動態 LRU slot 映射＋promotion op 接線（48 層全 GPU、B 側載入） |
-| **A-15.4** | L2 pinned RAM pool＋SSD→L2 fill | pinned pool（N2）＋OS page cache backing＋L2 miss→SSD 讀入 L2→H2D；驗收＝C++ 全綠＋測試 |
-| **A-15.5** | server 接線＋`/q4e/stats` v5 | L1/L2/L3 hit 分佈＋H2D bytes＋pool 佔用＋**真實 M**＋重疊比；驗收＝端點全欄位＋C++ 測試 |
-| **A-15.6** | q4e-bench / q4e-e2e v5 | ON/OFF t/s＋L1/L2/L3 命中＋M＋JSON 報告；驗收＝B-9 直接跑取數 |
-| **A-15.7** | 交付包 v5 | README/01/02/03A/03B/RUNBOOK 全落地「三層全 GPU」＋「A 側已驗證」表；驗收＝交付包可獨立執行 |
-
-> **v5 執行順序（依賴序）**：A-15.0 → A-15.1 → **A-15.3（H2D 管線）** → **A-15.2（graph 手術，最高風險）** → A-15.4 → A-15.5 → A-15.6 → A-15.7 → **B-9（Task B，[03B](03B_項目現況_TaskB.md)）**。
-> **前置**：B-8（v4.1 復驗）先跑，量出**真實 M**＋v4.1 實測 t/s（v5 目標＝2×）；M≤R（≈104/層）→v5 收益最大（L1 全命中）。
-
-## 二、Task A 環境（已實測；build/e2e 用）
-
-| 項目 | 狀態 | 說明 |
-|---|---|---|
-| **MSVC（VS 2022 BuildTools）** | ✓ | vcvars64.bat 在位（cl 不在 PATH→build 時 invoke） |
-| **CMake** | ✓ | 4.4.2 |
-| **Ninja** | ✓ | 1.13.2（CJK 路徑增量陷阱→刪 `.ninja_log` 備案；根因見 git `24f11f7` 之 `evidence_b1/root_cause_b1.md`） |
-| **MinGW g++（WinGet WinLibs）** | ⚠ | **在 PATH 上，會搶 CMake 的編譯器**→**紀律：build 必包在 `vcvars64.bat` 環境** |
-| **CUDA toolkit** | ◐ | v13.3（nvcc 在 PATH）—**A 端不使用**（無 GPU）；B 端 build 用 |
-| **CPU / RAM** | ✓ | i7-9700 8C/8T（無 HT）；RAM 可用 ~20 GB |
-| **SSD（D 槽）** | ✓ | SATA 0.31–0.44 GB/s（GGUF 所在） |
-| **GPU** | **✗（A 端）** | GPU 工作全歸 Task B |
-| **GGUF（檔案在）** | ✓ | `D:\AI_Model\Qwen3.8-Flash-Next\` 4 片 ≈103.7 GB Q4_K_XL |
-| **D:\llama fork** | ◐ | build 10685 **僅二進位**；＝**oracle**（輸出對答案），代碼不進產品 |
-| **模型研究文件** | ✓ | [../QwenQwen3.8-Flash-Next/](../QwenQwen3.8-Flash-Next/) |
-| **t/s 基準** | ✓ | [../冷熱架構與t_s估算/](../冷熱架構與t_s估算/)（repo 外，保留） |
-| **git** | ✓ | main；每步 commit（engine 變更）；HEAD 見 `git log` |
-
-## 三、約束（A 端）
-
-| 約束 | 決定 |
-|---|---|
-| **目標紅線** | **Qwen3.8-Flash-Next 可完整載入使用**；**不為乾淨砍功能** |
-| **全 C++（2026-09-06 拍板）** | 交付鏈＝C++ 唯一（A-14）；上游 `engine/*.py` 不納入；`legacy_v1/*.py` 替代後刪 |
-| **基底紀律** | 產品代碼只進 `engine/`；`D:\llama` fork＝oracle，代碼不進產品 |
-| **無 GPU** | A 端全部＝CPU build＋CPU 跑；GPU 事→Task B |
-| **placement** | `--n-gpu-layers all`＋`--q4e-moe-vram K`（K 預設 10、範圍 0–999、VRAM 裝不下跳錯、K 可設定）；舊 `-ncmoe/-cmoe/-ncffn` **連 core 移除**（01 §六） |
-| **快取判斷** | CPU 式（LRU＋確定性預取），不訓練模型 |
-| **git** | 每步 commit；可回滾 |
-| **引擎代碼風格** | ASCII only；註解 1–2 行（ASD-STE100）；复用上游基建 |
-
-## 四、build 陷阱（仍適用）
-
-1. **`GGML_CPU_REPACK`**：build 必 `GGML_CPU_REPACK=OFF`（44.35 GB > 20 GB RAM）。**B 端同須**。
-2. **同目錄 in-place reconfigure 陷阱**：改 CMake 參數＝刪 build 目錄重來。
-3. **`BUILD_SHARED_LIBS` 陷阱**：MSVC Windows 預設 ON→test 整塊跳過。**紀律：configure 必顯式 `-DBUILD_SHARED_LIBS=OFF`＋`-DLLAMA_BUILD_TESTS=ON`**。
-4. **MinGW 搶編譯器**：PATH 上的 g++ 會蓋過 MSVC→build 必包 `vcvars64.bat`。
-5. **CJK 路徑 ninja 增量**：偶發 stale→刪 `.ninja_log` 重跑（A-9 本輪未觸發；B-1 曾觸發）。
-6. **CreateFileMapping 權限**（A-14.1 backend 適用）：handle 以 `GENERIC_READ` 開啟時 mapping 必 **`PAGE_READONLY`**（`PAGE_READWRITE`→ERROR_ACCESS_DENIED→0xC0000409）。
-7. **沙箱**：本 session＝danger-full-access＋approval disabled；build 正常。
-8. **header 依賴追蹤缺失**：`engine/build-msvc` 無 ninja .d depfile（CJK/ACP-950 環境）→header 改動不觸發重編→stale .obj（ODR 不一致）；**紀律：改到 header 後 build 必 `--clean-first`（或核對 .obj mtime）**；2026-09-08 實踩（S6 e2e 假失敗）→`S6-rebuild.log` 修復證據（暫存 log 已清除、歸檔 git `bcaf1c9`，`git show bcaf1c9:S6-rebuild.log` 取回）；**2026-09-10 A-15.0 再踩（`D:\q4e_build\build` 樹）：common.h 改動後增量 build 只重編 3 檔→混布局→兩個 exe 啟動即 AV（0xC0000005，無輸出）→`--clean-first` 全量 477 步後全綠；證據 [v5_evidence/a150_design/build.log](v5_evidence/a150_design/build.log)**。
-9. **FLAT MIRROR 同步紀律（v5 起，`D:\q4e_build`）**：build 源＝`D:\q4e_build\src`（flat 佈局、CMAKE_HOME_DIRECTORY），**非** repo `engine/` 子樹；同步＝`Copy-Item` repo `engine/<path>` → `D:\q4e_build\src\<path>`，`git hash-object` 對 `git rev-parse <commit>:engine/<path>` 驗證 byte-exact；**Copy-Item 保留來源 mtime→ninja 視為未變→靜默 no-op**→同步後必 touch（設 `LastWriteTime`）再 build；build 必包 `vcvars64.bat`；kill 掉的中間 build 可能留壞 `.cu.obj`（LNK1123）→刪該 CMakeFiles 目錄 .obj 重建。
-
-## 五、指針
-
-- 已完成工作（A-0～A-9、A-11、B-0～B-7、v1 基準、決策紀錄）：[已完成工作.md](已完成工作.md)
-- A-14.1 設計（issued 定義、雙緩衝、warm 語義、v1 對照）：[02 §十](02_實作項目工作規劃.md)
-- B-4 FAIL 根因與核實：[已完成工作.md §四](已完成工作.md)
+## 三、環境與約束
+- CPU/RAM: i7-9700 / ~20 GB RAM / SATA SSD。
+- GPU: 無 (A 側)。
+- 架構紅線：48 層全 GPU 算；L1 全局池＋VRAM 內 Gather；禁用 Per-Layer Pool。
+- Build 陷阱：`GGML_CPU_REPACK=OFF`；`BUILD_SHARED_LIBS=OFF`；必包 `vcvars64.bat`。
