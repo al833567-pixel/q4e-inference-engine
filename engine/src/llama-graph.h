@@ -1135,9 +1135,10 @@ struct llm_graph_context {
              ggml_tensor * down_exps_s = nullptr,
              ggml_tensor * selected_experts_in = nullptr) const;
 
-    // q4e v5 pool path (A-15.2a): MoE FFN over the per-layer expert pool (R slots)
+    // q4e v5 pool path (A-15.2a static / A-15.2b dynamic): MoE FFN over the per-layer pool (R slots)
     // up_pool/gate_pool: [n_ff, n_embd, R]; down_pool: [n_embd, n_ff, R]
-    // static slot map: slot i = global expert i (i < R); id >= R contributes 0
+    // static (slot_table = null): slot i = global expert i (i < R); id >= R contributes 0
+    // dynamic: slot_table [n_expert] F32, table[id] = slot (0..R-1) or R (unmapped, weight 0)
     ggml_tensor * build_moe_ffn_pool(
              ggml_tensor * cur,
              ggml_tensor * gate_inp,
@@ -1150,7 +1151,8 @@ struct llm_graph_context {
                     bool   norm_w,
                    float   w_scale,
           llama_expert_gating_func_type gating_op,
-                     int   il) const;
+                     int   il,
+              ggml_tensor * slot_table = nullptr) const;
 
     ggml_tensor * build_moe_ffn(
              ggml_tensor * cur,

@@ -46,9 +46,14 @@ The log dir receives: `server.out.log`, `server.err.log`, `gen.json`,
 - **G4** authed stream request (8 tokens) -> `>= 2` `data:` lines and one
   `data: [DONE]`; body saved to `sse.txt`.
 - **G5** authed `GET /q4e/stats` -> `q4e_prefetch == 1`, `touches > 0`,
-  `layers_touched == layers` (and `layers > 0`), `prefetch_io_issued > 0`,
-  `prefetch_overlap_hits > 0`; other prefetch/hook fields are printed, not
-  gated. Raw body saved to `stats.json`.
+  `layers_touched == expected_touched` (and `layers > 0`),
+  `prefetch_io_issued > 0`, `prefetch_overlap_hits > 0`; other prefetch/hook
+  fields are printed, not gated. Raw body saved to `stats.json`.
+  `expected_touched` is placement-aware: the hook books host-resident MoE
+  layers only, so `expected = layers` when no layer is device-resident
+  (`hook_skips_weights_device == 0`, e.g. CPU run) and
+  `expected = layers - q4e_moe_vram` (or `0` when `q4e_moe_vram >= layers`)
+  when device-resident layers exist.
 - **G6** `TerminateProcess`/`SIGKILL` only the spawned PID, wait up to 180 s
   for exit (a ~100 GB process can linger after kill), then re-scan
   (Windows) to confirm the PID is gone.

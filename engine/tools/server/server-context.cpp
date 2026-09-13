@@ -1112,10 +1112,12 @@ private:
                 q4e_warm = std::make_unique<q4e_expert_warm>(params_base.model.path);
                 q4e_warm->bind(q4e_cache);
                 q4e_warm->init();
+                q4e_warm->set_min_freq(params_base.q4e_warm_min_freq); // B-8-4 fix; 1 = legacy
                 q4e_warm->start();
                 params_base.cb_eval           = q4e_expert_warm_cb_eval;
                 params_base.cb_eval_user_data = q4e_warm.get();
-                SRV_INF("q4e: live prefetch backend active (model=%s)\n", params_base.model.path.c_str());
+                SRV_INF("q4e: live prefetch backend active (model=%s, warm_min_freq=%d)\n",
+                        params_base.model.path.c_str(), params_base.q4e_warm_min_freq);
                 // A-14.4: ngram (PLE) row prefetch on the same backend; absent tensor stays off
                 try {
                     if (q4e_warm->init_ngram(params_base.model.path)) {
@@ -4735,6 +4737,8 @@ void server_routes::init_routes() {
             data.set({ "prefetch_io_completed",   w.io_completed() });
             data.set({ "prefetch_io_dropped",     w.io_dropped() });
             data.set({ "prefetch_events_dropped", w.events_dropped() });
+            data.set({ "prefetch_warm_gated",     w.warm_gated() });
+            data.set({ "prefetch_min_freq",       w.min_freq() });
             data.set({ "prefetch_overlap_hits",   w.overlap_hits() });
             data.set({ "prefetch_overlap_ratio",  touches_seen > 0 ? (double)w.overlap_hits() / (double)touches_seen : 0.0 });
             data.set({ "hook_skips_weights_device", w.hook_skips_weights_device() });

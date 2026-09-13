@@ -1,14 +1,20 @@
-// Unit tests for the q4e v5 pool-path MoE FFN builder (A-15.2a, llama-graph.cpp build_moe_ffn_pool).
+#ifndef NOMINMAX
+#   define NOMINMAX
+#endif
+
+// Unit tests for the q4e v5 pool-path MoE FFN builder (A-15.2a static / A-15.2b dynamic).
 // CPU oracle: pool path vs full expert tensor path (build_moe_ffn), f32, fixed seed.
 #include "llama-graph.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "ggml.h"
+#include "q4e-expert-warm.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <random>
 #include <vector>
@@ -421,11 +427,334 @@ static void test_mixed_per_token() {
     test_graph_case(cd, 5, 2.5f, "mixed_per_token", 4); // 2 per token x 2 tokens
 }
 
+#define CHECK_THROWS(expr) \
+    do { \
+        ++g_checks; \
+        bool threw = false; \
+        try { \
+            (void) (expr); \
+        } catch (...) { \
+            threw = true; \
+        } \
+        if (!threw) { \
+            ++g_failures; \
+            fprintf(stderr, "FAIL %s:%d: %s did not throw\n", __FILE__, __LINE__, #expr); \
+        } \
+    } while (0)
+
+// ---- A-15.2b: dynamic slot map + promotion (arbitrary access sequence oracle) ----
+
+// shared multi-round env: full tensors (copy source + reference path) and a separate pool buffer
+struct dyn_env {
+    ggml_context * ctx_d = nullptr;
+    llama_adapter_loras loras;
+    llm_graph_result res{2048};
+    llm_graph_params params{};
+    std::unique_ptr<llm_graph_context> gctx;
+
+    ggml_tensor * cur = nullptr;
+    ggml_tensor * up = nullptr;
+    ggml_tensor * gate = nullptr;
+    ggml_tensor * down = nullptr;
+    ggml_tensor * up_pool = nullptr;
+    ggml_tensor * gate_pool = nullptr;
+    ggml_tensor * down_pool = nullptr;
+    ggml_tensor * gate_inp[5] = {nullptr};
+    ggml_tensor * table[5] = {nullptr};
+
+    std::unique_ptr<q4e_expert_pool> pool;
+    q4e_pool_dynamic * dyn = nullptr;
+    q4e_expert_h2d * h2d = nullptr;
+
+    // one persistent backend + sched for all rounds (production pattern: the gallocr
+    // must outlive the op-node data pointers it sets; the graph is rebuilt per round)
+    ggml_backend_t cpu = nullptr;
+    ggml_backend_sched_t sched = nullptr;
+
+    void pool_setup() {
+        q4e_expert_pool_config pcfg;
+        pcfg.n_layers = 1;
+        pcfg.n_experts_per_layer = 8;
+        pcfg.l1_slots_per_layer = 5; // R = 5
+        pcfg.l2_slots_per_layer = 8; // all experts can be L2
+        pool.reset(new q4e_expert_pool(pcfg));
+        dyn = new q4e_pool_dynamic(*pool);
+        q4e_h2d_config cfg;
+        cfg.expert_bytes = int64_t(3) * 128 * 64 * 4; // gate + up + down rows, f32
+        cfg.queue_cap = 64;
+        cfg.copy_latency = 1;
+        h2d = new q4e_expert_h2d(dyn, cfg);
+        h2d->bind(pool.get());
+        dyn->set_h2d(h2d);
+    }
+
+    ~dyn_env() {
+        if (sched) {
+            ggml_backend_sched_free(sched);
+        }
+        if (cpu) {
+            ggml_backend_free(cpu);
+        }
+        if (ctx_d) {
+            ggml_free(ctx_d);
+        }
+        delete h2d;
+        delete dyn;
+    }
+};
+
+static void env_setup_dyn(dyn_env & env, const case_data & cd) {
+    // 17 tensor objects: cur, 3 full, 3 pool, 5 gate_inp, 5 tables
+    const size_t mem_size = (size_t) ggml_tensor_overhead() * 17
+        + (size_t) cd.n_ff * cd.n_embd * cd.n_expert * 4 * 3
+        + (size_t) cd.n_ff * cd.n_embd * 5 * 4 * 3
+        + (size_t) cd.n_embd * cd.n_tokens * 4
+        + (size_t) cd.n_expert * cd.n_embd * 4 * 5
+        + (size_t) cd.n_expert * 4 * 5
+        + 64;
+    ggml_init_params ip;
+    ip.mem_size   = mem_size;
+    ip.mem_buffer = nullptr;
+    ip.no_alloc   = false;
+    env.ctx_d = ggml_init(ip);
+
+    env.cur  = ggml_new_tensor_2d(env.ctx_d, GGML_TYPE_F32, cd.n_embd, cd.n_tokens);
+    env.up   = ggml_new_tensor_3d(env.ctx_d, GGML_TYPE_F32, cd.n_embd, cd.n_ff, cd.n_expert);
+    env.gate = ggml_new_tensor_3d(env.ctx_d, GGML_TYPE_F32, cd.n_embd, cd.n_ff, cd.n_expert);
+    env.down = ggml_new_tensor_3d(env.ctx_d, GGML_TYPE_F32, cd.n_ff, cd.n_embd, cd.n_expert);
+    // separate pool allocation; the full tensors stay pristine (copy source + reference path)
+    env.up_pool   = ggml_new_tensor_3d(env.ctx_d, GGML_TYPE_F32, cd.n_embd, cd.n_ff, 5);
+    env.gate_pool = ggml_new_tensor_3d(env.ctx_d, GGML_TYPE_F32, cd.n_embd, cd.n_ff, 5);
+    env.down_pool = ggml_new_tensor_3d(env.ctx_d, GGML_TYPE_F32, cd.n_ff, cd.n_embd, 5);
+
+    fill_tensor(env.cur, cd.cur);
+    fill_tensor(env.up, cd.up_w);
+    fill_tensor(env.gate, cd.gate_w);
+    fill_tensor(env.down, cd.down_w);
+
+    env.params.arch = LLM_ARCH_QWEN4EXP;
+    env.params.gtype = LLM_GRAPH_TYPE_DEFAULT;
+    env.params.n_outputs = (uint32_t) cd.n_tokens;
+    env.params.hparams.n_embd = cd.n_embd;
+    env.params.hparams.n_expert = cd.n_expert;
+    env.params.hparams.n_expert_used = cd.k;
+    env.params.hparams.n_layer_all = 2;
+    env.params.hparams.swiglu_clamp_exp.fill(0.0f);
+    env.params.ubatch.n_tokens = cd.n_tokens;
+    env.params.res = &env.res;
+    env.params.loras = &env.loras;
+
+    env.gctx.reset(new llm_graph_context(env.params));
+}
+
+// one round: access sequence (promotions), optional in-flight overlap probe, drain,
+// fill the slot table, then pool path vs full path vs host oracle
+static double dyn_round(
+      dyn_env & env,
+      const case_data & cd,
+      ggml_tensor * gate_inp,
+      ggml_tensor * table,
+      bool probe) {
+    env.dyn->begin_round(0);
+    std::vector<int> promoted;
+    for (int i = 0; i < cd.k; ++i) {
+        const int e = cd.sel[0][i];
+        if (env.dyn->access(0, e) != 0) {
+            promoted.push_back(e);
+        }
+    }
+    if (probe && !promoted.empty()) {
+        // issue the copies, then re-access while inflight (A-15.3 overlap caliber)
+        env.h2d->drain_once();
+        CHECK(env.h2d->has_pending());
+        for (int e : promoted) {
+            env.dyn->access(0, e);
+        }
+    }
+    env.dyn->drain();
+    CHECK(!env.h2d->has_pending());
+    env.dyn->end_round(0);
+
+    // every selected expert must now be mapped (in the pool buffer)
+    for (int i = 0; i < cd.k; ++i) {
+        CHECK(env.dyn->slot_of(0, cd.sel[0][i]) >= 0);
+    }
+
+    // slot table: mapped -> slot, unmapped -> R sentinel (weight zeroed in graph)
+    const int R = env.pool->cfg().l1_slots_per_layer;
+    float * tb = (float *) ggml_get_data(table);
+    for (int e = 0; e < cd.n_expert; ++e) {
+        const int s = env.dyn->slot_of(0, e);
+        tb[e] = (s >= 0) ? float(s) : float(R);
+    }
+
+    // fresh graph per round on the persistent sched (same pattern as llama_eval)
+    env.res.reset();
+    ggml_backend_sched_reset(env.sched);
+
+    ggml_tensor * ref = env.gctx->build_moe_ffn(
+            env.cur, gate_inp,
+            env.up, env.gate, env.down,
+            nullptr,
+            cd.n_expert, cd.k,
+            LLM_FFN_SILU, true, 2.5f,
+            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, 0,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+    CHECK(ref != nullptr);
+
+    ggml_tensor * pool = env.gctx->build_moe_ffn_pool(
+            env.cur, gate_inp,
+            env.up_pool, env.gate_pool, env.down_pool,
+            cd.n_expert, cd.k,
+            LLM_FFN_SILU, true, 2.5f,
+            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, 0, table);
+    CHECK(pool != nullptr);
+
+    const ggml_status st = ggml_backend_sched_graph_compute(env.sched, env.res.get_gf());
+    CHECK(st == GGML_STATUS_SUCCESS);
+
+    std::vector<float> ref_out = read_out(ref);
+    std::vector<float> pool_out = read_out(pool);
+
+    double max_abs = 0.0;
+    for (int t = 0; t < cd.n_tokens; ++t) {
+        std::vector<double> expect = host_token_out(cd, t, cd.n_expert, 2.5f);
+        for (int i = 0; i < cd.n_embd; ++i) {
+            const float pv = pool_out[(size_t) i + (size_t) t * cd.n_embd];
+            const float rv = ref_out[(size_t) i + (size_t) t * cd.n_embd];
+            CHECK_NEAR(pv, expect[(size_t) i], 1e-4); // core acceptance gate
+            CHECK_NEAR(rv, expect[(size_t) i], 1e-4);
+            max_abs = std::max(max_abs, std::fabs((double) pv - (double) rv));
+        }
+    }
+    CHECK(max_abs <= 1e-4 * 2.0);
+    return max_abs;
+}
+
+// arbitrary access sequence: forced LRU eviction, L3 two-stage and L2 re-promotion,
+// overlap probe, exact promotion/dedup/hit counts
+static void test_dynamic_oracle_sequence() {
+    case_data cds[5];
+    const double targets[5][8] = {
+        {4.0, 3.5, 3.0, 2.0, 1.5, 1.0, 0.5, 0.0}, // top-3 {0,1,2}  all L1 hits
+        {3.0, 1.0, 0.9, 0.8, 0.7, 4.0, 3.5, 0.0}, // top-3 {0,5,6}  5,6 L3 promotion
+        {0.5, 4.0, 0.4, 3.5, 0.3, 0.2, 0.1, 3.9}, // top-3 {1,7,3}  7 L3, 3 L2 re-promote
+        {4.0, 0.5, 3.5, 0.4, 3.0, 0.2, 0.1, 0.0}, // top-3 {0,2,4}  all L2 re-promote
+        {0.5, 0.4, 3.0, 0.3, 0.2, 4.0, 3.5, 0.1}, // top-3 {5,6,2}  5,6 second stage, 2 hit
+    };
+    std::vector<token_group> groups(1);
+    std::vector<int> token_to_group = {0, 0, 0, 0};
+    for (int r = 0; r < 5; ++r) {
+        groups[0].target.assign(targets[r], targets[r] + 8);
+        make_case(cds[r], groups, token_to_group);
+        CHECK_EQ_I64(cds[r].sel[0].size(), 3);
+    }
+
+    dyn_env env;
+    env.pool_setup();
+    env_setup_dyn(env, cds[0]);
+    for (int r = 0; r < 5; ++r) {
+        env.gate_inp[r] = ggml_new_tensor_2d(env.ctx_d, GGML_TYPE_F32, cds[r].n_embd, cds[r].n_expert);
+        fill_tensor(env.gate_inp[r], cds[r].gate_inp);
+        env.table[r] = ggml_new_tensor_1d(env.ctx_d, GGML_TYPE_F32, cds[r].n_expert);
+    }
+    // initial pool load: slot i holds expert i (matches the dynamic map seed)
+    for (int i = 0; i < 5; ++i) {
+        q4e_pool_promote_into(env.up_pool, env.gate_pool, env.down_pool,
+                              env.up, env.gate, env.down, i, i);
+    }
+    env.dyn->set_layer_tensors(0, env.up_pool, env.gate_pool, env.down_pool,
+                               env.up, env.gate, env.down);
+
+    for (int r = 0; r < 5; ++r) {
+        const bool probe = (r == 1); // in-flight overlap probe (A-15.3 caliber)
+        const double max_abs = dyn_round(env, cds[r], env.gate_inp[r], env.table[r], probe);
+        fprintf(stderr, "dyn round %d: pool vs full max_abs_err = %.3e\n", r, max_abs);
+        CHECK(max_abs <= 1e-4);
+    }
+
+    // exact counters: first out-of-pool per episode issues once; dedup hits do not re-issue
+    CHECK_EQ_I64(env.dyn->hits_l1(), 6);
+    CHECK_EQ_I64(env.dyn->misses_l2(), 6);
+    CHECK_EQ_I64(env.dyn->misses_l3(), 5);
+    CHECK_EQ_I64(env.dyn->promotions(), 8);
+    CHECK_EQ_I64(env.h2d->h2d_issued(), 9);
+    CHECK_EQ_I64(env.h2d->h2d_completed(), 9);
+    CHECK_EQ_I64(env.h2d->h2d_bytes(), 9 * int64_t(3) * 128 * 64 * 4);
+    CHECK_EQ_I64(env.h2d->overlap_hits(), 2);
+    CHECK_EQ_I64(env.h2d->dedup_skips(), 0);
+    CHECK_EQ_I64(env.h2d->h2d_dropped(), 0);
+    CHECK_EQ_I64(env.h2d->accesses(), 17);
+
+    // pool manager view: LRU evictions, two-stage L3, M count per round
+    q4e_expert_pool_stats ps = env.pool->stats();
+    CHECK_EQ_I64(ps.accesses, 11); // seed 5 + L1 hits 6
+    CHECK_EQ_I64(ps.hits_l1, 6);
+    CHECK_EQ_I64(ps.hits_l3, 5); // seed only
+    CHECK_EQ_I64(ps.l2_fills, 8); // seed 5 + 5,6,7
+    CHECK_EQ_I64(ps.l2_to_l1, 6); // 3,0,2,4,5,6
+    CHECK_EQ_I64(ps.l1_evictions, 7); // 3,4,2,0,1,3,0
+    CHECK_EQ_I64(ps.rounds, 5);
+    CHECK_EQ_I64(ps.m_sum, 15);
+    CHECK_EQ_I64(ps.m_max, 3);
+
+    // LRU order check: the evicted expert is the longest-unhit resident
+    CHECK(std::strcmp(env.pool->state_of(0, 5), "l1") == 0);
+    CHECK(std::strcmp(env.pool->state_of(0, 6), "l1") == 0);
+    CHECK(std::strcmp(env.pool->state_of(0, 2), "l1") == 0);
+    CHECK_EQ_I64(env.dyn->slot_of(0, 3), -1);
+}
+
+// per-layer independence + L3 two-stage + range guards (no ggml tensors involved)
+static void test_dynamic_multilayer() {
+    q4e_expert_pool_config pcfg;
+    pcfg.n_layers = 2;
+    pcfg.n_experts_per_layer = 8;
+    pcfg.l1_slots_per_layer = 5;
+    pcfg.l2_slots_per_layer = 8;
+    q4e_expert_pool pool(pcfg);
+    q4e_pool_dynamic dyn(pool);
+    q4e_h2d_config cfg;
+    cfg.expert_bytes = 100;
+    cfg.queue_cap = 8;
+    cfg.copy_latency = 1;
+    q4e_expert_h2d h2d(&dyn, cfg);
+    h2d.bind(&pool);
+    dyn.set_h2d(&h2d);
+
+    // layer 1 promotes independently of layer 0
+    dyn.begin_round(1);
+    CHECK_EQ_I64(dyn.access(1, 6), 2); // fresh L3
+    CHECK_EQ_I64(dyn.access(1, 7), 2);
+    dyn.end_round(1);
+    dyn.drain();
+
+    CHECK(dyn.slot_of(1, 6) >= 0);
+    CHECK(dyn.slot_of(1, 7) >= 0);
+    CHECK_EQ_I64(dyn.slot_of(1, 0), -1); // LRU victim (slot 0)
+    CHECK_EQ_I64(dyn.slot_of(1, 1), -1); // LRU victim (slot 1)
+    CHECK_EQ_I64(dyn.slot_of(0, 0), 0); // layer 0 untouched
+    CHECK_EQ_I64(dyn.slot_of(0, 4), 4);
+    CHECK_EQ_I64(dyn.promotions(), 2);
+    CHECK_EQ_I64(h2d.h2d_issued(), 2);
+    CHECK_EQ_I64(h2d.h2d_completed(), 2);
+    // L3 -> L1 takes two stages: after one job the expert sits in L2
+    CHECK(std::strcmp(pool.state_of(1, 6), "l2") == 0);
+    CHECK(std::strcmp(pool.state_of(1, 7), "l2") == 0);
+
+    // range guards
+    CHECK_THROWS(dyn.access(2, 0));
+    CHECK_THROWS(dyn.access(1, 8));
+    CHECK_EQ_I64(dyn.slot_of(1, 8), -1);
+}
+
 int main() {
     test_slot_of_helper();
     test_all_in_pool_oracle();
     test_out_of_pool_zeroed();
     test_mixed_per_token();
+    test_dynamic_oracle_sequence();
+    test_dynamic_multilayer();
     if (g_failures) {
         fprintf(stderr, "q4e-moe-pool: %d/%d checks FAILED\n", g_failures, g_checks);
         return 1;

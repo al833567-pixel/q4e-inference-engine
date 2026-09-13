@@ -374,6 +374,25 @@ const char * q4e_expert_pool::state_of(int layer, int expert) const {
     return "l3";
 }
 
+std::vector<int> q4e_expert_pool::l1_order_of(int layer) const {
+    check_layer(layer);
+    const layer_state & ls = layers_[(std::size_t) layer];
+    return std::vector<int>(ls.l1_order.begin(), ls.l1_order.end());
+}
+
+void q4e_expert_pool::l1_evict(int layer, int expert) {
+    check_layer(layer);
+    check_expert(expert);
+    layer_state & ls = layers_[(std::size_t) layer];
+    auto it = ls.l1_pos.find(expert);
+    if (it == ls.l1_pos.end()) {
+        return;
+    }
+    ls.l1_order.erase(it->second);
+    ls.l1_pos.erase(it);
+    ++l1_evictions_; // metadata no-op; L2 copy kept if present
+}
+
 q4e_expert_pool_stats q4e_expert_pool::stats() const {
     q4e_expert_pool_stats s;
     s.accesses = accesses_;

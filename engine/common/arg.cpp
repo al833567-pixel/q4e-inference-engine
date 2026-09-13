@@ -2846,6 +2846,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.q4e_ngram_prefetch = false;
         }
     ));
+    add_opt(common_arg(
+        {"--q4e-warm-min-freq"}, "N",
+        string_format(
+            "warm min-freq gate: warm only experts selected at least N times (default: %d; 1 = legacy, warm all)",
+            params.q4e_warm_min_freq),
+        [](common_params & params, int value) {
+            if (value < 1 || value > 1000000) {
+                throw std::invalid_argument("N must be in range 1-1000000");
+            }
+            params.q4e_warm_min_freq = value;
+        }
+    ).set_env("Q4E_WARM_MIN_FREQ"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",

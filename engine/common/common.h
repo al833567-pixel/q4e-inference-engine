@@ -481,6 +481,7 @@ struct common_params {
     int32_t q4e_moe_ram        = 4000;  // v5: routed MoE experts resident in L2 pinned RAM (0 = L2 off)
     bool    q4e_prefetch       = true;  // live expert page-warm prefetch (A-14.1); off = A-9 hook only
     bool    q4e_ngram_prefetch = true;  // ngram (PLE table) row prefetch (A-14.4); needs q4e_prefetch
+    int32_t q4e_warm_min_freq  = 1;     // warm min-freq gate (B-8-4 fix): warm only experts seen >= N times; 1 = legacy (warm all)
 
     // margin per device in bytes for fitting parameters to free memory:
     std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);

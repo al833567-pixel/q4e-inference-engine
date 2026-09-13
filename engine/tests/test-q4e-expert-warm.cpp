@@ -214,6 +214,49 @@ static void test_touches_seen(const uint8_t * heap) {
     CHECK_EQ_I64(m.warm.touches_seen(), 6);
 }
 
+// min-freq gate (B-8-4 fix): one-shot experts are not warmed; min_freq=1 stays legacy
+static void test_freq_gate(const uint8_t * heap) {
+    module m;
+    make_module(m, heap);
+    m.warm.set_min_freq(2);
+
+    const int32_t a1[] = {2, 3, Q4E_EXPERT_SHARED_ID};
+    CHECK(m.warm.enqueue_host_ids(0, a1, 3));
+    drain_until_quiescent(m.warm);
+    CHECK(m.warm.io_issued() == 0);
+    CHECK(m.warm.warm_gated() == 0);
+
+    // A2: prev set {2,3,shared}; expert 2 seen twice (a1,a2) -> warmed;
+    // expert 3 and shared seen once -> gated
+    const int32_t a2[] = {1, 2};
+    CHECK(m.warm.enqueue_host_ids(0, a2, 2));
+    drain_until_quiescent(m.warm);
+    CHECK(m.warm.io_issued() == 1);
+    CHECK(m.warm.io_bytes() == 1024);
+    CHECK(m.warm.io_completed() == 1);
+    CHECK(m.warm.warm_gated() == 2);
+
+    // A3: prev set {1,2}; expert 1 seen once -> gated; expert 2 already warmed -> no new I/O
+    const int32_t a3[] = {2};
+    CHECK(m.warm.enqueue_host_ids(0, a3, 1));
+    drain_until_quiescent(m.warm);
+    CHECK(m.warm.io_issued() == 1);
+    CHECK(m.warm.io_bytes() == 1024);
+    CHECK(m.warm.warm_gated() == 3);
+    CHECK(m.warm.overlap_hits() == 1); // expert 2 in a3 was warmed before this touch
+
+    // min_freq=1 restores legacy: a fresh expert is warmed on its second selection
+    module m2;
+    make_module(m2, heap);
+    const int32_t b[] = {3};
+    CHECK(m2.warm.enqueue_host_ids(0, b, 1));
+    drain_until_quiescent(m2.warm);
+    CHECK(m2.warm.enqueue_host_ids(0, b, 1));
+    drain_until_quiescent(m2.warm);
+    CHECK(m2.warm.io_issued() == 1);
+    CHECK(m2.warm.warm_gated() == 0);
+}
+
 static void test_real_gguf() {
     const char * dir = std::getenv("Q4E_WARM_REAL_DIR");
     if (dir == nullptr) {
@@ -641,6 +684,7 @@ int main(int argc, char ** argv) {
     test_synthetic_a7(heap.data());
     test_slot_exhaustion(heap.data());
     test_touches_seen(heap.data());
+    test_freq_gate(heap.data());
     test_ngram_prefetch();
     test_real_gguf();
 

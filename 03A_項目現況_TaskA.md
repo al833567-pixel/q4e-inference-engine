@@ -36,6 +36,19 @@
 
 > **build 環境紀錄（2026-09-09 實證）**：本 session launched process ANSI codepage＝950（Big5）且 `chcp 65001` 無效→ninja ANSI API 無法解析 UTF-8 build.ninja 的 CJK 路徑（`FindFirstFileExA(...AI研究...): syntax is incorrect`）；舊沙箱期 build-cuda 另含 `D$:` 驅動引用（D$ 非有效驅動）。**結論：workspace CJK build 樹本環境不可用；A 側 build 位置＝`D:\q4e_build`（ASCII 樹：`src`＝engine 鏡像（含 `.git`）＋`build`）**；build number 來源＝configure 時 `git rev-list --count HEAD`（需 `.git` 鏡像）。
 
+## 一-B8-4、B-8-4 硬線 FAIL 裁決＋修復（A 側，2026-09-12）
+
+| 項 | 狀態 | 證據 |
+|---|---|---|
+| **B-8-4 FAIL**（B 側回報） | **✓ 已裁決（修復交付、待 GPU 重驗）** | ON **1.6366** < OFF **2.3002** t/s（B-8-5/7 全綠；門 2 overlap 0.9299 ✅；門 3 未量） |
+| **階段目標（新、9/12 夜）** | **B-8 跑完 → 確定命中率 → 才判斷 V5 必要性** | 現行 build 47／min-freq gate **不改**照跑；命中率＝快層命中率 `(hits_vram+hits_ram)/touches`＋SSD miss 率 `hits_ssd/touches`＋`prefetch_overlap_ratio`（ON 相 `b8_6_stats.json`）；**決策表（adjudication §5.0）**：高命中率+ON<OFF＝v4.1 有天花板→建議 V5；低命中率＝cache 失效→建議 V5；高命中率+ON≥OFF＝V5 暫不急需；**兩組數（命中率+ON/OFF）齊前不下 V5 結論** |
+| **根因裁決** | **✓（v4.1 warm 策略淨負向）** | distinct 工作集 10,091 expert 各 cold-warm 一次＝**31.6 GB 純盤 I/O**，其中一次性（one-shot）expert 對 compute 零幫助（OFF 也只讀一次）→搶共享 SATA 帶寬＋擠出 hot 頁；證據鏈：B-8-4 stats（io_issued=10091/bytes=31.6 GB/drops=0）＋A-14.3 CPU A/B（ON 0.845/OFF 1.682）＋A-14.1（io 40.8 GB/drops 4181）＋OFF≈367 MB/s≈SATA 滿 |
+| **修復 B-8-4-F1** | **✓ A 側實作** | **min-freq warm gate**：prev-token reuse warm 只 warm 選中 ≥N 次 expert；新旗標 `--q4e-warm-min-freq N`（預設 1＝舊行為凍結；**B 側重跑用 N=2**）；stats 新增 `prefetch_warm_gated`/`prefetch_min_freq`；7 檔 additive 變更（與 A-15.2b WIP 正交，未 commit） |
+| **build 47** | **✓** | `D:\q4e_build`（mirror HEAD `5efd937`）：`q4e-server.exe` 44,072,448 B＋`q4e-bench.exe`＋`test-q4e-expert-warm.exe`；`--version`＝`0.3.0-dev (build 47, commit 5efd937)` MSVC 19.44 |
+| **單元測試** | **✓ 全綠** | test-q4e-expert-warm **195 checks**（含新 `test_freq_gate` 17 斷言；凍結節不變）＋test-q4e-expert-cache **159 checks**＋test-arg-parser **all tests OK**（exit 0） |
+| **CPU A/B 驗證** | **✓ 完成（OFF 已補測）** | **OFF＝0.882 t/s**（`cpu_ab3_off`、290.3 s/256、q4e 關）；ON（gate）＝**<0.285（run 2 超時）/0.4916（run 1 淨態）**；A-14.3 OFF 1.682/ON 0.845；**每組 ON<OFF（含 gate 後）＋warm thread 把 ON 推過超時邊界（OFF 無此問題）→ gate 單獨大概率不足以翻轉 ON<OFF；v4.1 warm backend 在本硬體淨負向→v2 備案（warm 預設停用／I/O rate cap／真 lookahead）大概率需要**；gate 生效實證＝stats（`warm_gated=14,328`）＋195 checks 全綠；B 側 GPU 仍為交付門 |
+| **裁決文件** | **✓** | [b8_evidence/stepA_b84/adjudication.md](b8_evidence/stepA_b84/adjudication.md)（含 B 側零判斷重跑指示：B-8-1~7 原樣＋B-8-2 加 `--q4e-warm-min-freq 2`；門 3 維持 GPU 量） |
+
 ## 一-v5、未完成項目（B 方案＝三層全 GPU MoE；2026-09-08 拍板，完整版）
 
 > 目標：v4.1「K 層 GPU＋38 層 CPU 算」→ **48 層 expert 全 GPU 算＋專家級動態駐留**（L1 VRAM pool＋L2 pinned RAM＋L3 SSD；miss→H2D 提升、LRU 逐出；重用 warm 管線＋ngram hint）。細節／驗收／風險見 [02 §二 v5 表](02_實作項目工作規劃.md)。

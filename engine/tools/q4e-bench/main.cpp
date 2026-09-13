@@ -43,6 +43,7 @@ struct conf {
     std::string prompt = "Write an essay about caching in computer systems.";
     std::string gpu_layers = "all";
     int         moe_vram = 10;
+    int         warm_min_freq = 1; // ON phase server --q4e-warm-min-freq (1 = legacy, warm all)
     std::string oracle;
     int         oracle_ncmoe = 38;
     int         health_timeout = 480;
@@ -98,6 +99,7 @@ static void usage() {
     printf("  --prompt <text>      default: Write an essay about caching in computer systems.\n");
     printf("  --gpu-layers <v>     server --n-gpu-layers value, default: all\n");
     printf("  --moe-vram <n>       server --q4e-moe-vram value, default: 10\n");
+    printf("  --warm-min-freq <n>  server --q4e-warm-min-freq for the ON phase, default: 1 (legacy, warm all)\n");
     printf("  --oracle <path>      optional llama-server exe for OFF phase\n");
     printf("                       (unset: OFF = q4e-server + --no-q4e-prefetch, same placement)\n");
     printf("  --oracle-ncmoe <n>   oracle -ncmoe value, default: 38\n");
@@ -524,6 +526,7 @@ static std::string run_phase(const conf & c, const char * tag, int port, bool us
                 "--api-key", c.api_key,
                 "--n-gpu-layers", c.gpu_layers,
                 "--q4e-moe-vram", std::to_string(c.moe_vram),
+                "--q4e-warm-min-freq", std::to_string(c.warm_min_freq),
                 "--ctx-size", std::to_string(c.ctx_size),
                 "--parallel", "1"};
         if (!prefetch) {
@@ -726,6 +729,8 @@ int main(int argc, char ** argv) {
                 c.gpu_layers = value("--gpu-layers");
             } else if (a == "--moe-vram") {
                 c.moe_vram = std::stoi(value("--moe-vram"));
+            } else if (a == "--warm-min-freq") {
+                c.warm_min_freq = std::stoi(value("--warm-min-freq"));
             } else if (a == "--oracle") {
                 c.oracle = value("--oracle");
             } else if (a == "--oracle-ncmoe") {

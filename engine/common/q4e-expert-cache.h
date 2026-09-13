@@ -153,6 +153,11 @@ struct q4e_expert_pool {
     void end_round(int layer);
 
     const char * state_of(int layer, int expert) const; // "l1" | "l2" | "l3"
+    // L1 LRU order of a layer, front = LRU (A-15.2b slot map reads this)
+    std::vector<int> l1_order_of(int layer) const;
+    // explicit L1 removal (A-15.2b promotion decision); metadata no-op, L2 copy kept
+    void l1_evict(int layer, int expert);
+
     q4e_expert_pool_stats stats() const;
     void reset();
 

@@ -2310,7 +2310,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn_pool(
                bool    norm_w,
               float    w_scale,
        llama_expert_gating_func_type gating_op,
-                int    il) const {
+                int    il,
+           ggml_tensor * slot_table) const {
     GGML_ASSERT(type_op == LLM_FFN_SILU);
     GGML_ASSERT(gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX);
     GGML_ASSERT(up_pool && gate_pool && down_pool);
@@ -2350,10 +2351,23 @@ ggml_tensor * llm_graph_context::build_moe_ffn_pool(
         cb(weights, "ffn_moe_weights_scaled", il);
     }
 
-    // static remap: id < R -> slot id; id >= R -> slot 0 with zero weight
+    // remap: static (A-15.2a) id < R -> slot id; or dynamic (A-15.2b) table lookup
     // no scalar add in ggml.h, so R is carried by a 1-element constant tensor
-    ggml_tensor * ids_f = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
-    ggml_tensor * in_pool = ggml_clamp(ctx0, ggml_scale_bias(ctx0, ids_f, -1.0f, float(n_slots)), 0.0f, 1.0f); // 1 if id < R else 0
+    ggml_tensor * ids_f;
+    if (slot_table != nullptr) {
+        GGML_ASSERT(ggml_nelements(slot_table) == n_expert);
+        // mark as graph input so the scheduler assigns it a backend (it is only reached via views)
+        ggml_set_input(slot_table);
+        // get_rows needs [1, n_expert, n_tokens, 1]; repeat the table over tokens (op, no data)
+        ggml_tensor * table2 = ggml_reshape_2d(ctx0, slot_table, 1, n_expert); // [1, n_expert]
+        ggml_tensor * table4 = ggml_repeat_4d(ctx0, table2, 1, n_expert, n_tokens, 1);
+        ids_f = ggml_get_rows(ctx0, table4, selected_experts); // [1, k, n_tokens, 1]
+        ids_f = ggml_reshape_2d(ctx0, ids_f, n_expert_used, n_tokens);
+        cb(ids_f, "ffn_moe_pool_slots", il);
+    } else {
+        ids_f = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
+    }
+    ggml_tensor * in_pool = ggml_clamp(ctx0, ggml_scale_bias(ctx0, ids_f, -1.0f, float(n_slots)), 0.0f, 1.0f); // 1 if mapped, else 0
     cb(in_pool, "ffn_moe_pool_mask", il);
 
     ggml_tensor * pool_ids = ggml_cast(ctx0, ggml_mul(ctx0, ids_f, in_pool), GGML_TYPE_I32);

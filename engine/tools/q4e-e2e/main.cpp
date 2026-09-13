@@ -710,6 +710,8 @@ int main(int argc, char ** argv) {
         const long long layers = num("layers");
         const long long io_issued = num("prefetch_io_issued");
         const long long overlap_hits = num("prefetch_overlap_hits");
+        const long long q4e_moe_vram = num("q4e_moe_vram");
+        const long long hook_skips_device = num("hook_skips_weights_device");
         std::vector<std::string> bad;
         if (q4e_prefetch != 1) {
             bad.push_back("q4e_prefetch=" + std::to_string(q4e_prefetch) + " (want 1)");
@@ -720,8 +722,19 @@ int main(int argc, char ** argv) {
         if (layers <= 0) {
             bad.push_back("layers=" + std::to_string(layers) + " (want >0)");
         }
-        if (layers_touched != layers) {
-            bad.push_back("layers_touched=" + std::to_string(layers_touched) + " (want layers=" + std::to_string(layers) + ")");
+        // touched books host-resident MoE layers only; VRAM-resident layers are
+        // skipped (hook_skips_weights_device). Expected touched = layers minus
+        // the device-resident MoE layers (K when placement active, else 0).
+        const long long expected_touched =
+            (hook_skips_device > 0)
+                ? ((q4e_moe_vram >= layers) ? 0 : (layers - q4e_moe_vram))
+                : layers;
+        if (layers_touched != expected_touched) {
+            bad.push_back("layers_touched=" + std::to_string(layers_touched) +
+                          " (want expected=" + std::to_string(expected_touched) +
+                          "; layers=" + std::to_string(layers) +
+                          ", q4e_moe_vram=" + std::to_string(q4e_moe_vram) +
+                          ", hook_skips_weights_device=" + std::to_string(hook_skips_device) + ")");
         }
         if (io_issued <= 0) {
             bad.push_back("prefetch_io_issued=" + std::to_string(io_issued) + " (want >0)");
@@ -732,8 +745,8 @@ int main(int argc, char ** argv) {
         if (!bad.empty()) {
             return fail("G5", join(bad, " | "));
         }
-        printf("G5 PASS: q4e_prefetch=1 touches=%lld layers_touched=%lld/%lld prefetch_io_issued=%lld prefetch_overlap_hits=%lld\n",
-               touches, layers_touched, layers, io_issued, overlap_hits);
+        printf("G5 PASS: q4e_prefetch=1 touches=%lld layers_touched=%lld/%lld (expected %lld) prefetch_io_issued=%lld prefetch_overlap_hits=%lld\n",
+               touches, layers_touched, layers, expected_touched, io_issued, overlap_hits);
         const auto opt = [&j](const char * k) -> std::string {
             if (j.contains(k)) {
                 return std::string(k) + "=" + j[k].dump();

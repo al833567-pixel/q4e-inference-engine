@@ -328,6 +328,7 @@ void q4e_expert_warm::drain_once() {
             if (x >= 0 && warm_done_.count(key(e.layer, x)) > 0) {
                 overlap_hits_.fetch_add(1, std::memory_order_relaxed);
             }
+            freq_[key(e.layer, x)]++;
         }
         if (cache_ != nullptr && e.n > 0) {
             try {
@@ -344,11 +345,15 @@ void q4e_expert_warm::drain_once() {
             }
             for (int32_t x : prev_[e.layer]) {
                 if (x >= 0) {
-                    warm_hint(e.layer, x);
+                    if (!warm_gate(e.layer, x)) {
+                        warm_hint(e.layer, x);
+                    }
                 } else if (x == Q4E_EXPERT_SHARED_ID && e.layer < (int) index_.size() &&
                            e.layer < (int) prev_.size() && index_[e.layer].size() > 0 &&
                            !index_[e.layer][0].empty()) {
-                    warm_hint(e.layer, x);
+                    if (!warm_gate(e.layer, x)) {
+                        warm_hint(e.layer, x);
+                    }
                 }
             }
         }
@@ -432,6 +437,18 @@ void q4e_expert_warm::do_warm_row(int64_t row) {
     inflight_.erase(k);
     ngram_rows_warmed_.fetch_add(1, std::memory_order_relaxed);
     ngram_bytes_warmed_.fetch_add(ngram_row_bytes_, std::memory_order_relaxed);
+}
+
+bool q4e_expert_warm::warm_gate(int layer, int expert) {
+    if (min_freq_ <= 1) {
+        return false;
+    }
+    const auto it = freq_.find(key(layer, expert));
+    if (it == freq_.end() || it->second < (uint32_t) min_freq_) {
+        warm_gated_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
 }
 
 bool q4e_expert_warm::enqueue_host_ids(int layer, const int32_t * ids, int64_t n_ids) {
@@ -695,6 +712,14 @@ int64_t q4e_expert_warm::touches_seen() const {
 
 int64_t q4e_expert_warm::hook_skips_weights_device() const {
     return hook_skips_weights_device_.load(std::memory_order_relaxed);
+}
+
+void q4e_expert_warm::set_min_freq(int n) {
+    min_freq_ = (n < 1) ? 1 : n;
+}
+
+int64_t q4e_expert_warm::warm_gated() const {
+    return warm_gated_.load(std::memory_order_relaxed);
 }
 
 void q4e_expert_warm::set_index_for_test(std::vector<std::vector<std::vector<q4e_warm_slice>>> idx) {
@@ -994,4 +1019,217 @@ int64_t q4e_expert_h2d::accesses() const {
 
 double q4e_expert_h2d::overlap_ratio() const {
     return (double) overlap_hits_ / (double) (accesses_ > 0 ? accesses_ : 1);
+}
+
+// ---- A-15.2b: dynamic slot map + promotion (pool manager + h2d seam) ----
+
+q4e_pool_dynamic::q4e_pool_dynamic(q4e_expert_pool & pool) : pool_(pool) {
+    const int n_layers = pool.cfg().n_layers;
+    n_slots_ = pool.cfg().l1_slots_per_layer;
+    layers_.assign((std::size_t) n_layers, layer_dyn(n_slots_));
+    tensors_.assign((std::size_t) n_layers, layer_tensors());
+    rounds_.assign((std::size_t) n_layers, round_state());
+    for (int l = 0; l < n_layers; ++l) {
+        // initial map: slot e holds expert e (e < R); pool manager agrees (L1)
+        for (int e = 0; e < n_slots_; ++e) {
+            layers_[l].expert_of_slot[(std::size_t) e] = e;
+            layers_[l].slot_of[e] = e;
+            pool_.access(l, e);
+        }
+    }
+}
+
+void q4e_pool_dynamic::set_h2d(q4e_expert_h2d * h2d) {
+    h2d_ = h2d;
+}
+
+void q4e_pool_dynamic::set_layer_tensors(int layer,
+        ggml_tensor * up_pool, ggml_tensor * gate_pool, ggml_tensor * down_pool,
+        ggml_tensor * up_full, ggml_tensor * gate_full, ggml_tensor * down_full) {
+    if (layer < 0 || layer >= (int) tensors_.size()) {
+        throw std::invalid_argument("q4e_pool_dynamic: layer out of range");
+    }
+    layer_tensors & lt = tensors_[(std::size_t) layer];
+    lt.up_pool = up_pool;
+    lt.gate_pool = gate_pool;
+    lt.down_pool = down_pool;
+    lt.up_full = up_full;
+    lt.gate_full = gate_full;
+    lt.down_full = down_full;
+}
+
+void q4e_pool_dynamic::begin_round(int layer) {
+    if (layer < 0 || layer >= (int) rounds_.size()) {
+        throw std::invalid_argument("q4e_pool_dynamic: layer out of range");
+    }
+    round_state & rs = rounds_[(std::size_t) layer];
+    pool_.begin_round(layer);
+    rs.ids.clear();
+    rs.active = true;
+}
+
+void q4e_pool_dynamic::end_round(int layer) {
+    if (layer < 0 || layer >= (int) rounds_.size()) {
+        throw std::invalid_argument("q4e_pool_dynamic: layer out of range");
+    }
+    round_state & rs = rounds_[(std::size_t) layer];
+    pool_.end_round(layer);
+    rs.ids.clear();
+    rs.active = false;
+}
+
+int q4e_pool_dynamic::slot_of(int layer, int expert) const {
+    if (layer < 0 || layer >= (int) layers_.size()) {
+        return -1;
+    }
+    const layer_dyn & ld = layers_[(std::size_t) layer];
+    auto it = ld.slot_of.find(expert);
+    return it != ld.slot_of.end() ? it->second : -1;
+}
+
+int q4e_pool_dynamic::pick_victim(int layer) const {
+    const layer_dyn & ld = layers_[(std::size_t) layer];
+    const round_state & rs = rounds_[(std::size_t) layer];
+    // completed residents first: pool LRU order (A-15.1 manager), round set excluded
+    for (int e : pool_.l1_order_of(layer)) {
+        if (ld.slot_of.count(e) > 0 && rs.ids.count(e) == 0) {
+            return e;
+        }
+    }
+    // pending tail (decision order); same round-safe rule
+    for (int e : ld.pending_order) {
+        if (rs.ids.count(e) == 0) {
+            return e;
+        }
+    }
+    return -1;
+}
+
+int q4e_pool_dynamic::remap(int layer, int expert) {
+    layer_dyn & ld = layers_[(std::size_t) layer];
+    auto it = ld.slot_of.find(expert);
+    if (it != ld.slot_of.end()) {
+        return it->second; // idempotent per episode
+    }
+    int slot = -1;
+    const int victim = pick_victim(layer);
+    if (victim >= 0) {
+        auto vit = ld.slot_of.find(victim);
+        slot = vit->second;
+        ld.slot_of.erase(vit);
+        auto pi = std::find(ld.pending_order.begin(), ld.pending_order.end(), victim);
+        if (pi != ld.pending_order.end()) {
+            ld.pending_order.erase(pi); // pending victim: pool L1 untouched
+        } else {
+            pool_.l1_evict(layer, victim); // completed resident: leave pool L1
+        }
+    } else {
+        for (int s = 0; s < n_slots_; ++s) {
+            if (ld.expert_of_slot[(std::size_t) s] < 0) {
+                slot = s;
+                break;
+            }
+        }
+    }
+    if (slot < 0) {
+        throw std::runtime_error("q4e_pool_dynamic: no slot for promotion (round selection exceeds pool)");
+    }
+    ld.expert_of_slot[(std::size_t) slot] = expert;
+    ld.slot_of[expert] = slot;
+    ld.pending_order.push_back(expert);
+    return slot;
+}
+
+int q4e_pool_dynamic::access(int layer, int expert) {
+    if (layer < 0 || layer >= (int) layers_.size()) {
+        throw std::invalid_argument("q4e_pool_dynamic: layer out of range");
+    }
+    if (expert < 0 || expert >= pool_.cfg().n_experts_per_layer) {
+        throw std::invalid_argument("q4e_pool_dynamic: expert out of range");
+    }
+    round_state & rs = rounds_[(std::size_t) layer];
+    if (rs.active) {
+        rs.ids.insert(expert);
+    }
+    const char * st = pool_.state_of(layer, expert);
+    if (std::strcmp(st, "l1") == 0) {
+        pool_.access(layer, expert); // LRU refresh + hit count (pool manager)
+        if (h2d_ != nullptr) {
+            h2d_->access(layer, expert);
+        }
+        ++hits_l1_;
+        return 0;
+    }
+    // miss: no pool_.access here; pool flips to L1 only at job done (A-15.3 caliber)
+    const int tier = (std::strcmp(st, "l2") == 0) ? 1 : 2;
+    if (slot_of(layer, expert) < 0) {
+        remap(layer, expert);
+        ++promotions_; // first out-of-pool access of this episode; dedup hits do not re-issue
+    }
+    if (tier == 1) {
+        ++misses_l2_;
+    } else {
+        ++misses_l3_;
+    }
+    if (h2d_ != nullptr) {
+        h2d_->access(layer, expert); // lazy issue / dedup / overlap (A-15.3)
+    }
+    return tier;
+}
+
+void q4e_pool_dynamic::drain() {
+    if (h2d_ != nullptr) {
+        for (int i = 0; i < 32 && h2d_->has_pending(); ++i) {
+            h2d_->drain_once();
+            h2d_->tick();
+        }
+    }
+    // L1-completed promotions leave the pending tail
+    for (int l = 0; l < (int) layers_.size(); ++l) {
+        std::vector<int> & po = layers_[l].pending_order;
+        po.erase(std::remove_if(po.begin(), po.end(), [&](int e) {
+            return std::strcmp(pool_.state_of(l, e), "l1") == 0;
+        }), po.end());
+    }
+}
+
+void q4e_pool_dynamic::copy_expert(int layer, int expert, int64_t bytes) {
+    (void) bytes;
+    if (layer < 0 || layer >= (int) tensors_.size()) {
+        return;
+    }
+    const layer_tensors & lt = tensors_[(std::size_t) layer];
+    if (lt.up_pool == nullptr || lt.up_full == nullptr) {
+        return; // state-only use (no tensors bound for this layer)
+    }
+    const int slot = slot_of(layer, expert);
+    if (slot < 0) {
+        return;
+    }
+    q4e_pool_promote_into(lt.up_pool, lt.gate_pool, lt.down_pool,
+                          lt.up_full, lt.gate_full, lt.down_full, slot, expert);
+}
+
+void q4e_pool_promote_into(
+        ggml_tensor * up_pool, ggml_tensor * gate_pool, ggml_tensor * down_pool,
+        ggml_tensor * up_full, ggml_tensor * gate_full, ggml_tensor * down_full,
+        int slot, int expert) {
+    auto copy_expert_rows = [](ggml_tensor * dst, ggml_tensor * src, int d_idx, int s_idx) {
+        GGML_ASSERT(dst->type == GGML_TYPE_F32 && src->type == GGML_TYPE_F32);
+        GGML_ASSERT(dst->ne[0] == src->ne[0] && dst->ne[1] == src->ne[1]);
+        const int64_t n0 = dst->ne[0];
+        const int64_t n1 = dst->ne[1];
+        const uint8_t * p = (const uint8_t *) ggml_get_data(src) + (std::size_t) s_idx * src->nb[2];
+        uint8_t * q = (uint8_t *) ggml_get_data(dst) + (std::size_t) d_idx * dst->nb[2];
+        for (int64_t a = 0; a < n1; ++a) {
+            const float * sp = (const float *) (p + a * src->nb[1]);
+            float * dq = (float *) (q + a * dst->nb[1]);
+            for (int64_t j = 0; j < n0; ++j) {
+                dq[j] = sp[j];
+            }
+        }
+    };
+    copy_expert_rows(up_pool, up_full, slot, expert);
+    copy_expert_rows(gate_pool, gate_full, slot, expert);
+    copy_expert_rows(down_pool, down_full, slot, expert);
 }

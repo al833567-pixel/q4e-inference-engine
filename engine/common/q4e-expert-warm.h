@@ -13,8 +13,11 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -80,6 +83,13 @@ public:
     int64_t hook_skips_weights_device() const;
     void note_hook_skip_weights_device() { hook_skips_weights_device_.fetch_add(1, std::memory_order_relaxed); }
 
+    // min-freq gate for the prev-token reuse warm (B-8-4 fix):
+    // warm only experts selected at least min_freq() times; 1 = legacy (warm all)
+    // worker-owned state: set before start() (server) or before first drain_once (test)
+    void set_min_freq(int n);
+    int  min_freq() const { return min_freq_; }
+    int64_t warm_gated() const;
+
     // test-only seams (deterministic, no thread)
     void set_index_for_test(std::vector<std::vector<std::vector<q4e_warm_slice>>> idx);
     void set_queue_caps_for_test(int ids_cap, int warm_cap);
@@ -103,6 +113,7 @@ private:
     void worker_loop();
     void do_warm_one(int layer, int expert);
     void do_warm_row(int64_t row);
+    bool warm_gate(int layer, int expert); // true = skip warm (below min freq); min_freq_ == 1 -> false
     int64_t file_size(const std::string & path) const;
     static uint64_t key(int layer, int expert);
     static uint64_t ngram_key(int64_t row);
@@ -139,6 +150,8 @@ private:
     // worker-owned (no lock)
     std::unordered_set<uint64_t> inflight_;
     std::unordered_set<uint64_t> warm_done_;
+    std::unordered_map<uint64_t, uint32_t> freq_; // (layer,expert) selection counts; min-freq gate
+    int min_freq_ = 1;                            // 1 = legacy (warm all); 2 = gate one-shot experts
     std::vector<std::vector<int32_t>> prev_;
     std::vector<uint8_t> staging_[2];
     int staging_buf_ = 0;
@@ -151,6 +164,7 @@ private:
     std::atomic<int64_t> events_dropped_ {0};
     std::atomic<int64_t> touches_seen_ {0};
     std::atomic<int64_t> hook_skips_weights_device_ {0};
+    std::atomic<int64_t> warm_gated_ {0};
 
     // ngram (PLE) prefetch state (A-14.4)
     q4e_ngram_table ngram_tbl_;
@@ -252,3 +266,80 @@ private:
     int64_t overlap_hits_ = 0;
     int64_t accesses_ = 0;
 };
+
+// v5 dynamic expert pool (A-15.2b): per-layer slot -> global map over the R-slot buffer
+// residency state: q4e_expert_pool (A-15.1, reused); issue/dedup/overlap: q4e_expert_h2d (A-15.3)
+// this class owns slot assignment; the CPU row copy (A side) runs as the h2d backend job
+class q4e_pool_dynamic : public q4e_expert_h2d_backend {
+public:
+    explicit q4e_pool_dynamic(q4e_expert_pool & pool);
+
+    void set_h2d(q4e_expert_h2d * h2d); // promotion pipeline; this class is its backend
+
+    // gate/up/down tensors of a layer (pool buffer + full expert); used by the row copy
+    void set_layer_tensors(int layer,
+                           ggml_tensor * up_pool, ggml_tensor * gate_pool, ggml_tensor * down_pool,
+                           ggml_tensor * up_full, ggml_tensor * gate_full, ggml_tensor * down_full);
+
+    // one selected expert at layer; tier at access time: 0 = L1 hit, 1 = L2, 2 = L3
+    // miss: slot remap (LRU victim, round-safe) + h2d job (lazy issue; A-15.3 caliber)
+    int access(int layer, int expert);
+
+    // slot (0..R-1) of a mapped expert; -1 if not mapped
+    int slot_of(int layer, int expert) const;
+
+    void begin_round(int layer); // pool M count + round-safe victim selection
+    void end_round(int layer);
+
+    // run the pipeline until no pending job; then sync pending list (L1-completed leaves it)
+    void drain();
+
+    int  n_slots() const { return n_slots_; }
+    int64_t promotions() const { return promotions_; } // slot remaps issued (first out-of-pool per episode)
+    int64_t hits_l1() const { return hits_l1_; }
+    int64_t misses_l2() const { return misses_l2_; }
+    int64_t misses_l3() const { return misses_l3_; }
+
+    // A-15.3 backend seam: A-side data move = CPU row copy of the expert into the mapped slot
+    void copy_expert(int layer, int expert, int64_t bytes) override;
+
+private:
+    struct layer_dyn {
+        std::vector<int> expert_of_slot; // size R; -1 = free
+        std::unordered_map<int, int> slot_of;
+        std::vector<int> pending_order;  // mapped, not yet L1; head = first promoted
+        explicit layer_dyn(int n) : expert_of_slot((std::size_t) n, -1) {}
+    };
+    struct layer_tensors {
+        ggml_tensor * up_pool = nullptr;
+        ggml_tensor * gate_pool = nullptr;
+        ggml_tensor * down_pool = nullptr;
+        ggml_tensor * up_full = nullptr;
+        ggml_tensor * gate_full = nullptr;
+        ggml_tensor * down_full = nullptr;
+    };
+    struct round_state {
+        std::set<int> ids;
+        bool active = false;
+    };
+
+    int pick_victim(int layer) const; // LRU-oldest mapped expert, round set excluded
+    int remap(int layer, int expert); // assign slot (victim slot or free); idempotent
+
+    q4e_expert_pool & pool_;
+    q4e_expert_h2d * h2d_ = nullptr;
+    int n_slots_ = 0;
+    std::vector<layer_dyn> layers_;
+    std::vector<layer_tensors> tensors_;
+    std::vector<round_state> rounds_;
+    int64_t promotions_ = 0;
+    int64_t hits_l1_ = 0;
+    int64_t misses_l2_ = 0;
+    int64_t misses_l3_ = 0;
+};
+
+// A-side data move: copy one expert gate/up/down rows from the full tensors into the pool slot
+void q4e_pool_promote_into(
+    ggml_tensor * up_pool, ggml_tensor * gate_pool, ggml_tensor * down_pool,
+    ggml_tensor * up_full, ggml_tensor * gate_full, ggml_tensor * down_full,
+    int slot, int expert);
