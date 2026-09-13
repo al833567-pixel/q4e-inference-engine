@@ -1,1 +1,0 @@
-﻿RUN2 health_ok=False exited=True exitcode=

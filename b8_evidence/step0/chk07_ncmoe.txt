@@ -1,7 +1,0 @@
-﻿llama-server.exe present: True
-
--ncmoe, --n-cpu-moe N                   keep the Mixture of Experts (MoE) weights of the first N layers in the
-                                        (dense models; for MoE expert weights use --n-cpu-moe)
---spec-draft-n-cpu-moe, --spec-draft-ncmoe, -ncmoed, --n-cpu-moe-draft N
-
-

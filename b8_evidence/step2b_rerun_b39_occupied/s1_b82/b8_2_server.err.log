@@ -1,9 +1,0 @@
-0.00.032.223 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
-0.00.042.871 I srv    load_model: loading model 'D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf'
-0.00.212.811 I srv    load_model: q4e: live prefetch backend active (model=D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf)
-0.00.296.506 I q4e: ngram prefetch ready (file=D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf, rows=320001536, row=90 B)
-0.01.647.653 E cmn  common_q4e_m: common_q4e_moe_vram_check: --q4e-moe-vram k=10 does not fit in VRAM: CUDA0 needs 78431 MiB, only 23142 MiB free
-0.01.647.659 E cmn  common_init_: failed to load model 'D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf'
-0.01.647.660 E srv    load_model: failed to load model, 'D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf'
-0.01.648.370 I srv   operator (): operator (): cleaning up before exit...
-0.01.649.682 E srv  llama_server: exiting due to model loading error

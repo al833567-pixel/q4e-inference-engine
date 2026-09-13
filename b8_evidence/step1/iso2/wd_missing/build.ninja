@@ -1,4 +1,0 @@
-cmake_ninja_workdir =D$:\Nova2_home\AI研究\推理工具\engine\build-cuda\CMakeFiles\CMakeScratch\TryCompile-2gsbt4\
-rule cp
-  command = cmd /c echo hi
-build out.txt

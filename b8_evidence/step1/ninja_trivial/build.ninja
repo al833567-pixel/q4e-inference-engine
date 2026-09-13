@@ -1,6 +1,0 @@
-rule cp
-  command = copy src out
-build out.txt: cp src.txt
-
-
-

@@ -1,5 +1,0 @@
-0.00.030.551 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
-0.00.039.861 I srv    load_model: loading model 'D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf'
-0.04.589.074 I srv    load_model: q4e: live prefetch backend active (model=D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf)
-0.04.681.335 I q4e: ngram prefetch ready (file=D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf, rows=320001536, row=90 B)
-D:\Nova2_home\AI研究\推理工具\engine\common\common.cpp:1768: GGML_ASSERT(params.tensor_buft_overrides.back().pattern == nullptr && "Tensor buffer overrides not terminated with empty pattern") failed

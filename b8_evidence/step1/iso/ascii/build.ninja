@@ -1,6 +1,0 @@
-cmake_ninja_workdir = D$:\Nova2_home\AI_STUDY\inference_tools\build\
-
-rule cp
-  command = echo hi > ascii.out
-build out.txt: cp src.txt
-

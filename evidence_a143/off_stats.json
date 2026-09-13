@@ -1,1 +1,0 @@
-{"layers":48,"touches":54550,"hits_vram":10976,"hits_ram":13839,"hits_ssd":29735,"hit_rate_vram":0.2012,"hit_rate_ram":0.2537,"hit_rate_ssd":0.5451,"prefetch_issued":0,"occ_vram_avg":20.0,"occ_ram_avg":141.3,"placement_events":108180,"io_bytes_estimate":332328960000,"layers_touched":48,"hook_skips_device_ids":0,"q4e_moe_vram":10,"q4e_prefetch":0}
