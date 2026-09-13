@@ -106,6 +106,8 @@ add_library(${TARGET}
     q4e-global-pool.h
     q4e-h2d-pipeline.cpp
     q4e-h2d-pipeline.h
+    q4e-kv-bridge.cpp
+    q4e-kv-bridge.h
     q4e-kv-paging.cpp
     q4e-kv-paging.h
     q4e-ngram.cpp
