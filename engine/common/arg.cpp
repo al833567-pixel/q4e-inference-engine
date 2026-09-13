@@ -2781,8 +2781,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--q4e-moe-vram"}, "N",
         string_format(
-            "v5: number of routed MoE experts resident in the L1 VRAM pool, across all layers\n"
-            "(per-layer pool R = ceil(N / n_layers); default: %d; valid range 0-99999; load aborts if VRAM is too small, never lowered silently)",
+            "v6: L1 global VRAM pool: total routed MoE experts resident, shared across all layers (not a per-layer pool)\n"
+            "(default: %d; 0 = pool off; valid range 0-99999; load aborts if VRAM is too small, never lowered silently)",
             params.q4e_moe_vram),
         [](common_params & params, int value) {
             if (value < 0 || value > 99999) {
@@ -2858,6 +2858,58 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.q4e_warm_min_freq = value;
         }
     ).set_env("Q4E_WARM_MIN_FREQ"));
+    add_opt(common_arg(
+        {"--q4e-staging-mb"}, "S",
+        string_format(
+            "v6: total size of the staging buffer (A/B double buffer) in MB, for in-VRAM expert gather\n"
+            "(default: %d; 0 = staging off; valid range 0-99999; load aborts if VRAM is too small, never lowered silently)",
+            params.q4e_staging_mb),
+        [](common_params & params, int value) {
+            if (value < 0 || value > 99999) {
+                throw std::invalid_argument("S must be in range 0-99999");
+            }
+            params.q4e_staging_mb = value;
+        }
+    ).set_env("Q4E_STAGING_MB"));
+    add_opt(common_arg(
+        {"--q4e-layer-floor"}, "F",
+        string_format(
+            "v6: Layer-Aware LRU floor: minimum experts kept resident per layer (default: %d; valid range 0-99999)\n"
+            "(values above the per-layer expert count are clamped at load time; 0 = pure global LRU)",
+            params.q4e_layer_floor),
+        [](common_params & params, int value) {
+            if (value < 0 || value > 99999) {
+                throw std::invalid_argument("F must be in range 0-99999");
+            }
+            params.q4e_layer_floor = value;
+        }
+    ).set_env("Q4E_LAYER_FLOOR"));
+    add_opt(common_arg(
+        {"--q4e-ple-mmap"}, "on|off",
+        "v6: keep PLE/ngram on SSD via mmap, \"on\" or \"off\" (default: on; production must stay on; off = warning only)",
+        [](common_params & params, const std::string & value) {
+            if (value == "on" || value == "1" || value == "true") {
+                params.q4e_ple_mmap = true;
+            } else if (value == "off" || value == "0" || value == "false") {
+                params.q4e_ple_mmap = false;
+                LOG_WRN("q4e: --q4e-ple-mmap off: PLE/ngram will not be kept on SSD mmap (production must stay on)\n");
+            } else {
+                throw std::invalid_argument("--q4e-ple-mmap: expected on or off");
+            }
+        }
+    ).set_env("Q4E_PLE_MMAP"));
+    add_opt(common_arg(
+        {"--q4e-kv-ram"}, "MB",
+        string_format(
+            "v6: KV cache L2 pinned RAM budget in MB, for the 100k paged KV offload (default: %d; 0 = off; valid range 0-99999)",
+            params.q4e_kv_ram),
+        [](common_params & params, int value) {
+            if (value < 0 || value > 99999) {
+                throw std::invalid_argument("MB must be in range 0-99999");
+            }
+            params.q4e_kv_ram = value;
+        }
+    ).set_env("Q4E_KV_RAM"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",

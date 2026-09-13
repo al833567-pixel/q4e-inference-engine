@@ -477,11 +477,16 @@ struct common_params {
     bool    fit_params_print   = false; // print the estimated required memory to run the model
     int32_t fit_params_min_ctx = 4096;  // minimum context size to set when trying to reduce memory use
 
-    int32_t q4e_moe_vram       = 5000;  // v5: routed MoE experts resident in L1 VRAM pool (per-layer pool R = ceil(N/n_layers)); 0 = pool off
+    int32_t q4e_moe_vram       = 5000;  // v6: L1 global VRAM pool: total routed experts resident, shared across all layers (not a per-layer pool); 0 = pool off
     int32_t q4e_moe_ram        = 4000;  // v5: routed MoE experts resident in L2 pinned RAM (0 = L2 off)
     bool    q4e_prefetch       = true;  // live expert page-warm prefetch (A-14.1); off = A-9 hook only
     bool    q4e_ngram_prefetch = true;  // ngram (PLE table) row prefetch (A-14.4); needs q4e_prefetch
     int32_t q4e_warm_min_freq  = 1;     // warm min-freq gate (B-8-4 fix): warm only experts seen >= N times; 1 = legacy (warm all)
+    // v6 (A-16.0): global pool + VRAM gather + 100k KV paged offload
+    int32_t q4e_staging_mb     = 128;   // total staging buffer (A/B double buffer) in MB for in-VRAM expert gather; 0 = off
+    int32_t q4e_layer_floor    = 10;    // Layer-Aware LRU floor: min experts kept resident per layer (clamped to per-layer expert count at load)
+    bool    q4e_ple_mmap       = true;  // keep PLE/ngram on SSD via mmap (production: always on); off = warn only
+    int32_t q4e_kv_ram         = 6000;  // KV cache L2 pinned RAM budget in MB; 0 = off
 
     // margin per device in bytes for fitting parameters to free memory:
     std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);

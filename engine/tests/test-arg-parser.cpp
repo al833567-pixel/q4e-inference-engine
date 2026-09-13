@@ -540,6 +540,126 @@ static void test(void) {
         check(ram85.per_layer_pool == 85, "ram R = ceil(4033/48) = 85");
     }
 
+    printf("test-arg-parser: test v6 q4e params (default / valid / invalid usages)\n\n");
+
+    {
+        // assert() may be compiled out, so use hard checks (same pattern as the v5 block)
+        auto check = [](bool ok, const char * what) {
+            if (!ok) {
+                printf("test-arg-parser: CHECK FAILED: %s\n", what);
+                std::exit(1);
+            }
+        };
+
+        common_params v6p;
+        v6p.model.path = "model_file.gguf"; // satisfy the required-model check (same as earlier blocks)
+        check(v6p.q4e_moe_vram == 5000, "v6 default q4e_moe_vram == 5000");
+        check(v6p.q4e_moe_ram == 4000, "v6 default q4e_moe_ram == 4000 (v5 unchanged)");
+        check(v6p.q4e_staging_mb == 128, "v6 default q4e_staging_mb == 128");
+        check(v6p.q4e_layer_floor == 10, "v6 default q4e_layer_floor == 10");
+        check(v6p.q4e_ple_mmap == true, "v6 default q4e_ple_mmap == on");
+        check(v6p.q4e_kv_ram == 6000, "v6 default q4e_kv_ram == 6000");
+
+        // --q4e-moe-vram: v6 global pool semantics, parser contract unchanged from v5
+        argv = {"binary_name", "--q4e-moe-vram", "24576"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-moe-vram 24576");
+        check(v6p.q4e_moe_vram == 24576, "q4e_moe_vram set to 24576 (48 * 512, all experts)");
+        argv = {"binary_name", "--q4e-moe-vram", "0"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-moe-vram 0");
+        check(v6p.q4e_moe_vram == 0, "q4e_moe_vram 0 = pool off");
+        argv = {"binary_name", "--q4e-moe-vram", "-1"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-moe-vram -1");
+        argv = {"binary_name", "--q4e-moe-vram", "100000"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-moe-vram 100000");
+        argv = {"binary_name", "--q4e-moe-vram", "abc"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-moe-vram abc");
+
+        // --q4e-staging-mb
+        argv = {"binary_name", "--q4e-staging-mb", "256"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-staging-mb 256");
+        check(v6p.q4e_staging_mb == 256, "q4e_staging_mb set to 256");
+        argv = {"binary_name", "--q4e-staging-mb", "0"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-staging-mb 0");
+        check(v6p.q4e_staging_mb == 0, "q4e_staging_mb 0 = staging off");
+        argv = {"binary_name", "--q4e-staging-mb", "-1"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-staging-mb -1");
+        argv = {"binary_name", "--q4e-staging-mb", "100000"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-staging-mb 100000");
+        argv = {"binary_name", "--q4e-staging-mb", "abc"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-staging-mb abc");
+
+        // --q4e-layer-floor
+        argv = {"binary_name", "--q4e-layer-floor", "16"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-layer-floor 16");
+        check(v6p.q4e_layer_floor == 16, "q4e_layer_floor set to 16");
+        argv = {"binary_name", "--q4e-layer-floor", "0"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-layer-floor 0");
+        check(v6p.q4e_layer_floor == 0, "q4e_layer_floor 0 = pure global LRU");
+        argv = {"binary_name", "--q4e-layer-floor", "-1"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-layer-floor -1");
+        argv = {"binary_name", "--q4e-layer-floor", "100000"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-layer-floor 100000");
+        argv = {"binary_name", "--q4e-layer-floor", "abc"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-layer-floor abc");
+
+        // --q4e-ple-mmap
+        argv = {"binary_name", "--q4e-ple-mmap", "off"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-ple-mmap off");
+        check(v6p.q4e_ple_mmap == false, "q4e_ple_mmap off");
+        argv = {"binary_name", "--q4e-ple-mmap", "on"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-ple-mmap on");
+        check(v6p.q4e_ple_mmap == true, "q4e_ple_mmap on");
+        argv = {"binary_name", "--q4e-ple-mmap", "yes"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-ple-mmap yes");
+
+        // --q4e-kv-ram
+        argv = {"binary_name", "--q4e-kv-ram", "8192"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-kv-ram 8192");
+        check(v6p.q4e_kv_ram == 8192, "q4e_kv_ram set to 8192");
+        argv = {"binary_name", "--q4e-kv-ram", "0"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse --q4e-kv-ram 0");
+        check(v6p.q4e_kv_ram == 0, "q4e_kv_ram 0 = off");
+        argv = {"binary_name", "--q4e-kv-ram", "-1"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-kv-ram -1");
+        argv = {"binary_name", "--q4e-kv-ram", "100000"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-kv-ram 100000");
+        argv = {"binary_name", "--q4e-kv-ram", "abc"};
+        check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "reject --q4e-kv-ram abc");
+
+        // combined: v6 production baseline from v6_evidence/a160_design/design.md
+        argv = {"binary_name", "--q4e-moe-vram", "5000", "--q4e-moe-ram", "4000",
+                "--q4e-staging-mb", "128", "--q4e-layer-floor", "10",
+                "--q4e-ple-mmap", "on", "--q4e-kv-ram", "6000"};
+        check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
+              "parse full v6 baseline");
+        check(v6p.q4e_moe_vram == 5000 && v6p.q4e_moe_ram == 4000 && v6p.q4e_staging_mb == 128
+              && v6p.q4e_layer_floor == 10 && v6p.q4e_ple_mmap == true && v6p.q4e_kv_ram == 6000,
+              "v6 baseline values all set");
+    }
+
 // skip this part on windows, because setenv is not supported
 #ifdef _WIN32
     printf("test-arg-parser: skip on windows build\n");
