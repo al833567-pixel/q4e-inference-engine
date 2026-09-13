@@ -100,6 +100,8 @@ add_library(${TARGET}
     q4e-expert-warm.cpp
     q4e-expert-cache.h
     q4e-gather.h
+    q4e-graph-map.cpp
+    q4e-graph-map.h
     q4e-global-pool.cpp
     q4e-global-pool.h
     q4e-h2d-pipeline.cpp
