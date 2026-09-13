@@ -102,6 +102,8 @@ add_library(${TARGET}
     q4e-gather.h
     q4e-global-pool.cpp
     q4e-global-pool.h
+    q4e-h2d-pipeline.cpp
+    q4e-h2d-pipeline.h
     q4e-ngram.cpp
     q4e-ngram.h
     q4e-staging.cpp

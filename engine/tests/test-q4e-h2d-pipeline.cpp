@@ -1,0 +1,419 @@
+// Unit tests for the v6 H2D promotion pipeline (common/q4e-h2d-pipeline.{h,cpp}, A-16.3).
+// submit -> fill -> in-flight -> poll -> done, L2 LRU with in-flight protection, stats.
+#include "q4e-h2d-pipeline.h"
+
+#include <cstdio>
+#include <stdexcept>
+#include <vector>
+
+static int g_failures = 0;
+static int g_checks   = 0;
+
+#define CHECK(cond) \
+    do { \
+        ++g_checks; \
+        if (!(cond)) { \
+            ++g_failures; \
+            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+        } \
+    } while (0)
+
+#define CHECK_EQ_I64(a, b) \
+    do { \
+        ++g_checks; \
+        const int64_t va = (a); \
+        const int64_t vb = (b); \
+        if (va != vb) { \
+            ++g_failures; \
+            fprintf(stderr, "FAIL %s:%d: %s == %lld, expected %lld\n", __FILE__, __LINE__, #a, (long long) va, (long long) vb); \
+        } \
+    } while (0)
+
+#define CHECK_THROWS_IA(expr) \
+    do { \
+        ++g_checks; \
+        bool threw = false; \
+        try { \
+            (void) (expr); \
+        } catch (const std::invalid_argument &) { \
+            threw = true; \
+        } \
+        if (!threw) { \
+            ++g_failures; \
+            fprintf(stderr, "FAIL %s:%d: %s did not throw\n", __FILE__, __LINE__, #expr); \
+        } \
+    } while (0)
+
+#define CHECK_THROWS_LE(expr) \
+    do { \
+        ++g_checks; \
+        bool threw = false; \
+        try { \
+            (void) (expr); \
+        } catch (const std::logic_error &) { \
+            threw = true; \
+        } \
+        if (!threw) { \
+            ++g_failures; \
+            fprintf(stderr, "FAIL %s:%d: %s did not throw\n", __FILE__, __LINE__, #expr); \
+        } \
+    } while (0)
+
+#define CHECK_THROWS_RE(expr) \
+    do { \
+        ++g_checks; \
+        bool threw = false; \
+        try { \
+            (void) (expr); \
+        } catch (const std::runtime_error &) { \
+            threw = true; \
+        } \
+        if (!threw) { \
+            ++g_failures; \
+            fprintf(stderr, "FAIL %s:%d: %s did not throw\n", __FILE__, __LINE__, #expr); \
+        } \
+    } while (0)
+
+#define CHECK_THROWS_CTOR(cfg) \
+    do { \
+        ++g_checks; \
+        bool threw = false; \
+        try { \
+            q4e_h2d_pipeline p(cfg); \
+            (void) p; \
+        } catch (const std::invalid_argument &) { \
+            threw = true; \
+        } \
+        if (!threw) { \
+            ++g_failures; \
+            fprintf(stderr, "FAIL %s:%d: %s did not throw\n", __FILE__, __LINE__, #cfg); \
+        } \
+    } while (0)
+
+// test flow: submit fills L2, job goes in flight, poll completes it
+static void test_submit_fill_poll() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4;      // 4 slots of 1 MB
+    cfg.expert_bytes = 1048576;
+    cfg.max_inflight = 2;
+    q4e_h2d_pipeline p(cfg);
+    CHECK_EQ_I64(p.l2_slots(), 4);
+
+    int64_t fills = 0, copies = 0;
+    int fill_layer = -1, fill_expert = -1;
+    uint32_t fill_slot = 99;
+    p.set_fill_backend([&](int l, int e, void * dst, int64_t bytes) {
+        ++fills;
+        fill_layer = l; fill_expert = e;
+        fill_slot = (uint32_t) (uintptr_t) dst;
+        (void) bytes;
+        return bytes;
+    });
+    p.set_h2d_backend([&](int64_t id, void * src, void * dst, int64_t bytes) {
+        ++copies;
+        (void) id; (void) src; (void) dst; (void) bytes;
+        return true;
+    });
+
+    const int64_t j0 = p.submit(3, 42);
+    CHECK_EQ_I64(j0, 0);
+    CHECK_EQ_I64(fills, 1);
+    CHECK_EQ_I64(fill_layer, 3);
+    CHECK_EQ_I64(fill_expert, 42);
+    CHECK_EQ_I64(fill_slot, (uint32_t) p.l2_slot_of(3, 42));
+    CHECK(p.l2_state(3, 42) == "l2");
+    CHECK_EQ_I64(p.stats().in_flight, 1);
+    CHECK_EQ_I64(p.stats().submits, 1);
+
+    const std::vector<int64_t> done = p.poll();
+    CHECK_EQ_I64(done.size(), 1);
+    CHECK_EQ_I64(done[0], 0);
+    CHECK_EQ_I64(copies, 1);
+    CHECK_EQ_I64(p.stats().completed, 1);
+    CHECK_EQ_I64(p.stats().in_flight, 0);
+    CHECK_EQ_I64(p.stats().fills, 1);
+    CHECK_EQ_I64(p.stats().busy, 0);
+    CHECK_EQ_I64(p.stats().failed, 0);
+}
+
+// test_l2_hit: a resident expert is re-submitted without another fill
+static void test_l2_hit() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4;
+    cfg.expert_bytes = 1048576;
+    q4e_h2d_pipeline p(cfg);
+    int64_t fills = 0;
+    p.set_fill_backend([&](int, int, void *, int64_t bytes) { ++fills; return bytes; });
+    p.set_h2d_backend([](int64_t, void *, void *, int64_t) { return true; });
+
+    CHECK_EQ_I64(p.l2_slot_of(0, 1), -1); // not resident yet
+    CHECK_EQ_I64(p.submit(0, 1), 0);
+    CHECK_EQ_I64(fills, 1);
+    const int64_t slot = p.l2_slot_of(0, 1);
+    CHECK(slot >= 0); // filled now
+    p.poll();
+    CHECK_EQ_I64(p.submit(0, 1), 0); // job slot reused
+    CHECK_EQ_I64(fills, 1); // L2 hit, no second fill
+    CHECK_EQ_I64(p.l2_slot_of(0, 1), slot); // same slot kept
+    p.poll();
+    CHECK_EQ_I64(p.stats().fills, 1);
+    CHECK_EQ_I64(p.stats().submits, 2);
+    CHECK_EQ_I64(p.stats().completed, 2);
+}
+
+// test_busy: the in-flight cap rejects new submits without blocking
+static void test_busy() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4;
+    cfg.expert_bytes = 1048576;
+    cfg.max_inflight = 2;
+    q4e_h2d_pipeline p(cfg);
+    p.set_fill_backend([](int, int, void *, int64_t bytes) { return bytes; });
+    p.set_h2d_backend([](int64_t, void *, void *, int64_t) { return true; });
+
+    CHECK_EQ_I64(p.submit(0, 0), 0);
+    CHECK_EQ_I64(p.submit(0, 1), 1);
+    CHECK_EQ_I64(p.submit(0, 2), -1); // cap reached
+    CHECK_EQ_I64(p.stats().busy, 1);
+    CHECK_EQ_I64(p.stats().in_flight, 2);
+    CHECK_EQ_I64(p.submit(0, 3), -1); // still busy
+    CHECK_EQ_I64(p.stats().busy, 2);
+    const std::vector<int64_t> done = p.poll();
+    CHECK_EQ_I64(done.size(), 2);
+    CHECK_EQ_I64(p.stats().in_flight, 0);
+    CHECK(p.submit(0, 2) >= 0); // cap freed, submit works again
+}
+
+// test_poll_failure: a failed H2D copy is a FAILED event, not a done id
+static void test_poll_failure() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4;
+    cfg.expert_bytes = 1048576;
+    q4e_h2d_pipeline p(cfg);
+    p.set_fill_backend([](int, int, void *, int64_t bytes) { return bytes; });
+    std::vector<bool> script { true, false, true };
+    int idx = 0;
+    p.set_h2d_backend([&](int64_t, void *, void *, int64_t) {
+        return script[(std::size_t) (idx < (int) script.size() ? idx++ : (int) script.size() - 1)];
+    });
+
+    CHECK_EQ_I64(p.submit(0, 0), 0);
+    CHECK_EQ_I64(p.submit(0, 1), 1);
+    const std::vector<int64_t> done = p.poll();
+    CHECK_EQ_I64(done.size(), 1); // only the successful copy
+    CHECK_EQ_I64(done[0], 0);
+    CHECK_EQ_I64(p.stats().completed, 1);
+    CHECK_EQ_I64(p.stats().failed, 1);
+    CHECK_EQ_I64(p.stats().in_flight, 0);
+    // both jobs are terminal now; a fresh submit reuses a slot
+    CHECK(p.submit(0, 2) >= 0);
+    CHECK_EQ_I64(p.poll().size(), 1);
+    CHECK_EQ_I64(p.stats().completed, 2);
+}
+
+// test_fill_failure: a failed SSD read throws and leaks no slot
+static void test_fill_failure() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4;
+    cfg.expert_bytes = 1048576;
+    q4e_h2d_pipeline p(cfg);
+    p.set_fill_backend([](int, int, void *, int64_t) { return -1; });
+    CHECK_THROWS_RE(p.submit(0, 0));
+    CHECK_EQ_I64(p.l2_occupancy(), 0);
+    CHECK_EQ_I64(p.l2_slot_of(0, 0), -1);
+    CHECK_EQ_I64(p.stats().fills, 0);
+    CHECK_EQ_I64(p.stats().submits, 0);
+    // the pool is intact; a working fill succeeds afterwards
+    p.set_fill_backend([](int, int, void *, int64_t bytes) { return bytes; });
+    CHECK_EQ_I64(p.submit(0, 0), 0);
+    CHECK_EQ_I64(p.stats().fills, 1);
+}
+
+// test_lru_eviction: pool full evicts the oldest, MRU touch changes the victim
+static void test_lru_eviction() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4; // exactly 4 slots
+    cfg.expert_bytes = 1048576;
+    cfg.max_inflight = 4;
+    q4e_h2d_pipeline p(cfg);
+    int64_t fills = 0;
+    p.set_fill_backend([&](int, int, void *, int64_t bytes) { ++fills; return bytes; });
+    p.set_h2d_backend([](int64_t, void *, void *, int64_t) { return true; });
+
+    p.submit(0, 0); p.submit(0, 1); p.submit(0, 2); p.submit(0, 3);
+    CHECK_EQ_I64(p.l2_occupancy(), 4);
+    CHECK_EQ_I64(fills, 4);
+    p.poll();
+    // touch (0,0): it becomes MRU, so the next fill evicts (0,1) instead of (0,0)
+    CHECK_EQ_I64(p.submit(0, 0), 3); // L2 hit, no fill, job slot reused
+    CHECK_EQ_I64(fills, 4);
+    p.poll();
+    CHECK_EQ_I64(p.submit(0, 4), 3); // pool full: evict LRU
+    CHECK(p.l2_state(0, 1) == "l3");
+    CHECK(p.l2_state(0, 0) == "l2");
+    CHECK(p.l2_state(0, 3) == "l2");
+    CHECK(p.l2_state(0, 4) == "l2");
+    CHECK_EQ_I64(p.l2_occupancy(), 4);
+    CHECK_EQ_I64(p.stats().evictions, 1);
+}
+
+// test_eviction_protection: in-flight experts are never evicted
+static void test_eviction_protection() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4; // exactly 2 slots of 2 MB
+    cfg.expert_bytes = 2097152;
+    cfg.max_inflight = 2;
+    q4e_h2d_pipeline p(cfg);
+    p.set_fill_backend([](int, int, void *, int64_t bytes) { return bytes; });
+    p.set_h2d_backend([](int64_t, void *, void *, int64_t) { return true; });
+
+    // pool { (1,0), (1,1) } full with (1,1) in flight: the LRU victim is (1,0), the in-flight one survives
+    CHECK_EQ_I64(p.submit(1, 0), 0);
+    p.poll();
+    CHECK_EQ_I64(p.submit(1, 1), 0); // job slot reused
+    CHECK_EQ_I64(p.submit(1, 2), 1); // evicts (1,0), keeps in-flight (1,1)
+    CHECK(p.l2_state(1, 0) == "l3");
+    CHECK(p.l2_state(1, 1) == "l2");
+    CHECK(p.l2_state(1, 2) == "l2");
+    CHECK_EQ_I64(p.stats().evictions, 1);
+    p.poll();
+
+    // every resident expert in flight: no victim, submit must throw
+    // max_inflight above the slot count so the in-flight cap does not fire first
+    q4e_h2d_config cfg2;
+    cfg2.l2_ram_mb    = 4;
+    cfg2.expert_bytes = 2097152;
+    cfg2.max_inflight = 4;
+    q4e_h2d_pipeline q(cfg2);
+    q.set_fill_backend([](int, int, void *, int64_t bytes) { return bytes; });
+    q.set_h2d_backend([](int64_t, void *, void *, int64_t) { return true; });
+    CHECK_EQ_I64(q.submit(2, 0), 0);
+    CHECK_EQ_I64(q.submit(2, 1), 1); // pool full, both in flight
+    CHECK_THROWS_RE(q.submit(2, 2));
+    CHECK_EQ_I64(q.l2_occupancy(), 2); // nothing evicted
+    CHECK_EQ_I64(q.stats().evictions, 0);
+}
+
+// test_backend_not_set: state violations throw logic_error
+static void test_backend_not_set() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4;
+    cfg.expert_bytes = 1048576;
+    q4e_h2d_pipeline p(cfg);
+    CHECK_THROWS_LE(p.submit(0, 0)); // L2 miss, no fill backend
+    p.set_fill_backend([](int, int, void *, int64_t bytes) { return bytes; });
+    CHECK_EQ_I64(p.submit(0, 0), 0);
+    CHECK_THROWS_LE(p.poll()); // in-flight job, no h2d backend
+    p.set_h2d_backend([](int64_t, void *, void *, int64_t) { return true; });
+    CHECK_EQ_I64(p.poll().size(), 1);
+}
+
+// test_stats: every counter matches the executed protocol exactly
+static void test_stats() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4;
+    cfg.expert_bytes = 1048576;
+    cfg.max_inflight = 2;
+    q4e_h2d_pipeline p(cfg);
+    p.set_fill_backend([](int, int, void *, int64_t bytes) { return bytes; });
+    std::vector<bool> script { true, false, true, true, true };
+    int idx = 0;
+    p.set_h2d_backend([&](int64_t, void *, void *, int64_t) {
+        return script[(std::size_t) (idx < (int) script.size() ? idx++ : (int) script.size() - 1)];
+    });
+
+    CHECK_EQ_I64(p.submit(0, 0), 0);
+    CHECK_EQ_I64(p.submit(0, 1), 1);
+    CHECK_EQ_I64(p.submit(0, 2), -1); // busy
+    p.poll(); // job 0 ok, job 1 failed
+    CHECK_EQ_I64(p.submit(0, 0), 1); // L2 hit, job slot reused
+    p.poll(); // job 0 ok
+    CHECK_EQ_I64(p.submit(0, 2), 1);
+    CHECK_EQ_I64(p.submit(0, 3), 0); // pool full
+    p.poll(); // both ok
+    CHECK_EQ_I64(p.submit(0, 4), 1); // evicts one
+    const q4e_h2d_stats st = p.stats();
+    CHECK_EQ_I64(st.submits, 6);
+    CHECK_EQ_I64(st.busy, 1);
+    CHECK_EQ_I64(st.fills, 5);
+    CHECK_EQ_I64(st.in_flight, 1);
+    CHECK_EQ_I64(st.completed, 4);
+    CHECK_EQ_I64(st.failed, 1);
+    CHECK_EQ_I64(st.evictions, 1);
+}
+
+// test_reset: pool, jobs and counters cleared, pipeline still usable
+static void test_reset() {
+    q4e_h2d_config cfg;
+    cfg.l2_ram_mb    = 4;
+    cfg.expert_bytes = 1048576;
+    q4e_h2d_pipeline p(cfg);
+    p.set_fill_backend([](int, int, void *, int64_t bytes) { return bytes; });
+    p.set_h2d_backend([](int64_t, void *, void *, int64_t) { return true; });
+    CHECK_EQ_I64(p.submit(0, 0), 0);
+    CHECK_EQ_I64(p.submit(0, 1), 1);
+    p.poll();
+    p.reset();
+    CHECK_EQ_I64(p.l2_occupancy(), 0);
+    CHECK_EQ_I64(p.l2_slot_of(0, 0), -1);
+    const q4e_h2d_stats st = p.stats();
+    CHECK_EQ_I64(st.submits, 0);
+    CHECK_EQ_I64(st.fills, 0);
+    CHECK_EQ_I64(st.in_flight, 0);
+    CHECK_EQ_I64(st.completed, 0);
+    CHECK_EQ_I64(st.evictions, 0);
+    CHECK_EQ_I64(p.submit(0, 0), 0); // fresh fill after reset
+    CHECK_EQ_I64(p.stats().fills, 1);
+}
+
+// test_invalid_id: negative ids rejected on every API
+static void test_invalid_id() {
+    q4e_h2d_pipeline p;
+    CHECK_THROWS_IA(p.submit(-1, 0));
+    CHECK_THROWS_IA(p.submit(0, -1));
+    CHECK_THROWS_IA(p.l2_state(-1, 0));
+    CHECK_THROWS_IA(p.l2_state(0, -2));
+    CHECK_THROWS_IA(p.l2_slot_of(-1, 0));
+    CHECK_THROWS_IA(p.l2_slot_of(0, -1));
+    CHECK_EQ_I64(p.l2_occupancy(), 0);
+}
+
+// test_ctor_validation: config bounds and the zero-slot pool
+static void test_ctor_validation() {
+    q4e_h2d_pipeline def; // default 4000 MB / 3216896 B
+    CHECK_EQ_I64(def.l2_slots(), 1303); // 4194304000 / 3216896
+    q4e_h2d_config bad1;
+    bad1.l2_ram_mb = 3;
+    CHECK_THROWS_CTOR(bad1);
+    q4e_h2d_config bad2;
+    bad2.expert_bytes = 0;
+    CHECK_THROWS_CTOR(bad2);
+    q4e_h2d_config bad3;
+    bad3.max_inflight = 0;
+    CHECK_THROWS_CTOR(bad3);
+    q4e_h2d_config bad4;
+    bad4.l2_ram_mb    = 4;
+    bad4.expert_bytes = 8388608; // 4 MB pool < one 8 MB slot
+    CHECK_THROWS_CTOR(bad4);
+}
+
+int main() {
+    test_submit_fill_poll();
+    test_l2_hit();
+    test_busy();
+    test_poll_failure();
+    test_fill_failure();
+    test_lru_eviction();
+    test_eviction_protection();
+    test_backend_not_set();
+    test_stats();
+    test_reset();
+    test_invalid_id();
+    test_ctor_validation();
+    if (g_failures) {
+        fprintf(stderr, "q4e-h2d-pipeline: %d/%d checks FAILED\n", g_failures, g_checks);
+        return 1;
+    }
+    printf("q4e-h2d-pipeline: all %d checks passed\n", g_checks);
+    return 0;
+}
