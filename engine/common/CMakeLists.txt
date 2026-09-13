@@ -108,6 +108,8 @@ add_library(${TARGET}
     q4e-h2d-pipeline.h
     q4e-ngram.cpp
     q4e-ngram.h
+    q4e-promotion.cpp
+    q4e-promotion.h
     q4e-staging.cpp
     q4e-staging.h
     reasoning-budget.cpp
