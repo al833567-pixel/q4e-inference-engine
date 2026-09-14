@@ -45,7 +45,7 @@ cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxil
 
 > **主線一句話**：100k 主線＝L1 全局動態池＋VRAM 內 Gather（staging 雙緩衝）＋H2D 提升管線＋100k KV Cache 分頁 Offload；48 層全 GPU 算。
 
-- **A 側已交付**：A-16.0 設計拍板（`f5b15e9`）＋A-16.1a~A-16.7b 13 個原子步（`d467f05`…`9ccded1`）；**16 測試全綠（CPU）**＝13 項 v6 新＋3 項 v5 凍結回歸（詳見 [03A](03A_項目現況_TaskA.md)）。
+- **A 側已交付**：A-16.0 設計拍板（`f5b15e9`）＋A-16.1a~A-16.7b 13 個原子步（`d467f05`…`9ccded1`）＋A-16.8 交付包（`f4aaecd`/`321c1f8`）；**16 測試全綠（CPU）**＝13 項 v6 新＋3 項 v5 凍結回歸（詳見 [03A](03A_項目現況_TaskA.md)）。
 - **範圍說明**：A-16.5b-2（PagedAttention 深度接線）併入 A-16.6 範圍處理——A 側 16.5 交付＝分頁管理器＋bridge＋server 接線（C++ 測試全綠，達 02 接受準）；**CUDA attention 路徑與 GPU 驗證屬 B 側（RUNBOOK B-16）**。
 
 ### v6 CLI 參數（6 項）
@@ -65,7 +65,7 @@ engine\build-msvc\bin\q4e-bench.exe --v6 --v6-kv100k  # bench v6（五元件 thr
 # server：/q4e/stats 回 v6 群組（七元件快照＋KV 分頁統計）；真機步驟見 RUNBOOK_B_v6.md
 ```
 
-**狀態**：A 側完成 → **待 B-16 真機復驗**（A-16.8a 文件對齊完成、8b RUNBOOK 編號對齊待做）。
+**狀態**：A 側完成（A-16.0~A-16.8 全交付，16 commits `f5b15e9`…`321c1f8`）→ **待 B-16 真機復驗**（RUNBOOK_B_v6.md 已對齊 02 正典）。
 
 ## v6 主門（詳見 [02 §三](02_實作項目工作規劃.md)）
 
