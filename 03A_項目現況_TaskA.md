@@ -4,9 +4,9 @@
 無 GPU 可用：設計＋寫碼（C++）＋CPU build＋測試＋交付包。判斷權全在 A 側。
 
 ## 一、當前狀態
-**v6 A 側完成**：A-16.0 設計拍板＋A-16.1a~A-16.7b 13 個原子步交付，**16 測試全綠（CPU）**（v6 架構：全局動態池 + VRAM Gather + PLE/ngram SSD mmap + 100k KV Cache 分頁 Offload，已於 `01_架構系統資料.md` 拍板定案並落地）。
+**v6 A 側完成**：A-16.0 設計拍板＋A-16.1a~A-16.7b 13 個原子步＋A-16.8 交付包，**16 測試全綠（CPU）**（v6 架構：全局動態池 + VRAM Gather + PLE/ngram SSD mmap + 100k KV Cache 分頁 Offload，已於 `01_架構系統資料.md` 拍板定案並落地）。
 歷史版本已全面廢棄。
-下一步：**A-16.8 交付包**（8a 文件對齊完成／8b RUNBOOK_B_v6 編號對齊待做）→ 之後 **B-16 真機復驗（Task B）**。
+下一步：**B-16 真機復驗（Task B）**——前置全滿足，待 GPU 釋放（harness 模型服務現佔 23.6/24 GB VRAM）即啟動。
 
 ## 二、v6 交付項目 (全完成)
 | 項 | 名稱 | 狀態 | 內容／驗收／commit |
@@ -19,7 +19,7 @@
 | A-16.5 | **100k KV Cache 分頁 Offload** | ✅ `6207f7c`/`abc7afc` | 分頁管理器 (947862，含 100k oracle 滑窗)＋KV bridge (40)。**16.5b-2 深度接線併入 A-16.6**（CUDA 路徑屬 B-16）。 |
 | A-16.6 | Server 接線＋stats | ✅ `a891982`/`9445169` | Expert L1/L2/L3 命中＋KV 分頁統計 (139/50)，`/q4e/stats` v6 群組上線。 |
 | A-16.7 | e2e/bench v6 | ✅ `c82fbc1`/`9ccded1` | 客戶端工具更新（bench 30＋e2e 五門 28，含 `--v6-kv100k` 100k 壓力）。 |
-| A-16.8 | 交付包 v6 | 🔄 | 8a 文件對齊完成（本步）／8b RUNBOOK_B_v6 編號對齊待做。 |
+| A-16.8 | 交付包 v6 | ✅ `f4aaecd`/`321c1f8` | 8a 5 文件對齊（README/01/02/03A/03B）＋8b RUNBOOK_B_v6 編號對齊＋最終清理驗證。 |
 
 ## 三、現況總表 (16 測試全綠，CPU)
 | 測試 | 斷言數 | 備註 |
