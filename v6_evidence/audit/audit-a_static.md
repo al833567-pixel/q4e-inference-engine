@@ -24,3 +24,4 @@
 1. **項 2**：`engine/common/q4e-gather.cpp` 缺失（header-only；CMake/文件均以「介面」描述，可能為設計意圖，需 A 側裁決是否補 .cpp 或修正清單預期）。
 2. **項 7（部分）**：README.md L3/L14/L68 過期——仍稱 A-16.8 進行中、8b 待做，與 `321c1f8`/`06153a6` 後 02/03A/03B 的「A-16.8 ✅」矛盾；`06153a6` 收尾對齊漏掉 README。
    - **後續（審計提交後）**：README 已於 commit `6c0f150`（Audit-A 修正 F-1）更新為「A-16.0~A-16.8 全交付」，項 7 文件不一致已閉合；本審計保留原始發現作為證據。
+    - **項 2 裁決（A 側）**：**設計意圖，非缺陷**——q4e-gather＝CUDA Kernel 介面契約（args build/validate 於 header inline、launch 宣告供 B 側 CUDA 實作）；03A 明標「介面」、CMake 僅註冊 `q4e-gather.h`、commit `ecfb070` 內容即介面定義。審計清單「10 組 .h+.cpp」預期過嚴，更正為 **9 組 .h+.cpp＋1 組 header-only 介面**。
