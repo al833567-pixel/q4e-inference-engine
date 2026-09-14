@@ -3,6 +3,8 @@
 #include <cpp-httplib/httplib.h>
 #include <nlohmann/json.hpp>
 
+#include "q4e-e2e-v6.h"
+
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -39,6 +41,8 @@ struct conf {
     int         max_tokens = 64;
     int         health_timeout = 480;
     std::string log_dir = "q4e-e2e-run";
+    bool        v6 = false;       // run the v6 CPU e2e gates and exit
+    bool        v6_kv100k = false; // gate 4: add 100-step large-stride window jumps
 };
 
 struct child {
@@ -68,6 +72,8 @@ static void usage() {
     printf("  --max-tokens <n>     default: 64\n");
     printf("  --health-timeout <s> G1 deadline in seconds, default: 480\n");
     printf("  --log-dir <dir>      evidence dir, created if missing, default: q4e-e2e-run\n");
+    printf("  --v6                 run the v6 CPU e2e gates (pool/coverage/pipe/kv/stats) and exit\n");
+    printf("  --v6-kv100k          with --v6: gate 4 adds a 100-step large-stride window jump\n");
     printf("  --help               show this help\n");
     printf("\n");
     printf("notes:\n");
@@ -513,6 +519,10 @@ int main(int argc, char ** argv) {
                 c.health_timeout = std::stoi(value("--health-timeout"));
             } else if (a == "--log-dir") {
                 c.log_dir = value("--log-dir");
+            } else if (a == "--v6") {
+                c.v6 = true;
+            } else if (a == "--v6-kv100k") {
+                c.v6_kv100k = true;
             } else {
                 fprintf(stderr, "error: unknown arg %s (see --help)\n", a.c_str());
                 return 2;
@@ -526,6 +536,11 @@ int main(int argc, char ** argv) {
     if (show_help) {
         usage();
         return 0;
+    }
+    if (c.v6) {
+        const q4e_e2e_v6_result r = q4e_e2e_v6_run(c.v6_kv100k);
+        printf("%s", q4e_e2e_v6_text(r).c_str());
+        return r.all_ok ? 0 : 1;
     }
     if (c.server.empty() || c.model.empty()) {
         fprintf(stderr, "error: --server and --model are required (see --help)\n");
