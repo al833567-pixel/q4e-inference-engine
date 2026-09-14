@@ -1,6 +1,8 @@
 // q4e-bench: ON/OFF benchmark client for q4e-server
 // replaces legacy_v1/tools/bench_tps.py --measure/--prefetch + the B-8-4/B-8-6 curl steps
 
+#include "q4e-bench-v6.h"
+
 #include <cpp-httplib/httplib.h>
 #include <nlohmann/json.hpp>
 
@@ -49,6 +51,8 @@ struct conf {
     int         health_timeout = 480;
     std::string log_dir = "q4e-bench-run";
     std::string phases = "both";
+    bool        v6 = false;      // run the v6 component micro-benchmark and exit
+    bool        v6_kv100k = false; // v6 kv section: 300-step sliding window over 100k ctx
 };
 
 struct child {
@@ -106,6 +110,8 @@ static void usage() {
     printf("  --health-timeout <s> health poll deadline in seconds, default: 480\n");
     printf("  --log-dir <dir>      evidence dir, created if missing, default: q4e-bench-run\n");
     printf("  --phases <set>       both|on|off, default: both\n");
+    printf("  --v6                 run the v6 component micro-benchmark and exit\n");
+    printf("  --v6-kv100k          with --v6: kv section = 300-step sliding window over 100k ctx\n");
     printf("  --help               show this help\n");
     printf("\n");
     printf("notes:\n");
@@ -741,6 +747,10 @@ int main(int argc, char ** argv) {
                 c.log_dir = value("--log-dir");
             } else if (a == "--phases") {
                 c.phases = value("--phases");
+            } else if (a == "--v6") {
+                c.v6 = true;
+            } else if (a == "--v6-kv100k") {
+                c.v6_kv100k = true;
             } else {
                 fprintf(stderr, "error: unknown arg %s (see --help)\n", a.c_str());
                 return 2;
@@ -754,6 +764,13 @@ int main(int argc, char ** argv) {
     if (show_help) {
         usage();
         return 0;
+    }
+    if (c.v6) {
+        q4e_bench_v6_opts opt;
+        opt.kv100k = c.v6_kv100k;
+        const q4e_bench_v6_result r = q4e_bench_v6_run(opt);
+        printf("%s", q4e_bench_v6_text(r).c_str());
+        return r.ok ? 0 : 1;
     }
     if (c.server.empty() || c.model.empty()) {
         fprintf(stderr, "error: --server and --model are required (see --help)\n");
