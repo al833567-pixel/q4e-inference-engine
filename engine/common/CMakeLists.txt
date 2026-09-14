@@ -114,6 +114,8 @@ add_library(${TARGET}
     q4e-ngram.h
     q4e-promotion.cpp
     q4e-promotion.h
+    q4e-server-v6.cpp
+    q4e-server-v6.h
     q4e-staging.cpp
     q4e-staging.h
     q4e-stats-v6.cpp

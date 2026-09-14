@@ -11,10 +11,12 @@
 #include "fit.h"
 #include "llama.h"
 #include "log.h"
+#include "q4e-server-v6.h"
 
 #include <atomic>
 #include <clocale>
 #include <exception>
+#include <optional>
 #include <signal.h>
 #include <thread> // for std::thread::hardware_concurrency
 
@@ -245,7 +247,24 @@ int llama_server(common_params & params, int argc, char ** argv) {
 
     ctx_http.get ("/health",                   ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/v1/health",                ex_wrapper(routes.get_health)); // public endpoint (no API key check)
-    ctx_http.get ("/q4e/stats",                ex_wrapper(routes.get_q4e_stats));
+    // v6 /q4e/stats: state built once from common_params q4e fields (rest = cfg defaults); 404 when disabled
+    static std::optional<q4e_server_v6_state> q4e_v6_st;
+    ctx_http.get ("/q4e/stats", ex_wrapper([&params](const server_http_req &) -> server_http_res_ptr {
+        if (!q4e_v6_st) {
+            q4e_server_v6_cfg cfg;
+            cfg.moe_vram = params.q4e_moe_vram;
+            cfg.moe_ram  = params.q4e_moe_ram;
+            cfg.staging_mb = params.q4e_staging_mb; cfg.layer_floor = params.q4e_layer_floor;
+            cfg.kv_l2_mb   = params.q4e_kv_ram;
+            q4e_v6_st = q4e_server_v6_state(cfg); // invalid cfg -> invalid_argument -> 500 via ex_wrapper, state stays unset
+        }
+        auto res = std::make_unique<server_http_res>();
+        res->status = q4e_v6_st->enabled() ? q4e_server_v6_http(&*q4e_v6_st) : 404;
+        if (res->status == 200) {
+            res->data = q4e_server_v6_body(&*q4e_v6_st, ggml_time_us());
+        }
+        return res;
+    }));
     ctx_http.post("/q4e/ngram",                ex_wrapper(routes.set_ngram_mode));
     ctx_http.get ("/metrics",                  ex_wrapper(routes.get_metrics));
     ctx_http.get ("/props",                    ex_wrapper(routes.get_props));
