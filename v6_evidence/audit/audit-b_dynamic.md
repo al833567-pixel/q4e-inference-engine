@@ -2,8 +2,8 @@
 
 - 審計者：TaskA（總指揮家）直接執行（build/測試類工作，子代理在沙箱內無法完成 cl/link 執行）
 - repo：`D:\Nova2_home\AI研究\推理工具`
-- 方法：完整重編譯（MSVC Ninja 591 步）＋ 16 個 q4e 測試實跑斷言矩陣 ＋ q4e-e2e / q4e-bench `--v6 --v6-kv100k` 實跑
-- 結論：**build ✓（590/591，1 步環境性跳過）；測試 16/16 ✓（2 個缺陷已修復後全綠）；工具 2/2 exit 0 ✓**
+- 方法：完整重編譯（MSVC Ninja 591 步）＋ 17 個測試實跑斷言矩陣（16 q4e＋arg-parser）＋ q4e-e2e / q4e-bench `--v6 --v6-kv100k` 實跑
+- 結論：**build ✓（590/591，1 步環境性跳過）；測試 17/17 ✓（2 個缺陷已修復後全綠）；工具 2/2 exit 0 ✓；文件對齊（F-3）✓**
 
 ## 1. Build（engine/build-msvc）
 
@@ -13,10 +13,11 @@
 | step 539 ui-assets | ⚠ 環境性失敗（非產品缺陷） | HF 下載 SSL 被封鎖（沙箱無網路）＋ MSYS2 gzip signal pipe 被封鎖（Win32 error 5）；該步僅產生 UI 前端資產，不影響任何 q4e 產品/測試 binary；其餘 590 步全綠 |
 | 構建配方（環境限制下的可行路徑） | 已驗證 | PATH 上的 ninja 為 MSYS2 mingw64 build，會把 UTF-8 CJK 路徑（`AI研究`/`推理工具`）以 ANSI 重新編碼 → `GetFileAttributesEx ... syntax is incorrect`。正解：MSVC 原生 ninja（VS BuildTools CommonExtensions）只用於 `-t commands` 抽取；實際執行用純 ASCII .bat（CJK 路徑以 `%REPO%` 環境變數傳遞）＋ DSH 背景 job `cmd /c "%BAT%"`。ninja 直接執行、Start-Process -Wait、per-step log redirect 在本沙箱均失敗（pipe spawn 卡死 / Access denied / 檔案佔用），已記錄避免重蹈 |
 
-## 2. 測試斷言矩陣（16/16 ✓）
+## 2. 測試斷言矩陣（17/17 ✓）
 
 | 測試 | checks | 結果 |
 |---|---|---|
+| test-arg-parser | all tests OK | ✓ pass（v6 6 參數解析＋驗證） |
 | test-q4e-global-pool | 188 | ✓ pass |
 | test-q4e-staging | 118 | ✓ pass |
 | test-q4e-gather | 34 | ✓ pass |
@@ -58,6 +59,10 @@
   - `engine/common/q4e-expert-warm.cpp`：`q4e_pool_dynamic::access` miss 路徑呼叫 `pool_.note_round(...)`。
   - 其他 m_sum 斷言（expert-cache/global-pool/stats-v6）直接走 `pool_.access`，不受影響；重跑 16 測試全綠驗證。
 - **驗證**：`test-q4e-moe-pool` 4501 checks 全過（含 `ps.m_sum==15`、`ps.m_max==3`、dyn 5 rounds max_abs_err=0）。
+
+### F-3：文件測試矩陣漏列 moe-pool（「16 測試全綠」與實際 17 個 target 不符）
+- **症狀**：CMake 註冊 17 個測試 target（arg-parser＋16 q4e），但 01/02/03A/03B/README 均稱「16 測試全綠」，03A 矩陣表 16 行——`test-q4e-moe-pool`（A-15.2a/b，v5 凍結組）被系統性漏列。在 F-1 崩潰期間，此漏列使「全綠」表述隱含失實；修復後 17/17 全綠，表述應與事實一致。
+- **修復**：03A 矩陣補 `test-q4e-moe-pool | 4501` 行；01/02/03A/03B/README 六處「16 測試全綠」改「17 測試全綠」；README 分解式改「13 項 v6 新＋4 項 v5 凍結回歸」。
 
 ## 5. 審計範圍外（記錄，不處理）
 - B-16（GPU 實測）：本機 RTX 3090 24 GB 被 harness `llama-server`（PID 13804, port 8080, 23.6 GB VRAM）佔用；依約定不殺該進程，B-16 待 GPU 釋放後由 RUNBOOK_B 執行。

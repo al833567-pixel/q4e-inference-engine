@@ -1,6 +1,6 @@
 # 推理工具 — Qwen3.8-Flash-Next（qwen4exp）推理（v6 主線）
 
-> **現況**：**v6 A 側已全線交付**（A-16.0 設計拍板＋A-16.1a~A-16.7b 13 個原子步＋A-16.8 交付包，16 測試全綠 CPU；[01_架構系統資料.md](01_架構系統資料.md)：全局動態池＋VRAM 內 Gather＋H2D 管線＋100k KV 分頁）。**Task B 之 B-16 前置條件全部滿足**，待 GPU 釋放即啟動真機復驗。
+> **現況**：**v6 A 側已全線交付**（A-16.0 設計拍板＋A-16.1a~A-16.7b 13 個原子步＋A-16.8 交付包，17 測試全綠 CPU；[01_架構系統資料.md](01_架構系統資料.md)：全局動態池＋VRAM 內 Gather＋H2D 管線＋100k KV 分頁）。**Task B 之 B-16 前置條件全部滿足**，待 GPU 釋放即啟動真機復驗。
 > **歷史版本**：v4.1/v5 **已全面廢棄**，本 repo 不保留其歷史程式碼與除錯紀錄（證據/報告/舊手冊已清除；git log 可查）。
 > **策略**：**C++ 唯一**（`engine/` q4e 樹）；交付樹零 .py/.ps1（上游 `engine/` 開發工具除外）。
 > **紅線**：48 層 expert **全 GPU 算**；L1 **全局池**＋VRAM 內 Gather；**禁用 Per-Layer Pool**；B 端零判斷；build 必包 `vcvars64.bat`＋`-DBUILD_SHARED_LIBS=OFF -DGGML_CPU_REPACK=OFF`。
@@ -12,7 +12,7 @@
 |---|---|
 | [01_架構系統資料.md](01_架構系統資料.md) | **v6 架構**：工具定位、模型事實、三層專家快取、記憶體佈局、執行參數 |
 | [02_實作項目工作規劃.md](02_實作項目工作規劃.md) | **分工＋v6 主表（A-16.0~A-16.8 ✅／B-16 待啟動）＋驗收基準＋紅線紀律** |
-| [03A_項目現況_TaskA.md](03A_項目現況_TaskA.md) | Task A（無 GPU）：**v6 交付現況（16 測試全綠）＋新元件＋環境＋build 陷阱** |
+| [03A_項目現況_TaskA.md](03A_項目現況_TaskA.md) | Task A（無 GPU）：**v6 交付現況（17 測試全綠）＋新元件＋環境＋build 陷阱** |
 | [03B_項目現況_TaskB.md](03B_項目現況_TaskB.md) | Task B（GPU）：**B-16 前置已滿足（A 側已交付）＋門＋環境＋約束** |
 | [RUNBOOK_B_v6.md](RUNBOOK_B_v6.md) | **Task B 復驗手冊（B-16，零判斷）**：build／載入／e2e／t/s／oracle／命中分佈／收尾 |
 
@@ -45,7 +45,7 @@ cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxil
 
 > **主線一句話**：100k 主線＝L1 全局動態池＋VRAM 內 Gather（staging 雙緩衝）＋H2D 提升管線＋100k KV Cache 分頁 Offload；48 層全 GPU 算。
 
-- **A 側已交付**：A-16.0 設計拍板（`f5b15e9`）＋A-16.1a~A-16.7b 13 個原子步（`d467f05`…`9ccded1`）＋A-16.8 交付包（`f4aaecd`/`321c1f8`）；**16 測試全綠（CPU）**＝13 項 v6 新＋3 項 v5 凍結回歸（詳見 [03A](03A_項目現況_TaskA.md)）。
+- **A 側已交付**：A-16.0 設計拍板（`f5b15e9`）＋A-16.1a~A-16.7b 13 個原子步（`d467f05`…`9ccded1`）＋A-16.8 交付包（`f4aaecd`/`321c1f8`）；**17 測試全綠（CPU）**＝13 項 v6 新＋4 項 v5 凍結回歸（詳見 [03A](03A_項目現況_TaskA.md)）。
 - **範圍說明**：A-16.5b-2（PagedAttention 深度接線）併入 A-16.6 範圍處理——A 側 16.5 交付＝分頁管理器＋bridge＋server 接線（C++ 測試全綠，達 02 接受準）；**CUDA attention 路徑與 GPU 驗證屬 B 側（RUNBOOK B-16）**。
 
 ### v6 CLI 參數（6 項）
