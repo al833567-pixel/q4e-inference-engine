@@ -1,24 +1,39 @@
 # RUNBOOK_B v6 — Task B（GPU 側）v6 真機復驗手冊（B-16，零判斷）
 
-> **你是 Task B（有 GPU、照本手冊零判斷執行）**。本輪（B-16）目的＝v6 三層專家快取真機驗收：**① ON 暖 t/s ≥ 8（理想 ≥ 40）；② VRAM-fit（N=5000 載入成功、VRAM ≤ 24 GB）；③ Oracle 對答案；④ 回歸門（e2e 5 閘＋冷載入 ≤~250 s＋收尾 VRAM 歸零）**。
-> **你的工作只有：B-16-0 → B-16-7 依序執行，對照預期輸出；任一步失敗→停下回報。** 不改 `engine/` 任何 source/test、不自行調參、不猜、不編造數字。
+> **你是 Task B（有 GPU、照本手冊零判斷執行）**。本輪（B-16）目的＝v6 三層專家快取真機驗收：**① ON 暖 t/s ≥ 8（理想 ≥ 40）；② VRAM-fit（N=5000 載入成功、VRAM ≤ 24 GB）；③ 100k q8_0 載入無 OOM（KV 分頁 L1 64k/L2 32k pinned/L3 SSD）；④ Oracle 對答案；⑤ 回歸門（e2e 5 閘＋冷載入 ≤~250 s＋收尾 VRAM 歸零）**。
+> **你的工作只有：B-16-0 → B-16-8 依序執行，對照預期輸出；任一步失敗→停下回報。** 不改 `engine/` 任何 source/test、不自行調參、不猜、不編造數字。
 > 環境：Windows PowerShell（每步指令從 repo 根 `D:\Nova2_home\AI研究\推理工具\` 執行）；MSVC（vcvars64）＋CMake＋Ninja＋CUDA 13.3（nvcc）；RTX 3090 24 GB；~20 GB RAM；SATA SSD。
 > 被測對象＝C++ 產品 `q4e-server`（`engine/`，**Task A v6 交付版**）；oracle＝`D:\llama\llama-server.exe`（**只對答案，代碼不進產品**）。
 > 測試模型：`D:\AI_Model\Qwen3.8-Flash-Next\`（4 片 Q4_K_XL，≈103.7 GiB）。
 > 工具（v6 交付包）：`q4e-e2e.exe`／`q4e-bench.exe` 優先使用；本手冊 curl 步驟＝備援。
 
+### 編號對照表（一次性；舊編號→02 正典，本文件正文已全部改用 02 正典）
+
+| 舊編號（本文件舊版） | 02 正典（現行） |
+|---|---|
+| A-16.0 v6 設計拍板＋參數語義 | A-16.0（不變） |
+| A-16.1 全局動態池 | A-16.1（不變） |
+| A-16.2 VRAM 內 Gather | A-16.2（不變） |
+| A-16.3 H2D 管線 | A-16.3（不變） |
+| A-16.4 Graph 手術 | A-16.4（不變） |
+| A-16.5（原：Server 接線＋`/q4e/stats` v6） | **A-16.6** |
+| A-16.6（原：q4e-bench／q4e-e2e v6） | **A-16.7** |
+| A-16.7（原：交付包 v6） | **A-16.8** |
+| —（舊版無） | **A-16.5**（100k KV 分頁，新增） |
+
 ## 前置（Task A v6 交付確認；**B-16 動工前逐項核對，任一未勾→停下回報 A**）
 
 | 項 | 狀態 |
 |---|---|
-| A-16.0 v6 設計拍板＋參數語義（`--q4e-moe-vram N` 全局池／`--q4e-staging-mb S`／`--q4e-layer-floor F`） | 須 ✓ |
+| A-16.0 v6 設計拍板＋參數語義（`--q4e-moe-vram N` 全局池 expert 數／`--q4e-moe-ram R`／`--q4e-staging-mb S`／`--q4e-layer-floor F`／`--q4e-ple-mmap on|off`（預設 on）／`--q4e-kv-ram` 100k） | 須 ✓ |
 | A-16.1 全局動態池管理器（Global LRU＋Layer-Aware Floor＋M 計數）C++ 測試全綠 | 須 ✓ |
 | A-16.2 VRAM 內 Gather（Staging Buffer 雙緩衝＋CUDA Kernel 介面）C++ 測試全綠 | 須 ✓ |
 | A-16.3 H2D 提升管線（L2 Pinned RAM＋SSD→L2 fill＋非同步 H2D）C++ 測試全綠 | 須 ✓ |
 | A-16.4 Graph 手術（48 層全 GPU＋動態 slot 映射＋promotion op）Oracle 對答案＋C++ 測試 | 須 ✓ |
-| A-16.5 Server 接線＋`/q4e/stats` v6（L1/L2/L3 命中＋Gather 統計） | 須 ✓ |
-| A-16.6 q4e-bench／q4e-e2e v6 | 須 ✓ |
-| A-16.7 交付包 v6（README/01/02/03A/03B 全落地） | 須 ✓ |
+| A-16.5 100k KV 分頁（page=32 tokens＋L1/L2/L3 tier＋LRU promote/demote＋100k oracle 滑窗）C++ 測試全綠 | 須 ✓ |
+| A-16.6 Server 接線＋`/q4e/stats` v6（七群組：pool/staging/pipe/map/promo/kv/meta） | 須 ✓ |
+| A-16.7 q4e-bench／q4e-e2e v6（含 `--v6`／`--v6-kv100k`） | 須 ✓ |
+| A-16.8 交付包 v6（README/01/02/03A/03B 全落地） | 須 ✓ |
 
 > 本表由 Task A 填完後 B 端才可動工；B 端只核對「全部 ✓」，不做技術判斷。
 
@@ -96,7 +111,7 @@ curl.exe -s -o NUL -w "%{http_code}\n" -X POST http://127.0.0.1:8124/v1/chat/com
 curl.exe -s -N -X POST http://127.0.0.1:8124/v1/chat/completions -H "Authorization: Bearer bkey" -H "Content-Type: application/json" -d "@b16_body_sse.json"
 curl.exe -s http://127.0.0.1:8124/q4e/stats -H "Authorization: Bearer bkey"
 ```
-**預期輸出**：(a) 200；(b) 200＋`usage.completion_tokens≥1`（token 可能在 `reasoning_content`，正常）；(c) 401；(d) 多行 `data:`＋`data: [DONE]`；(e) 200＋JSON 含 **v6 欄位：L1/L2/L3 命中分佈＋Gather 統計＋真實 M（expert 計數）**（欄位名以 A-16.7 交付文件為準）。
+**預期輸出**：(a) 200；(b) 200＋`usage.completion_tokens≥1`（token 可能在 `reasoning_content`，正常）；(c) 401；(d) 多行 `data:`＋`data: [DONE]`；(e) 200＋JSON 含 **v6 七群組：pool/staging/pipe/map/promo/kv/meta（內含 L1/L2/L3 命中分佈＋Gather 統計＋真實 M（expert 計數））**（欄位名以 A-16.8 交付文件為準）。
 **備案**：任一閘不綠 → **回報原文**（該閘完整回應體＋status＋log 尾段）。
 
 ## B-16-4 性能基準（門：**ON 暖 t/s ≥ 8**，理想 ≥ 40）
@@ -149,7 +164,40 @@ Get-Content b16_6_stats.json -Raw -Encoding UTF8
 3. 真實 M 計數（touched expert 口徑）與 48 層 router 選擇一致（每 token 每層 10 routed）。
 > 此步為**觀測**（非 t/s 門）：數值異常→回報原文，由 A 側裁決。
 
-## B-16-7 收尾（回歸門）
+## B-16-7 100k KV 分頁驗證（v6 新門）
+
+> KV 分頁對齊 A-16.5 交付（`q4e-kv-paging`＋`q4e-kv-bridge`）：page＝32 tokens；tier＝L1 64k（VRAM）／L2 32k（pinned RAM）／L3（SSD）；100k 極限配置＝`--ctx-size 100000 --cache-type-k q8_0 --q4e-kv-ram 6000 --q4e-moe-ram 3000`（**本步唯一允許的配置變更，屬固定配置，非自行調參**）。
+> 前置：B-16-5 已 kill 2048 server（`$q4e`），VRAM 已歸零。
+
+**快速驗證指令（優先，交付包工具）**
+```powershell
+engine\build-cuda\bin\q4e-e2e.exe --v6 --v6-kv100k
+engine\build-cuda\bin\q4e-bench.exe --v6
+```
+**備援（手動 100k 載入）**
+```powershell
+nvidia-smi    # 須 VRAM 歸零再繼續
+$q4e100k = Start-Process -FilePath "engine\build-cuda\bin\q4e-server.exe" -ArgumentList @(
+  '--model','D:\AI_Model\Qwen3.8-Flash-Next\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf',
+  '--host','127.0.0.1','--port','8126','--api-key','bkey',
+  '--n-gpu-layers','all','--q4e-moe-vram','5000','--q4e-moe-ram','3000',
+  '--q4e-staging-mb','128','--q4e-layer-floor','10','--q4e-ple-mmap','on',
+  '--ctx-size','100000','--cache-type-k','q8_0','--q4e-kv-ram','6000','--parallel','1'
+) -RedirectStandardOutput 'b16_7_100k.log' -RedirectStandardError 'b16_7_100k.err.log' -NoNewWindow -PassThru
+$deadline = (Get-Date).AddSeconds(600)
+while ((Get-Date) -lt $deadline) {
+  if ((curl.exe -s -o NUL -w "%{http_code}" http://127.0.0.1:8126/health) -eq "200") { break }
+  Start-Sleep -Seconds 15
+}
+curl.exe -s -o NUL -w "health100k=%{http_code}\n" http://127.0.0.1:8126/health
+curl.exe -s http://127.0.0.1:8126/q4e/stats -H "Authorization: Bearer bkey" -o b16_7_stats100k.json
+nvidia-smi
+Stop-Process -Id $q4e100k.Id -Force
+```
+**預期輸出**：載入成功（`health100k=200`）**無 OOM**、VRAM 不爆（≤ 24 GB）；`b16_7_stats100k.json` 含 v6 七群組 **pool/staging/pipe/map/promo/kv/meta**，`kv` 群組見分頁運作（L1 64k/L2 32k pinned/L3 SSD，page=32 tokens）。
+**備案**：OOM／載入失敗→**停下回報原文**（`b16_7_100k.err.log`＋`nvidia-smi`＋stats JSON 原文），不自動降參、不重試。
+
+## B-16-8 收尾（回歸門）
 
 **指令**
 ```powershell
@@ -163,14 +211,16 @@ Get-ChildItem "D:\AI_Model\Qwen3.8-Flash-Next\*.gguf"
 ## 驗收基準（v6）
 
 1. **t/s**：ON 暖 t/s **≥ 8**（理想 L1 全命中 ≥ 40；依賴 L2 PCIe 補齊）。
-2. **VRAM-fit**：`N=5000` 載入成功、VRAM ≤ 24 GB。
-3. **Oracle 對答案**：48 層全 GPU＋全局池＋Gather 逐層輸出＝oracle。
-4. **回歸門**：e2e 5 閘綠＋冷載入 ≤~250 s＋收尾 VRAM 歸零。
-5. **觀測**：L1/L2/L3 命中分佈＋Gather 統計＋真實 M（B-16-6）。
+2. **100k**：`--ctx-size 100000 --cache-type-k q8_0` 載入成功**無 OOM**、VRAM 不爆、KV 分頁正常運作（B-16-7）。
+3. **VRAM-fit**：`N=5000` 載入成功、VRAM ≤ 24 GB。
+4. **Oracle 對答案**：48 層全 GPU＋全局池＋Gather 逐層輸出＝oracle。
+5. **回歸門**：e2e 5 閘綠＋冷載入 ≤~250 s＋收尾 VRAM 歸零。
+6. **觀測**：L1/L2/L3 命中分佈＋Gather 統計＋真實 M（B-16-6）；stats 七群組（pool/staging/pipe/map/promo/kv/meta）齊全。
+> **A 側前置補註**：CPU 測試矩陣 16 項已全綠（引 `03A_項目現況_TaskA.md` §三，含 promotion oracle 覆蓋＋100k KV 滑窗 oracle）；本冊僅做真機驗證，不重跑 CPU 測試。
 
 ## 紅線
 
-**設定＝`--n-gpu-layers all --q4e-moe-vram 5000 --q4e-moe-ram 4000 --q4e-staging-mb 128 --q4e-layer-floor 10`；不砍功能；不改 `engine/` source/test；不改快取/Gather/池參數；永不過兩模型實例並行；oracle 只對答案；kill 只按 PID、絕不 `Stop-Process -Name llama-server`。**
+**設定＝`--n-gpu-layers all --q4e-moe-vram 5000 --q4e-moe-ram 4000 --q4e-staging-mb 128 --q4e-layer-floor 10`（100k 步 B-16-7 用固定極限配置 `--ctx-size 100000 --cache-type-k q8_0 --q4e-kv-ram 6000 --q4e-moe-ram 3000`，唯一允許的配置變更）；不砍功能；不改 `engine/` source/test；不改快取/Gather/池參數；永不過兩模型實例並行；oracle 只對答案；kill 只按 PID、絕不 `Stop-Process -Name llama-server`。**
 
 ## 卡住規則
 
