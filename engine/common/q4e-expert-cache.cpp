@@ -337,6 +337,15 @@ void q4e_expert_pool::promote(int layer, int expert) {
     l2_insert(layer, expert); // L3 -> L2 fill reserve; SSD read by A-15.3
 }
 
+void q4e_expert_pool::note_round(int layer, int expert) {
+    check_layer(layer);
+    check_expert(expert);
+    layer_state & ls = layers_[(std::size_t) layer];
+    if (ls.round_active) {
+        ls.round_ids.insert(expert);
+    }
+}
+
 void q4e_expert_pool::begin_round(int layer) {
     check_layer(layer);
     layer_state & ls = layers_[(std::size_t) layer];

@@ -1161,6 +1161,7 @@ int q4e_pool_dynamic::access(int layer, int expert) {
         return 0;
     }
     // miss: no pool_.access here; pool flips to L1 only at job done (A-15.3 caliber)
+    pool_.note_round(layer, expert); // M accounting; tier state unchanged
     const int tier = (std::strcmp(st, "l2") == 0) ? 1 : 2;
     if (slot_of(layer, expert) < 0) {
         remap(layer, expert);

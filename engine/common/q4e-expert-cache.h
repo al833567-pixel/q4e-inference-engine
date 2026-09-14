@@ -148,6 +148,8 @@ struct q4e_expert_pool {
     int64_t access(int layer, int expert);
     // explicit state move (A-15.3 hook): L3 -> L2 fill reserve, or L2 -> L1 promotion
     void promote(int layer, int expert);
+    // round accounting only, no tier state change (A-15.2b dynamic layer miss path)
+    void note_round(int layer, int expert);
     // one forward round at layer: distinct expert count (M) committed on end_round
     void begin_round(int layer);
     void end_round(int layer);

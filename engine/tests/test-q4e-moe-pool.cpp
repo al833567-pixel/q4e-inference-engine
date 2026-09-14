@@ -488,6 +488,12 @@ struct dyn_env {
         dyn->set_h2d(h2d);
     }
 
+    void sched_setup() {
+        cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+        ggml_backend_t backends[1] = {cpu};
+        sched = ggml_backend_sched_new(backends, nullptr, 1, GGML_DEFAULT_GRAPH_SIZE, false, true);
+    }
+
     ~dyn_env() {
         if (sched) {
             ggml_backend_sched_free(sched);
@@ -653,6 +659,7 @@ static void test_dynamic_oracle_sequence() {
     dyn_env env;
     env.pool_setup();
     env_setup_dyn(env, cds[0]);
+    env.sched_setup();
     for (int r = 0; r < 5; ++r) {
         env.gate_inp[r] = ggml_new_tensor_2d(env.ctx_d, GGML_TYPE_F32, cds[r].n_embd, cds[r].n_expert);
         fill_tensor(env.gate_inp[r], cds[r].gate_inp);
