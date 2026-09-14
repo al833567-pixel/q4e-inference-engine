@@ -4,14 +4,14 @@
 有 GPU 可用：照 RUNBOOK 零判斷執行（CUDA build＋真機載入＋oracle 對答案＋驗收）。失敗回報原文，不猜。
 
 ## 一、當前狀態
-等待 Task A 完成 v6 核心實作 (A-16.0 ~ A-16.8) 並交付構建包。
+**v6 A 側已交付**：A-16.0 設計拍板＋A-16.1a~A-16.7b 13 個原子步（14 commits `f5b15e9`~`9ccded1`），16 測試全綠（CPU）。
 歷史版本之除錯紀錄已全面清除。
-下一步：收到 v6 交付包後，啟動 **B-16 (v6 真機復驗)**。
+**B-16 前置條件已滿足**：依 RUNBOOK_B_v6.md 啟動 **B-16 (v6 真機復驗)**（A-16.8 交付包：8a 完成／8b RUNBOOK 編號對齊待做）。
 
 ## 二、v6 待辦項目
 | 項 | 名稱 | 狀態 | 內容／門 |
 |---|---|---|---|
-| B-16 | v6 真機復驗 (含 100k) | ⏳ | 照 RUNBOOK 零判斷。主門：ON 暖 t/s ≥ 8 (理想 40+)＋**100k context 載入不 OOM**＋Oracle 對答案＋VRAM-fit (≤24GB)。 |
+| B-16 | v6 真機復驗 (含 100k) | 🚦 前置已滿足 | 照 RUNBOOK 零判斷。門：**VRAM-fit N=5000 ≤ 24GB**＋**100k ctx q8_0 載入不 OOM**＋**ON 暖 t/s ≥ 8 (理想 40+)**＋**Oracle 對答案**＋**e2e 5 門綠**＋冷載入 ≤~250 s＋收尾 VRAM 歸零。 |
 
 ## 三、Task B 環境
 | 項目 | 狀態 | 說明 |
@@ -25,3 +25,4 @@
 - 零判斷：照 RUNBOOK 執行；失敗＝錯誤原文＋證據。
 - 並行紅線：永不過兩個模型實例；絕不殺 harness 之 `llama-server`。
 - Build 旗標：`-DGGML_CPU_REPACK=OFF`＋`-DBUILD_SHARED_LIBS=OFF`；必包 `vcvars64.bat`。
+- **沙箱限制不適用**：A 側 DSH 沙箱之 build 限制（ninja 禁直跑）不適用於 B 側正常環境；B 側 ninja/build 正常直跑。
