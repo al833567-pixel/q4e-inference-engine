@@ -1308,12 +1308,14 @@ static bool common_q4e_moe_vram_apply(common_params & params) {
         return false; // dense model, nothing to do
     }
 
-    llm_insert_q4e_moe_vram_overrides(n_layers, params.q4e_moe_vram, params.tensor_buft_overrides);
+    // v6: q4e_moe_vram is the global expert count; map it to whole layers for the buft overrides
+    const int k = llm_q4e_moe_vram_keep_layers(n_layers, n_expert, params.q4e_moe_vram);
+    llm_insert_q4e_moe_vram_overrides(n_layers, k, params.tensor_buft_overrides);
     return true;
 }
 
 // verify the requested layout fits in VRAM; never silently lower k
-static bool common_q4e_moe_vram_check(const char * path_model, int32_t k,
+static bool common_q4e_moe_vram_check(const char * path_model, int32_t n,
                                       const llama_model_params * mparams, llama_context_params * cparams) {
     std::vector<ggml_backend_dev_t> devs;
     uint32_t hp_ngl = 0, hp_nct = 0, hp_nex = 0;
@@ -1330,8 +1332,8 @@ static bool common_q4e_moe_vram_check(const char * path_model, int32_t k,
     for (size_t id = 0; id < devs.size(); id++) {
         const int64_t required = int64_t(dmds[id].model) + int64_t(dmds[id].context) + int64_t(dmds[id].compute);
         if (required > dmds[id].free) {
-            COM_ERR("%s: --q4e-moe-vram k=%d does not fit in VRAM: %s needs %" PRId64 " MiB, only %" PRId64 " MiB free\n",
-                    __func__, k, ggml_backend_dev_name(devs[id]), required / MiB, dmds[id].free / MiB);
+            COM_ERR("%s: --q4e-moe-vram N=%d does not fit in VRAM: %s needs %" PRId64 " MiB, only %" PRId64 " MiB free\n",
+                    __func__, n, ggml_backend_dev_name(devs[id]), required / MiB, dmds[id].free / MiB);
             return false;
         }
     }

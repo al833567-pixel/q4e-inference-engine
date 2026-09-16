@@ -40,6 +40,7 @@ VRAM ≈ Attn/Router/Shared (48 層, ngl=all)
 
 結論：N=5000 全局池 + 128 MB staging + 8k KV window 在 24 GB 內成立（02 文檔驗收 #3）。
 載入期必須做 hard fit check：VRAM 不足 → 載入失敗並明確指向 `--q4e-moe-vram`（v5 紀律：永不靜默降級）。
+**實作現況（2026-09-16，A-16.9 註記）**：本節與 §四 的設計物理路徑（L1 池緩衝＋CUDA gather＋promotion＋graph 手術＝整層拆開、逐 expert 全局池）**尚未實現**——A-16.2/16.3/16.4 交付物為 pure C++ bookkeeping＋CPU 契約（`q4e_gather_launch_cuda` 為 stub、無 q4e CUDA kernel、server 僅將 staging_mb/layer_floor 傳入 stats shim），server 實際推理目前走 **v5 per-layer 駐留路徑**（per-layer buft＋prefetch）。A-16.9 load path 修正（v6 N → `ceil(N/512)` 整層駐留）是對**現有 v5 物理路徑**的相容修正，**不是** §四 設計佈局的落地；設計物理路徑（整層拆開）待另行實作。
 v5 的 `common_q4e_fit_vram`（per-layer R = ceil(N/48)）是凍結的 v5 行為，保留供 v5 回歸；v6 全局池的 fit 檢查由 A-16.1 以「N 全局」語義實作（公式同式，但不再除以 48 層）。
 
 ## 三、RAM-fit 公式（~20 GB）

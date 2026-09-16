@@ -1181,6 +1181,16 @@ inline void llm_add_q4e_moe_vram_overrides(int n_layers, int k, std::vector<llam
     llm_add_n_cpu_ffn_overrides(n_cpu, LLM_FFN_EXPS_REGEX, overrides);
 }
 
+// --q4e-moe-vram v6: N = total routed experts in the L1 VRAM pool; expert weights are per-layer 3D
+// tensors, so the VRAM-resident set is whole layers: keep ceil(N / n_expert) layers (>= N experts); N <= 0 -> 0
+inline int llm_q4e_moe_vram_keep_layers(int n_layers, int n_expert, int64_t n_experts) {
+    if (n_layers <= 0 || n_expert <= 0 || n_experts <= 0) {
+        return 0;
+    }
+    const int64_t k = (n_experts + n_expert - 1) / n_expert;
+    return k > n_layers ? n_layers : (int) k;
+}
+
 // --q4e-moe-vram: insert the CPU buft patterns before the first null terminator.
 // common_params_parse pads this buffer with null entries (for llama_params_fit), so
 // appending after the padding would leave the patterns past the terminator, and the

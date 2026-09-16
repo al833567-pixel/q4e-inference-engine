@@ -579,6 +579,16 @@ static void test(void) {
         check(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
               "reject --q4e-moe-vram abc");
 
+        // v6 load-path mapping: global N -> whole layers kept in VRAM (expert weights are per-layer 3D tensors)
+        check(llm_q4e_moe_vram_keep_layers(48, 512, 0) == 0, "N=0 -> 0 layers (pool off)");
+        check(llm_q4e_moe_vram_keep_layers(48, 512, 1) == 1, "N=1 -> 1 layer");
+        check(llm_q4e_moe_vram_keep_layers(48, 512, 512) == 1, "N=512 -> 1 layer");
+        check(llm_q4e_moe_vram_keep_layers(48, 512, 513) == 2, "N=513 -> 2 layers");
+        check(llm_q4e_moe_vram_keep_layers(48, 512, 5000) == 10, "N=5000 -> ceil(5000/512) = 10 layers");
+        check(llm_q4e_moe_vram_keep_layers(48, 512, 24576) == 48, "N=24576 -> all 48 layers");
+        check(llm_q4e_moe_vram_keep_layers(48, 512, 99999) == 48, "N=99999 clamped to n_layers");
+        check(llm_q4e_moe_vram_keep_layers(48, 512, -1) == 0, "N<0 -> 0 layers");
+
         // --q4e-staging-mb
         argv = {"binary_name", "--q4e-staging-mb", "256"};
         check(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), v6p, LLAMA_EXAMPLE_COMMON),
