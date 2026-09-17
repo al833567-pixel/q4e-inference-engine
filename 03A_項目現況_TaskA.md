@@ -9,7 +9,7 @@
 - 9/17 bisect（`v6_work/p3bisect/`）：v6 測試以 `#if 0` 禁用（只跑 v5，4501 checks）→ **仍 8/15 bad**；多執行緒與單執行緒（`Q4E_TEST_SINGLE_THREAD`）皆 8/15；bad 全部 exit=**-1073741819（0xC0000005 access violation）**＝**崩潰，非 hang**（stress 無 timeout 包，loop 能跑完 15 次即證明是 crash）。
 - 崩潰點（DBG 標記）：`test_dynamic_oracle_sequence` round 1 的 sched reset 之後、graph build（`build_moe_ffn`）期間／`test_dynamic_multilayer` 入口後（dyn_env 析構後）；輸出中斷、無 FAILED 訊息。
 - **程式碼歸屬（已核實）**：bisect 建置跑到的程式碼，工作區 diff 全為「純新增＋更名」（test 檔 v5 區段僅插入 hunk；llama-graph／models／qwen3next 純新增；q4e-h2d-pipeline 純 rename）→ 崩潰是**凍結 v5 潛在 bug（`common/q4e-expert-warm.h`：q4e_expert_h2d／q4e_pool_dynamic）或 v5 測試自身 UB**，9/17 首次 15 連跑才浮現（v6_work 無更早 stress 證據），**非 Phase 2/3 回歸**。
-- **需 A 側裁決**：「凍結 v5 不動」紀律與修 bug 衝突 → 需明確授權「可動 `q4e-expert-warm.h`（v5 凍結檔）僅為修此 crash：1 檔 1 bug，不弱化任何斷言」。
+- **A 側裁決 ✅（9/17）**：「凍結 v5 不動」紀律例外授權——可動 `q4e-expert-warm.h`（v5 凍結檔）**僅為修此 crash：1 檔 1 bug，不弱化任何斷言**；其餘 v5 凍結檔仍禁動。
 **工作區狀態（未 commit；最後 commit `0a25cec`＝計畫文件）**：
 - `tests/test-q4e-moe-pool.cpp`：v6 測試在 2 個 `#if 0` 區塊（L779-1132 Phase 2；L1134-1405 Phase 3，共 27185 斷言目前被關）；v6 include 被註解（L12）；16 支 DBG fprintf 殘留（L495-737）；`Q4E_TEST_SINGLE_THREAD` 開關（L492-501）；main() 4 個 v6 呼叫被註解（L1414-1417）。
 - `common/q4e-pool-backend.{h,cpp}`：新檔（untracked），Phase 3a pool backend（fill/H2D CPU 版＋sync_round）；bisect 建置未 link。
@@ -58,7 +58,7 @@ A-16.0~A-16.9 全交付（commits `f5b15e9`~`61bc074`，17 測試全綠，明細
 - **Stress 工具**：`v6_work/p3bisect/stress.bat`（15 連跑＋DONE_BAD 統計）、`run_bisect.bat`（單檔重編 bisect 建置）。
 
 ## 五、執行計畫 v2（9/17 重新分配：更多步驟、極簡化、一步一門）
-**執行前置**：✅ checkpoint commit `16530f3`（Phase 2/3 工作區＋03A 覆核）；✅ 03A/02 文件清理（保留工作目標）；**待 A 側確認後啟動 Phase 0**。
+**執行前置**：✅ checkpoint commit `16530f3`；✅ 03A/02 文件清理（commit `cb4e8d0`）；✅ A 側授權動 `q4e-expert-warm.h` 修 crash（9/17）；**全項就緒，待 A 側「開始」訊號後啟動 Phase 0**。
 **原則（v2 紀律，比 v1 更嚴）**
 1. 嚴格串列；一步＝至多 1 個檔案（同檔分步）。每步只做一件事。
 2. 每步**恰好 1 個驗收門**；門不過 → 回退該檔（`git checkout -- <file>`）→ 帶證據報 A 側裁決；**不準自行換第二個檔試**。
@@ -73,7 +73,7 @@ A-16.0~A-16.9 全交付（commits `f5b15e9`~`61bc074`，17 測試全綠，明細
 | P0-3 | 無程式碼：用 P0-2 filter 逐測試 stress×15（slot_of／all_in_pool／out_of_pool／mixed／oracle_sequence／multilayer） | 圈出 crashing 測試＋各 bad rate（預期 oracle_sequence／multilayer） |
 | P0-4 | 無程式碼（crash stack 捕捉）：VS debugger 或 windbg 跑 crashing 測試，抓第一次崩潰 stack（function＋module） | 拿到 stack；指名模組（ggml／llama-common／test 本體） |
 | P0-5 | test-q4e-moe-pool.cpp（bisect 輔助，P0-7 必還原）：以 env 門控 probe round（r==1）與 rounds 數（尾端遞減）＋跳過尾部固定 counters CHECK，逐組 stress | 最小失敗序列：N rounds bad≥5/15 且 N-1 rounds bad=0/15 |
-| P0-6 | **1 檔 1 bug（先經 A 側授權動 v5 凍結檔）**：依 P0-4/P0-5 證據修 root cause（候選：`common/q4e-expert-warm.h`、v5 測試本體、ggml——擇一，禁止盲修） | 最小 repro 15/15 clean；moe-pool 全量 3 連跑全綠 |
+| P0-6 | **1 檔 1 bug（授權 ✅）**：依 P0-4/P0-5 證據修 root cause（候選：`common/q4e-expert-warm.h`、v5 測試本體、ggml——擇一，禁止盲修） | 最小 repro 15/15 clean；moe-pool 全量 3 連跑全綠 |
 | P0-7 | test-q4e-moe-pool.cpp（只清理）：刪全部 16 支 DBG；還原 2 個 `#if 0`（v6 測試恢復）；還原 L12 include；P0-5 的 env 門控刪除；保留 Q4E_TEST_SINGLE_THREAD 開關（無害） | `all 31686 checks passed` ×3 連跑 |
 | P0-8 | 無程式碼（驗收門）：full binary（v6 啟用）stress×15＋16 測試全套 | DONE_BAD=0＋16/16 全綠 → **Phase 0 完成；commit checkpoint（需批准）** |
 
@@ -94,7 +94,7 @@ A-16.0~A-16.9 全交付（commits `f5b15e9`~`61bc074`，17 測試全綠，明細
 
 **風險（v2）**
 1. P0-6 root cause 未定（凍結 v5 潛在 bug 或 v5 測試 UB）——P0-4 的 crash stack 是定案證據；無 stack 前禁止改動任何 C++。
-2. 需動 v5 凍結檔修 bug → 須先經 A 側授權（見第一節裁決項）。
+2. v5 凍結檔裁決範圍（9/17 授權）：僅 `q4e-expert-warm.h` 可動、1 檔 1 bug、不弱化斷言；其餘 v5 凍結檔仍禁動。
 3. 工作區 v6 測試目前 `#if 0` 關閉 → P0-7 前 moe-pool「全綠」不可當驗收。
 
 **子代理分工順序（v2）**：Phase 0（P0-1→P0-8，串列，每步一個子代理或同一人）→ A 側 review → Phase 4（P4-1→P4-6）→ A 側 review → 交 B 側 P5-1。
