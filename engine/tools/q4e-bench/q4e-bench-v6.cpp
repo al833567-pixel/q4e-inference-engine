@@ -73,7 +73,7 @@ int bench_staging_place(int iters, bool) {
 
 // pipe: L2 8 MB, 256 KB expert slots, 4 in-flight
 int bench_pipe_submit_poll(int iters, bool) {
-    q4e_h2d_config cfg;
+    q4e_h2d_pipeline_config cfg;
     cfg.l2_ram_mb = 8;
     cfg.expert_bytes = 256 * 1024;
     cfg.max_inflight = 4;

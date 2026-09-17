@@ -17,7 +17,8 @@
 #include <unordered_map>
 #include <vector>
 
-struct q4e_h2d_config {
+// distinct from the v5 q4e_h2d_config in q4e-expert-warm.h (name collision in shared TUs)
+struct q4e_h2d_pipeline_config {
     uint32_t l2_ram_mb    = 4000;    // L2 pinned expert pool MB (--q4e-moe-ram), >= 4
     uint64_t expert_bytes = 3216896; // one expert slot bytes, > 0
     uint32_t max_inflight = 4;       // in-flight H2D cap, >= 1
@@ -40,7 +41,7 @@ using q4e_h2d_copy_fn = std::function<bool(int64_t job_id, void * src, void * ds
 
 class q4e_h2d_pipeline {
 public:
-    explicit q4e_h2d_pipeline(const q4e_h2d_config & cfg = q4e_h2d_config());
+    explicit q4e_h2d_pipeline(const q4e_h2d_pipeline_config & cfg = q4e_h2d_pipeline_config());
     // throws std::invalid_argument: l2_ram_mb < 4, expert_bytes <= 0, max_inflight < 1, zero L2 slots
 
     void set_fill_backend(q4e_h2d_fill_fn fn);
@@ -74,7 +75,7 @@ private:
     void check_id(int layer, int expert) const;
     bool in_flight_of(int64_t key) const;
 
-    q4e_h2d_config cfg_;
+    q4e_h2d_pipeline_config cfg_;
     uint32_t n_slots_ = 0;
     std::vector<uint32_t> free_slots_;
     std::list<l2_entry> lru_; // front = most recently used

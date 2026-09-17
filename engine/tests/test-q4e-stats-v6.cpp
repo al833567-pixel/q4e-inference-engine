@@ -79,8 +79,8 @@ static q4e_staging_config staging_cfg() {
 }
 
 // fixture: 4 x 1 MB L2 slots, in-flight cap 1
-static q4e_h2d_config pipe_cfg() {
-    q4e_h2d_config c;
+static q4e_h2d_pipeline_config pipe_cfg() {
+    q4e_h2d_pipeline_config c;
     c.l2_ram_mb    = 4;
     c.expert_bytes = 1048576;
     c.max_inflight = 1;

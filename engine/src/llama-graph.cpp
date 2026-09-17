@@ -2298,6 +2298,35 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     return moe_out;
 }
 
+void q4e_v6_pool_fill(
+        ggml_tensor * up_pool, ggml_tensor * gate_pool, ggml_tensor * down_pool,
+        const std::vector<ggml_tensor *> & up_full,
+        const std::vector<ggml_tensor *> & gate_full,
+        const std::vector<ggml_tensor *> & down_full,
+        const std::vector<std::vector<int>> & tables) {
+    auto copy_expert_block = [](ggml_tensor * dst, ggml_tensor * src, int d_idx, int s_idx) {
+        GGML_ASSERT(dst->type == src->type);
+        GGML_ASSERT(dst->ne[0] == src->ne[0] && dst->ne[1] == src->ne[1]);
+        const size_t row_bytes = ggml_row_size(src->type, src->ne[0]);
+        const uint8_t * p = (const uint8_t *) ggml_get_data(src) + (std::size_t) s_idx * src->nb[2];
+        uint8_t * q = (uint8_t *) ggml_get_data(dst) + (std::size_t) d_idx * dst->nb[2];
+        for (int64_t a = 0; a < src->ne[1]; ++a) {
+            std::memcpy(q + a * dst->nb[1], p + a * src->nb[1], row_bytes);
+        }
+    };
+    const int n_slots = (int) up_pool->ne[2];
+    for (size_t l = 0; l < tables.size(); ++l) {
+        for (size_t e = 0; e < tables[l].size(); ++e) {
+            const int slot = tables[l][e];
+            if (slot >= 0 && slot < n_slots) {
+                copy_expert_block(up_pool,   up_full[l],   slot, (int) e);
+                copy_expert_block(gate_pool, gate_full[l], slot, (int) e);
+                copy_expert_block(down_pool, down_full[l], slot, (int) e);
+            }
+        }
+    }
+}
+
 ggml_tensor * llm_graph_context::build_moe_ffn_pool(
           ggml_tensor * cur,
           ggml_tensor * gate_inp,

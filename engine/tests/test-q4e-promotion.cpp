@@ -80,7 +80,7 @@ static void test_basic_flow() {
     const int choices[] = { 0, 1 };
     map.set_router_choices(choices, 2);
 
-    q4e_h2d_config pcfg;
+    q4e_h2d_pipeline_config pcfg;
     pcfg.expert_bytes = slot;
     q4e_h2d_pipeline pipe(pcfg);
     set_fakes(pipe);
@@ -119,7 +119,7 @@ static void test_skip_duplicate() {
     const int choices[] = { 0, 1 };
     map.set_router_choices(choices, 2);
 
-    q4e_h2d_config pcfg;
+    q4e_h2d_pipeline_config pcfg;
     pcfg.expert_bytes = slot;
     q4e_h2d_pipeline pipe(pcfg);
     set_fakes(pipe);
@@ -154,7 +154,7 @@ static void test_deferred() {
     const int choices[] = { 5, 6 };
     map.set_router_choices(choices, 2);
 
-    q4e_h2d_config pcfg;
+    q4e_h2d_pipeline_config pcfg;
     pcfg.expert_bytes = slot;
     pcfg.max_inflight = 1;
     q4e_h2d_pipeline pipe(pcfg);
@@ -194,7 +194,7 @@ static void test_staging_full() {
     const int choices[] = { 0, 1 };
     map.set_router_choices(choices, 2);
 
-    q4e_h2d_config pcfg;
+    q4e_h2d_pipeline_config pcfg;
     pcfg.expert_bytes = slot;
     q4e_h2d_pipeline pipe(pcfg);
     set_fakes(pipe);
@@ -227,7 +227,7 @@ static void test_failed_jobs() {
     const int choices[] = { 0, 1 };
     map.set_router_choices(choices, 2);
 
-    q4e_h2d_config pcfg;
+    q4e_h2d_pipeline_config pcfg;
     pcfg.expert_bytes = slot;
     q4e_h2d_pipeline pipe(pcfg);
     pipe.set_fill_backend([](int, int, void *, int64_t bytes) {
@@ -295,7 +295,7 @@ static void test_oracle() {
         index[first_seen[i]] = i;
     }
 
-    q4e_h2d_config pcfg;
+    q4e_h2d_pipeline_config pcfg;
     pcfg.expert_bytes = slot;
     pcfg.max_inflight = 4;
     q4e_h2d_pipeline pipe(pcfg);
@@ -383,7 +383,7 @@ static void test_ctor_and_reset() {
     q4e_graph_map map(8, 2, 1);
     const int choices[] = { 0, 1 };
     map.set_router_choices(choices, 2);
-    q4e_h2d_config pcfg;
+    q4e_h2d_pipeline_config pcfg;
     pcfg.expert_bytes = 3216896;
     q4e_h2d_pipeline pipe(pcfg);
     set_fakes(pipe);

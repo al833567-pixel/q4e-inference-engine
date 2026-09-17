@@ -112,6 +112,8 @@ add_library(${TARGET}
     q4e-kv-paging.h
     q4e-ngram.cpp
     q4e-ngram.h
+    q4e-pool-backend.cpp
+    q4e-pool-backend.h
     q4e-promotion.cpp
     q4e-promotion.h
     q4e-server-v6.cpp

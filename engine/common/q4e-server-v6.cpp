@@ -29,7 +29,7 @@ q4e_staging make_staging(const q4e_server_v6_cfg & cfg) {
 }
 
 q4e_h2d_pipeline make_pipe(const q4e_server_v6_cfg & cfg) {
-    q4e_h2d_config hc;
+    q4e_h2d_pipeline_config hc;
     hc.l2_ram_mb    = (uint32_t) cfg.moe_ram;
     hc.expert_bytes = (uint64_t) cfg.expert_bytes;
     hc.max_inflight = (uint32_t) cfg.max_inflight;

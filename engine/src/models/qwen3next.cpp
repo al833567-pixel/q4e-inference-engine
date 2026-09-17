@@ -130,6 +130,91 @@ void llama_model_qwen3next::load_arch_tensors(llama_model_loader & ml) {
     for (int i = n_layer; i < n_layer_all; i++) {
         load_block_mtp(i);
     }
+
+    // q4e v6: global expert pool shared by all MoE layers (A-16 phase 2), off unless requested
+    if (params.q4e_v6_pool_slots > 0 && !hparams.no_alloc) {
+        std::vector<int> moe_layers;
+        for (int i = 0; i < n_layer; ++i) {
+            if (layers[i].ffn_gate_inp != nullptr) {
+                moe_layers.push_back(i);
+            }
+        }
+        if (!moe_layers.empty()) {
+            const int n_slots = params.q4e_v6_pool_slots;
+            const int n_moe   = (int) moe_layers.size();
+            const auto & ref  = layers[moe_layers[0]];
+            const ggml_type up_type   = ref.ffn_up_exps != nullptr ? ref.ffn_up_exps->type : ref.ffn_gate_up_exps->type;
+            const ggml_type down_type = ref.ffn_down_exps->type;
+
+            q4e_v6.reset(new q4e_v6_pool_state());
+            q4e_v6->n_slots = n_slots;
+
+            ggml_init_params cp;
+            cp.mem_size   = (size_t) ggml_tensor_overhead() * (16 + n_moe);
+            cp.mem_buffer = nullptr;
+            cp.no_alloc   = true; // tensors are placed in the pool buffer below
+            q4e_v6->ctx = ggml_init(cp);
+            if (q4e_v6->ctx == nullptr) {
+                throw std::runtime_error(arch_name() + ": q4e v6 pool context init failed");
+            }
+
+            q4e_v6->up_pool   = ggml_new_tensor_3d(q4e_v6->ctx, up_type, n_embd, n_ff_exp, n_slots);
+            q4e_v6->gate_pool = ggml_new_tensor_3d(q4e_v6->ctx, up_type, n_embd, n_ff_exp, n_slots);
+            q4e_v6->down_pool = ggml_new_tensor_3d(q4e_v6->ctx, down_type, n_ff_exp, n_embd, n_slots);
+
+            q4e_v6->tables.assign(n_layer, nullptr);
+            for (int il : moe_layers) {
+                q4e_v6->tables[il] = ggml_new_tensor_1d(q4e_v6->ctx, GGML_TYPE_F32, n_expert);
+            }
+
+            size_t total = ggml_nbytes_pad(q4e_v6->up_pool) + ggml_nbytes_pad(q4e_v6->gate_pool) + ggml_nbytes_pad(q4e_v6->down_pool);
+            for (int il : moe_layers) {
+                total += ggml_nbytes_pad(q4e_v6->tables[il]);
+            }
+            q4e_v6->buf = ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), total);
+            if (q4e_v6->buf == nullptr) {
+                throw std::runtime_error(arch_name() + ": q4e v6 pool buffer alloc failed");
+            }
+            ggml_backend_buffer_clear(q4e_v6->buf, 0); // zero slots not covered by the round-robin map
+            if (ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->up_pool)   != GGML_STATUS_SUCCESS ||
+                ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->gate_pool) != GGML_STATUS_SUCCESS ||
+                ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->down_pool) != GGML_STATUS_SUCCESS) {
+                throw std::runtime_error(arch_name() + ": q4e v6 pool tensor init failed");
+            }
+            for (int il : moe_layers) {
+                if (ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->tables[il]) != GGML_STATUS_SUCCESS) {
+                    throw std::runtime_error(arch_name() + ": q4e v6 pool table init failed");
+                }
+            }
+
+            // round-robin slot map + per-layer full expert tensors
+            auto tables = q4e_v6_slot_map(n_slots, n_moe, n_expert);
+            std::vector<ggml_tensor *> up_full(n_moe), gate_full(n_moe), down_full(n_moe);
+            for (int li = 0; li < n_moe; ++li) {
+                const auto & layer = layers[moe_layers[li]];
+                if (layer.ffn_gate_up_exps != nullptr) {
+                    // fused gate_up [n_embd, 2*n_ff, n_expert]: first half gate, second half up
+                    const auto & gu = layer.ffn_gate_up_exps;
+                    const int64_t n_ff = gu->ne[1] / 2;
+                    gate_full[li] = ggml_view_3d(q4e_v6->ctx, gu, gu->ne[0], n_ff, gu->ne[2], gu->nb[1], gu->nb[2], 0);
+                    up_full[li]   = ggml_view_3d(q4e_v6->ctx, gu, gu->ne[0], n_ff, gu->ne[2], gu->nb[1], gu->nb[2], (size_t) n_ff * gu->nb[1]);
+                } else {
+                    up_full[li]   = layer.ffn_up_exps;
+                    gate_full[li] = layer.ffn_gate_exps;
+                }
+                down_full[li] = layer.ffn_down_exps;
+            }
+            q4e_v6_pool_fill(q4e_v6->up_pool, q4e_v6->gate_pool, q4e_v6->down_pool, up_full, gate_full, down_full, tables);
+
+            // slot table per layer: slot id, or the n_slots sentinel when the expert is not in the pool
+            for (int li = 0; li < n_moe; ++li) {
+                float * tp = (float *) ggml_get_data(q4e_v6->tables[moe_layers[li]]);
+                for (int e = 0; e < n_expert; ++e) {
+                    tp[e] = (float) tables[li][e];
+                }
+            }
+        }
+    }
 }
 
 std::unique_ptr<llm_graph_context> llama_model_qwen3next::build_arch_graph(const llm_graph_params & params) const {
@@ -569,21 +654,36 @@ ggml_tensor * llama_model_qwen3next::graph::build_layer_ffn(ggml_tensor * cur, c
     // Check if this is an MoE layer
     if (model.layers[il].ffn_gate_inp != nullptr) {
         // MoE branch
-        ggml_tensor * moe_out =
-            build_moe_ffn(cur,
-                model.layers[il].ffn_gate_inp,
-                model.layers[il].ffn_up_exps,
-                model.layers[il].ffn_gate_exps,
-                model.layers[il].ffn_down_exps,
-                nullptr,
-                n_expert, n_expert_used,
-                LLM_FFN_SILU, true,
-                hparams.expert_weights_scale,
-                LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-                nullptr, model.layers[il].ffn_gate_up_exps,
-                model.layers[il].ffn_up_exps_s,
-                model.layers[il].ffn_gate_exps_s,
-                model.layers[il].ffn_down_exps_s);
+        ggml_tensor * moe_out;
+        const auto & q4e_v6 = static_cast<const llama_model_qwen3next &>(model).q4e_v6;
+        if (q4e_v6 != nullptr && q4e_v6->tables.size() > (size_t) il && q4e_v6->tables[il] != nullptr) {
+            // v6 global pool path: all MoE layers share one N-slot pool (A-16 phase 2)
+            moe_out =
+                build_moe_ffn_pool(cur,
+                    model.layers[il].ffn_gate_inp,
+                    q4e_v6->up_pool, q4e_v6->gate_pool, q4e_v6->down_pool,
+                    n_expert, n_expert_used,
+                    LLM_FFN_SILU, true,
+                    hparams.expert_weights_scale,
+                    LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+                    q4e_v6->tables[il]);
+        } else {
+            moe_out =
+                build_moe_ffn(cur,
+                    model.layers[il].ffn_gate_inp,
+                    model.layers[il].ffn_up_exps,
+                    model.layers[il].ffn_gate_exps,
+                    model.layers[il].ffn_down_exps,
+                    nullptr,
+                    n_expert, n_expert_used,
+                    LLM_FFN_SILU, true,
+                    hparams.expert_weights_scale,
+                    LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+                    nullptr, model.layers[il].ffn_gate_up_exps,
+                    model.layers[il].ffn_up_exps_s,
+                    model.layers[il].ffn_gate_exps_s,
+                    model.layers[il].ffn_down_exps_s);
+        }
         cb(moe_out, "ffn_moe_out", il);
 
         // Add shared experts if present - following Qwen3Next reference implementation

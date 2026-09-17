@@ -60,7 +60,7 @@ gate_out gate2_coverage_path(bool h2d_fail) {
     map.promotion_queue(queue);
     if (queue.empty()) { g.ok = false; g.note = "empty promotion queue"; return g; }
 
-    q4e_h2d_config pcfg;
+    q4e_h2d_pipeline_config pcfg;
     pcfg.l2_ram_mb = 64; pcfg.expert_bytes = (uint64_t) kSlot; pcfg.max_inflight = 4;
     q4e_h2d_pipeline pipe(pcfg);
     set_backends(pipe, h2d_fail);
@@ -91,7 +91,7 @@ gate_out gate3_pipeline_stress(bool h2d_fail) {
     q4e_graph_map map(512, 6, 1); // 1 token, top_k 6 -> exactly 6 distinct missing
     const int choices[] = { 10, 11, 12, 13, 14, 15 };
     map.set_router_choices(choices, 6);
-    q4e_h2d_config pcfg;
+    q4e_h2d_pipeline_config pcfg;
     pcfg.l2_ram_mb = 64; pcfg.expert_bytes = (uint64_t) kSlot; pcfg.max_inflight = 1;
     q4e_h2d_pipeline pipe(pcfg);
     set_backends(pipe, h2d_fail);

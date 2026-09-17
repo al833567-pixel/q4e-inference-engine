@@ -1,6 +1,6 @@
 #include "q4e-h2d-pipeline.h"
 
-q4e_h2d_pipeline::q4e_h2d_pipeline(const q4e_h2d_config & cfg) :
+q4e_h2d_pipeline::q4e_h2d_pipeline(const q4e_h2d_pipeline_config & cfg) :
     cfg_(cfg) {
     if (cfg_.l2_ram_mb < 4) {
         throw std::invalid_argument("q4e_h2d_pipeline: l2_ram_mb must be >= 4");

@@ -998,6 +998,50 @@ inline int64_t q4e_pool_count_out_of_pool(const int32_t * ids, int64_t n_ids, in
     return count;
 }
 
+// q4e v6: global expert pool shared by all MoE layers (A-16 phase 2)
+// statically filled round-robin at load time; the graph reads it via build_moe_ffn_pool
+struct q4e_v6_pool_state {
+    ggml_context * ctx = nullptr;
+    ggml_backend_buffer_t buf = nullptr;
+    ggml_tensor * up_pool = nullptr;   // [n_embd, n_ff, n_slots]
+    ggml_tensor * gate_pool = nullptr; // [n_embd, n_ff, n_slots]
+    ggml_tensor * down_pool = nullptr; // [n_ff, n_embd, n_slots]
+    std::vector<ggml_tensor *> tables; // per layer: [n_expert] F32 slot ids, null when layer not in pool
+    int n_slots = 0;
+
+    ~q4e_v6_pool_state() {
+        if (buf != nullptr) {
+            ggml_backend_buffer_free(buf);
+        }
+        if (ctx != nullptr) {
+            ggml_free(ctx);
+        }
+    }
+};
+
+// q4e v6 static pool (A-16 phase 2b): distribute N slots round-robin over the n_layers MoE layers
+// slot s -> layer (s % n_layers), expert ((s / n_layers) % n_expert)
+// tables[l][e] = slot holding (layer l, expert e), or n_slots (sentinel) when out of pool
+// slots beyond n_layers*n_expert wrap and are never referenced by any table
+inline std::vector<std::vector<int>> q4e_v6_slot_map(int n_slots, int n_layers, int n_expert) {
+    std::vector<std::vector<int>> tables((size_t) n_layers, std::vector<int>((size_t) n_expert, n_slots));
+    for (int s = 0; s < n_slots; ++s) {
+        const int l = s % n_layers;
+        const int e = (s / n_layers) % n_expert;
+        tables[(size_t) l][(size_t) e] = s;
+    }
+    return tables;
+}
+
+// q4e v6 static pool (A-16 phase 2b): copy each in-pool (layer, expert) slice from the full tensors into its slot
+// type-preserving row copy (F32 or block-quantized); up_full/gate_full may be views of a fused gate_up tensor
+void q4e_v6_pool_fill(
+        ggml_tensor * up_pool, ggml_tensor * gate_pool, ggml_tensor * down_pool,
+        const std::vector<ggml_tensor *> & up_full,
+        const std::vector<ggml_tensor *> & gate_full,
+        const std::vector<ggml_tensor *> & down_full,
+        const std::vector<std::vector<int>> & tables);
+
 struct llm_graph_context {
     const llm_arch arch;
 
