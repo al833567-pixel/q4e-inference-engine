@@ -17,23 +17,12 @@
 - Phase 4（4a/4b）未動：`common/common.cpp` L1293-1389 仍只有 A-16.9 v5 路徑；`/q4e/stats` 仍為既有 v6 群組（fake counters）。
 - `diag/gguf_*.py`（9/17）：Qwen3.8-Flash-Next gguf 結構檢查（B-16 準備），與卡住點無關。
 **v6 物理路徑 Phase 1-3 代码完成（待解卡後重新驗收）**：Phase 3＝runtime 動態 promotion（`external_l1`/`attach_l1`＋`graph_slot`＋`sync_round`）＋3b 流水併入（max_inflight=2）＋`test_v6_runtime_decode_sequence`（3 步 decode×2 層，每步 pool==full==oracle，16 promotions：15 fills＋1 L2 hit，10 evictions）；Phase 2＝`build_layer_ffn` 手術（守衛 `q4e_v6_pool_slots>0`）＋靜態池 fill＋每層 slot_table。31686 checks 曾一次全綠（9/16）。
-**v6 A 側交付（A-16.0~A-16.9）不變**：A-16.0 拍板＋13 個原子步＋交付包，17 測試全綠（CPU）；B-16-2 VRAM-fit 裁定（A-16.9）✅ **已 commit `61bc074`**（現況舊記「未 commit」已過期）；設計對齊＝實作 v6 物理路徑（設計原意），A-16.9 整層映射保留為 v5-物理 fallback；關鍵發現＝重用 `build_moe_ffn_pool`（已 oracle 驗證原語）。
+設計對齊（用戶拍板）＝實作 v6 物理路徑（設計原意）；重用已驗證 `build_moe_ffn_pool` 原語；A-16.9 整層映射（`61bc074`）保留為 v5-物理 fallback。
 歷史版本已全面廢棄。
 **下一步：Phase 0（P0-1→P0-8）解卡不穩定崩潰 → Phase 3 重新驗收 → Phase 4（P4-1→P4-6）→ 交 B 側 B-16。**
 
 ## 二、v6 交付項目 (全完成)
-| 項 | 名稱 | 狀態 | 內容／驗收／commit |
-|---|---|---|---|
-| A-16.0 | v6 設計拍板＋參數語義 | ✅ `f5b15e9` | 重定義 `--q4e-moe-vram N`；新增 `--q4e-staging-mb`、`--q4e-layer-floor`、`--q4e-ple-mmap`、`--cache-type-k q8_0`、`--q4e-kv-ram`。design.md＋test-arg-parser 全綠。 |
-| A-16.1 | 全局動態池管理器 | ✅ `d467f05`/`91abfb0` | Global LRU＋Layer-Aware Floor (防層間擠壓)。188 斷言＋接入 common 庫。 |
-| A-16.2 | VRAM 內 Gather 設計 | ✅ `2e597b5`/`ecfb070` | Staging Buffer 雙緩衝 (A/B) 管理邏輯 (118)＋CUDA Kernel 介面定義 (34)。 |
-| A-16.3 | H2D 提升管線 | ✅ `7de45e0` | L2 Pinned RAM＋SSD→L2 fill＋非同步 H2D (118，非同步 job queue＋L2 LRU 保護)。 |
-| A-16.4 | Graph 手術 (最高風險) | ✅ `5f19be6`/`d75f4c4` | 48 層全 GPU＋動態 slot 映射 (78)＋promotion op (427，含 oracle 覆蓋)。 |
-| A-16.5 | **100k KV Cache 分頁 Offload** | ✅ `6207f7c`/`abc7afc` | 分頁管理器 (947862，含 100k oracle 滑窗)＋KV bridge (40)。**16.5b-2 深度接線併入 A-16.6**（CUDA 路徑屬 B-16）。 |
-| A-16.6 | Server 接線＋stats | ✅ `a891982`/`9445169` | Expert L1/L2/L3 命中＋KV 分頁統計 (139/50)，`/q4e/stats` v6 群組上線。 |
-| A-16.7 | e2e/bench v6 | ✅ `c82fbc1`/`9ccded1` | 客戶端工具更新（bench 30＋e2e 五門 28，含 `--v6-kv100k` 100k 壓力）。 |
-| A-16.8 | 交付包 v6 | ✅ `f4aaecd`/`321c1f8` | 8a 5 文件對齊（README/01/02/03A/03B）＋8b RUNBOOK_B_v6 編號對齊＋最終清理驗證。 |
-| A-16.9 | **B-16-2 VRAM-fit 修正** | ✅ `61bc074` | `common_q4e_moe_vram_apply` 改經 `llm_q4e_moe_vram_keep_layers`（v6 全局 N→整層 ceil(N/n_expert)）再插 buft override；`common_q4e_moe_vram_check` 訊息 k→N；test-arg-parser 新增 8 斷言（N=0/1/512/513/5000/24576/99999/-1）；design.md §2 補物理落地註記。凍結的 v4.1 add/insert 函式與既有 pinned 測試不動。驗證：build-msvc 267 步 build exit 0＋17 測試全綠。 |
+A-16.0~A-16.9 全交付（commits `f5b15e9`~`61bc074`，17 測試全綠，明細表見 02 主表）；物理路徑 P1-P3 代碼完成（第一節），P4 待 Phase 0 解卡。
 
 ## 三、現況總表 (17 測試全綠，CPU)
 | 測試 | 斷言數 | 備註 |
@@ -69,6 +58,7 @@
 - **Stress 工具**：`v6_work/p3bisect/stress.bat`（15 連跑＋DONE_BAD 統計）、`run_bisect.bat`（單檔重編 bisect 建置）。
 
 ## 五、執行計畫 v2（9/17 重新分配：更多步驟、極簡化、一步一門）
+**執行前置**：✅ checkpoint commit `16530f3`（Phase 2/3 工作區＋03A 覆核）；✅ 03A/02 文件清理（保留工作目標）；**待 A 側確認後啟動 Phase 0**。
 **原則（v2 紀律，比 v1 更嚴）**
 1. 嚴格串列；一步＝至多 1 個檔案（同檔分步）。每步只做一件事。
 2. 每步**恰好 1 個驗收門**；門不過 → 回退該檔（`git checkout -- <file>`）→ 帶證據報 A 側裁決；**不準自行換第二個檔試**。
@@ -108,21 +98,3 @@
 3. 工作區 v6 測試目前 `#if 0` 關閉 → P0-7 前 moe-pool「全綠」不可當驗收。
 
 **子代理分工順序（v2）**：Phase 0（P0-1→P0-8，串列，每步一個子代理或同一人）→ A 側 review → Phase 4（P4-1→P4-6）→ A 側 review → 交 B 側 P5-1。
-
-## 六、v1 計畫（已被 v2 取代，留檔）
-目標：落地 v6 設計佈局（48 層全 GPU 算＋逐 expert 全局池＋動態 promotion）。重用紀律（AGENTS.md）：重用 `build_moe_ffn_pool`、v6 bookkeeping、v5 oracle 測試範式；不重造輪子、不加新測試檔、凍結 v5、不 commit/push。
-| 步 | 內容 | 驗收（CPU） |
-|---|---|---|
-| 1a | 池張量配置：up/gate/down_pool `[n_ff, n_embd, N]` | 小池(N=8)寫入已知權重，驗證 layout |
-| 1b | slot_table：(layer,expert)→slot | insert/evict 後 slot_table == `q4e_global_pool::slot_of` |
-| 1c | fill backend（SSD→L2）CPU 版 | L2 slot 內容 == per-layer tensor expert slice |
-| 1d | H2D backend（L2→L1）CPU 版 | pool slot 內容 == L2 slot 內容 |
-| 1e | fill/H2D 接進 `q4e_h2d_pipeline`＋promotion op | test-q4e-h2d-pipeline 真 backend 全綠 |
-| 2a | ✅ graph 手術：`build_layer_ffn` 用 `build_moe_ffn_pool` | ✅ oracle：池含 top-k 時 pool==full |
-| 2b | ✅ 靜態池初始 fill＋slot_table | ✅ test_v6_static_fill＋test_v6_global_pool_oracle |
-| 3a | ✅ 每層 runtime：router→top-k→promote→slot_table→池計算 | ✅ test_v6_runtime_decode_sequence（16 promotions） |
-| 3b | ✅ 流水（併入 3a） | ✅ max_inflight=2＋L2 LRU 重疊 |
-| 4a | server 接線（→ 拆為 P4-1~P4-3） | — |
-| 4b | `/q4e/stats` 真實池統計（→ 拆為 P4-4/P4-5） | — |
-| 5a | CUDA（→ P5-1） | B 側 |
-v1 風險：2a graph 手術最高風險；3a per-layer 同步點（48 次/token）靠 3b 流水遮罩。
