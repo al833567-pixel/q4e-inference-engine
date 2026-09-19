@@ -110,7 +110,7 @@ README/01 對齊實況（含本文件狀態更新）；`git tag v6.1-<date>`（�
 
 | Phase | 狀態 |
 |---|---|
-| C0 現場固化 | ⏳ 待「開始」 |
+| C0 現場固化 | ✅ DBG 還原（llama-graph/q4e-expert-warm 歸零）；保留 P0-2 CLI filter＋setvbuf 無緩衝 stderr；基線 16/16 全綠（moe-pool v6 區段仍 `#if 0`，全序不穩定屬 C1）；規劃重整 commit `172f2fc` |
 | C1 崩潰解卡 | ⏳ |
 | C2 物理路徑驗收 | ⏳ |
 | C3 server 接線 | ⏳ |

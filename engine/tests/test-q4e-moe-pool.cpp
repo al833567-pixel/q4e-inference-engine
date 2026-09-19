@@ -18,6 +18,7 @@
 #include <cstring>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 static int g_failures = 0;
@@ -1404,13 +1405,34 @@ static void test_v6_runtime_decode_sequence() {
 }
 #endif // BISECT: Phase 3 test disabled
 
-int main() {
-    test_slot_of_helper();
-    test_all_in_pool_oracle();
-    test_out_of_pool_zeroed();
-    test_mixed_per_token();
-    test_dynamic_oracle_sequence();
-    test_dynamic_multilayer();
+int main(int argc, char ** argv) {
+    // unbuffer stderr so the last marker survives a crash
+    setvbuf(stderr, NULL, _IONBF, 0);
+    // optional filter: exe [name1,name2,...]; runs tests whose names prefix-match (in listed order)
+    std::vector<std::string> filters;
+    if (argc > 1) {
+        std::string arg(argv[1]);
+        size_t start = 0;
+        for (size_t i = 0; i <= arg.size(); ++i) {
+            if (i == arg.size() || arg[i] == ',') {
+                filters.push_back(arg.substr(start, i - start));
+                start = i + 1;
+            }
+        }
+    }
+    auto sel = [&](const char * name) {
+        if (filters.empty()) return true;
+        for (const auto & f : filters) {
+            if (f.size() <= strlen(name) && strncmp(name, f.c_str(), f.size()) == 0) return true;
+        }
+        return false;
+    };
+    if (sel("slot_of"))         test_slot_of_helper();
+    if (sel("all_in_pool"))     test_all_in_pool_oracle();
+    if (sel("out_of_pool"))     test_out_of_pool_zeroed();
+    if (sel("mixed"))           test_mixed_per_token();
+    if (sel("oracle_sequence")) test_dynamic_oracle_sequence();
+    if (sel("multilayer"))      test_dynamic_multilayer();
     // test_v6_slot_map(); // BISECT
     // test_v6_static_fill(); // BISECT
     // test_v6_global_pool_oracle(); // BISECT
