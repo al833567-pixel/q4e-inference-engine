@@ -114,6 +114,6 @@ README/01 對齊實況（含本文件狀態更新）；`git tag v6.1-<date>`（�
 | C1 崩潰解卡 | ✅ root cause＝測試端 dyn_round 在 res.reset() 後重用 gctx，快取 ctx0/gf 懸掛（UAF，同址重用掩護故 8/15 隨機崩）；MSVC ASan 全閉包重編抓到 stack 定案；修法＝reset 後重同步 ctx0/gf（零斷言變更）；v5×15＋full×15 bad=0、ASan×3 綠；commit `f2d7bee` |
 | C2 物理路徑驗收 | ✅ 31686 checks ×15 全綠（超出 ×3 門）＋stress 15/15；即 C1 修後 full 序列 |
 | C3 server 接線 | 🟡 C3-1/2 完成：`--q4e-moe-vram N>0` → `q4e_v6_pool_slots=N`（真池主路徑，整層 fallback 改 `Q4E_MOE_VRAM_FALLBACK=1` env 門控）；16/16＋moe-pool 31686×3 綠。C3-3 stats 活體接線併入 C4-0 runtime wiring |
-| C4 CUDA＋Gather kernel | ⏳（含 C4-0：decode 迴圈 runtime promotion 接線——src/ 尚未接 sync_round/池 backend，為真池生效前最大缺口） |
-| C5 真機驗收 | ⏳（GPU 由用戶暫用中，待通知釋放） |
-| C6 交付收尾 | ⏳ |
+| C4 CUDA＋Gather kernel | 🟡 C4-0 runtime promotion 接進 decode（`25cee4f`：observe→LRU→填槽→改表，48 層選擇經 graph output 讀回）；C4-1 池上運算裝置（`3cfcd58`）；C4-3 專家 CPU override 修 VRAM-fit（`e4cb1c8`）。CUDA build 92 `25cee4f`：真機載入成功（VRAM 6965 MiB）、端到端 decode 通。遺留：prefill 池無法覆蓋（61-token 每層需 ~500 專家 ≫ 41/層）→ 專家貢獻大量歸零、prefill 走 CPU MoE 0.43 t/s、decode 1.03 t/s ≪ 門 8 |
+| C5 真機驗收 | 🔴 六門未過；卡點＝prefill 策略（CPU MoE prefill＋池 decode 之類的混合）＋C3-3 stats 活體接線＋非同步填槽 |
+| C6 交付收尾 | ⏳（按用戶指示：全 pass 才打包） |
