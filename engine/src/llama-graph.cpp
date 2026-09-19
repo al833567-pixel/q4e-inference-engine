@@ -1,4 +1,5 @@
 #include "llama-graph.h"
+#include "q4e-v6-runtime.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -2298,6 +2299,17 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     return moe_out;
 }
 
+// q4e v6: global expert pool state; the runtime (common/) owns the promotion loop
+q4e_v6_pool_state::~q4e_v6_pool_state() {
+    rt.reset();
+    if (buf != nullptr) {
+        ggml_backend_buffer_free(buf);
+    }
+    if (ctx != nullptr) {
+        ggml_free(ctx);
+    }
+}
+
 void q4e_v6_pool_fill(
         ggml_tensor * up_pool, ggml_tensor * gate_pool, ggml_tensor * down_pool,
         const std::vector<ggml_tensor *> & up_full,
@@ -2365,6 +2377,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn_pool(
 
     ggml_tensor * selected_experts = ggml_argsort_top_k(ctx0, probs, n_expert_used); // [n_expert_used, n_tokens]
     cb(selected_experts, "ffn_moe_topk", il);
+    if (slot_table != nullptr) {
+        // q4e v6: expose the selections as a graph output so the runtime promotion
+        // loop can read them back after compute (unique name per layer)
+        ggml_set_output(selected_experts);
+        ggml_set_name(selected_experts, ("ffn_moe_sel_" + std::to_string(il)).c_str());
+    }
 
     probs = ggml_reshape_3d(ctx0, probs, 1, n_expert, n_tokens);
     ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]

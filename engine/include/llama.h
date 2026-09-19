@@ -329,6 +329,9 @@ extern "C" {
         // q4e v6: slots in the global expert pool shared by all MoE layers; 0 = off
         int32_t q4e_v6_pool_slots;
 
+        // q4e v6: per-layer minimum residents for the pool LRU (layer floor)
+        int32_t q4e_v6_pool_floor;
+
         // proportion of the model (layers or rows) to offload to each GPU, size: llama_max_devices()
         const float * tensor_split;
 

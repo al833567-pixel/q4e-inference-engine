@@ -766,6 +766,13 @@ struct llama_model {
     virtual void load_arch_tensors(llama_model_loader & ml) = 0;
     virtual std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const = 0;
 
+    // q4e v6: after a decode graph computed, feed the router selections to the
+    // runtime promotion loop; no-op by default (models without the pool)
+    virtual void q4e_v6_after_compute(const struct ggml_cgraph * gf, int n_tokens) const {
+        GGML_UNUSED(gf);
+        GGML_UNUSED(n_tokens);
+    }
+
 protected:
     llama_model_params params;
 

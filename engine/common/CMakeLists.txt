@@ -122,6 +122,8 @@ add_library(${TARGET}
     q4e-staging.h
     q4e-stats-v6.cpp
     q4e-stats-v6.h
+    q4e-v6-runtime.cpp
+    q4e-v6-runtime.h
     reasoning-budget.cpp
     reasoning-budget.h
     sampling.cpp

@@ -2227,6 +2227,8 @@ struct llama_model_qwen3next : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 
+    void q4e_v6_after_compute(const struct ggml_cgraph * gf, int n_tokens) const override;
+
     std::unique_ptr<q4e_v6_pool_state> q4e_v6; // v6 global expert pool, null when off
 };
 

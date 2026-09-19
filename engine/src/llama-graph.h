@@ -999,7 +999,8 @@ inline int64_t q4e_pool_count_out_of_pool(const int32_t * ids, int64_t n_ids, in
 }
 
 // q4e v6: global expert pool shared by all MoE layers (A-16 phase 2)
-// statically filled round-robin at load time; the graph reads it via build_moe_ffn_pool
+// slots are filled by the runtime promotion loop (q4e-v6-runtime) at decode time;
+// tables start all-sentinel (n_slots) and converge to the active set from round 1
 struct q4e_v6_pool_state {
     ggml_context * ctx = nullptr;
     ggml_backend_buffer_t buf = nullptr;
@@ -1007,16 +1008,12 @@ struct q4e_v6_pool_state {
     ggml_tensor * gate_pool = nullptr; // [n_embd, n_ff, n_slots]
     ggml_tensor * down_pool = nullptr; // [n_ff, n_embd, n_slots]
     std::vector<ggml_tensor *> tables; // per layer: [n_expert] F32 slot ids, null when layer not in pool
+    std::vector<int> moe_layers;       // layers wired to the pool (MTP blocks excluded)
+    std::unique_ptr<class q4e_v6_runtime> rt; // promotion loop, null when off
     int n_slots = 0;
 
-    ~q4e_v6_pool_state() {
-        if (buf != nullptr) {
-            ggml_backend_buffer_free(buf);
-        }
-        if (ctx != nullptr) {
-            ggml_free(ctx);
-        }
-    }
+    // out of line: q4e-v6-runtime.h is not on every llama-graph.h consumer's include path
+    ~q4e_v6_pool_state();
 };
 
 // q4e v6 static pool (A-16 phase 2b): distribute N slots round-robin over the n_layers MoE layers

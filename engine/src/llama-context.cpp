@@ -1397,6 +1397,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         return nullptr;
     }
 
+    // q4e v6: feed the router selections of this round into the runtime promotion
+    // loop (no-op for models without the pool)
+    model.q4e_v6_after_compute(res->get_gf(), (int) ubatch.n_tokens);
+
     ret = GGML_STATUS_SUCCESS;
 
     return res;

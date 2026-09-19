@@ -1799,6 +1799,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.use_extra_bufts = !params.no_extra_bufts;
     mparams.no_host         = params.no_host;
     mparams.q4e_v6_pool_slots = params.q4e_v6_pool_slots;
+    mparams.q4e_v6_pool_floor = params.q4e_layer_floor;
 
     if (params.kv_overrides.empty()) {
         mparams.kv_overrides = NULL;

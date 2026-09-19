@@ -58,6 +58,7 @@ target_compile_definitions(llama PRIVATE
 )
 
 target_include_directories(llama PRIVATE .)
+target_include_directories(llama PRIVATE ../common) # q4e v6: runtime promotion headers (symbols resolve at exe link via llama-common)
 target_include_directories(llama PUBLIC ../include)
 target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
 

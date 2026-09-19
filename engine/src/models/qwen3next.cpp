@@ -1,5 +1,9 @@
 #include "models.h"
 #include "llama-memory-recurrent.h"
+#include "q4e-v6-runtime.h"
+
+#include <algorithm>
+#include <string>
 
 void llama_model_qwen3next::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH,        hparams.n_ff_exp, false);
@@ -191,8 +195,8 @@ void llama_model_qwen3next::load_arch_tensors(llama_model_loader & ml) {
                 }
             }
 
-            // round-robin slot map + per-layer full expert tensors
-            auto tables = q4e_v6_slot_map(n_slots, n_moe, n_expert);
+            // v6 runtime promotion (C4-0): tables start all-sentinel and the runtime
+            // fills slots on demand from the router selections after each decode round
             std::vector<ggml_tensor *> up_full(n_moe), gate_full(n_moe), down_full(n_moe);
             for (int li = 0; li < n_moe; ++li) {
                 const auto & layer = layers[moe_layers[li]];
@@ -208,16 +212,36 @@ void llama_model_qwen3next::load_arch_tensors(llama_model_loader & ml) {
                 }
                 down_full[li] = layer.ffn_down_exps;
             }
-            q4e_v6_pool_fill(q4e_v6->up_pool, q4e_v6->gate_pool, q4e_v6->down_pool, up_full, gate_full, down_full, tables);
 
-            // slot table per layer: slot id, or the n_slots sentinel when the expert is not in the pool
-            for (int li = 0; li < n_moe; ++li) {
-                std::vector<float> tp((size_t) n_expert);
-                for (int e = 0; e < n_expert; ++e) {
-                    tp[(size_t) e] = (float) tables[li][e];
+            {
+                std::vector<float> tp((size_t) n_expert, (float) n_slots); // n_slots = miss sentinel
+                for (int il : moe_layers) {
+                    ggml_backend_tensor_set(q4e_v6->tables[il], tp.data(), 0, tp.size() * sizeof(float));
                 }
-                ggml_backend_tensor_set(q4e_v6->tables[moe_layers[li]], tp.data(), 0, tp.size() * sizeof(float));
             }
+
+            q4e_v6_runtime_cfg rc;
+            rc.n_layers = n_moe;
+            rc.n_expert = (int) n_expert;
+            rc.n_used   = (int) hparams.n_expert_used;
+            rc.n_slots  = n_slots;
+            rc.floor    = params.q4e_v6_pool_floor;
+            q4e_v6->rt.reset(new q4e_v6_runtime(rc));
+            for (int li = 0; li < n_moe; ++li) {
+                q4e_v6_layer_io io;
+                io.up_pool     = q4e_v6->up_pool;
+                io.gate_pool   = q4e_v6->gate_pool;
+                io.down_pool   = q4e_v6->down_pool;
+                io.table       = q4e_v6->tables[moe_layers[li]];
+                io.up_src      = ggml_get_data(up_full[li]);
+                io.gate_src    = ggml_get_data(gate_full[li]);
+                io.down_src    = ggml_get_data(down_full[li]);
+                io.up_stride   = up_full[li]->nb[2];
+                io.gate_stride = gate_full[li]->nb[2];
+                io.down_stride = down_full[li]->nb[2];
+                q4e_v6->rt->bind_layer(li, io);
+            }
+            q4e_v6->moe_layers = moe_layers;
 
             // hand the pool buffer to the model: memory breakdown / VRAM-fit include it,
             // and the model frees it on unload (q4e_v6 keeps the ctx and tensor pointers)
@@ -225,6 +249,27 @@ void llama_model_qwen3next::load_arch_tensors(llama_model_loader & ml) {
             q4e_v6->buf = nullptr;
         }
     }
+}
+
+// q4e v6: read back the router selections of this round and run one promotion step
+// (LRU fills for the misses + slot table rewrite), so the next round starts warm
+void llama_model_qwen3next::q4e_v6_after_compute(const ggml_cgraph * gf, int n_tokens) const {
+    if (!q4e_v6 || !q4e_v6->rt || !q4e_v6->rt->enabled() || n_tokens <= 0) {
+        return;
+    }
+    std::vector<int32_t> sel;
+    for (int il : q4e_v6->moe_layers) {
+        ggml_tensor * t = ggml_graph_get_tensor(gf, ("ffn_moe_sel_" + std::to_string(il)).c_str());
+        if (t == nullptr) {
+            continue; // pool path not taken for this layer in this graph
+        }
+        const int64_t count = ggml_nelements(t);
+        sel.resize((size_t) count);
+        ggml_backend_tensor_get(t, sel.data(), 0, (size_t) count * sizeof(int32_t));
+        const int ridx = (int) (std::find(q4e_v6->moe_layers.begin(), q4e_v6->moe_layers.end(), il) - q4e_v6->moe_layers.begin());
+        q4e_v6->rt->observe(ridx, sel.data(), count);
+    }
+    q4e_v6->rt->commit();
 }
 
 std::unique_ptr<llm_graph_context> llama_model_qwen3next::build_arch_graph(const llm_graph_params & params) const {

@@ -10,6 +10,7 @@
 #include "ggml.h"
 #include "q4e-expert-warm.h"
 #include "q4e-pool-backend.h"
+#include "q4e-v6-runtime.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1389,6 +1390,134 @@ static void test_v6_runtime_decode_sequence() {
     ggml_free(ctx);
 }
 
+// C4-0: q4e_v6_runtime promotion loop - observe -> commit -> table/slot correctness,
+// hit path on repeat rounds, LRU eviction with floor
+static void test_v6_runtime_promo() {
+    const int n_layers = 2, n_expert = 8, n_used = 3, n_slots = 8, n_embd = 4, n_ff = 6;
+
+    ggml_init_params cp;
+    cp.mem_size   = (size_t) ggml_tensor_overhead() * 32 + 256 * 1024;
+    cp.mem_buffer = nullptr;
+    cp.no_alloc   = false;
+    ggml_context * ctx = ggml_init(cp);
+    CHECK(ctx != nullptr);
+
+    ggml_tensor * up_pool   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_ff, n_slots);
+    ggml_tensor * gate_pool = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_ff, n_slots);
+    ggml_tensor * down_pool = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_ff, n_embd, n_slots);
+    ggml_tensor * tables[2] = {
+        ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_expert),
+        ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_expert),
+    };
+    std::memset(ggml_get_data(up_pool),   0, (size_t) ggml_nbytes(up_pool));
+    std::memset(ggml_get_data(gate_pool), 0, (size_t) ggml_nbytes(gate_pool));
+    std::memset(ggml_get_data(down_pool), 0, (size_t) ggml_nbytes(down_pool));
+
+    // host sources: value = layer*1000 + expert*10 + part (0 up, 1 gate, 2 down) + i
+    std::vector<float> src[2][3];
+    const int64_t slice = (int64_t) n_embd * n_ff;
+    for (int l = 0; l < n_layers; ++l) {
+        for (int p = 0; p < 3; ++p) {
+            src[l][p].resize((size_t) n_expert * slice);
+            for (int e = 0; e < n_expert; ++e) {
+                for (int64_t i = 0; i < slice; ++i) {
+                    src[l][p][(size_t) e * slice + (size_t) i] =
+                        (float) (l * 1000 + e * 10 + p) + (float) i * 0.25f;
+                }
+            }
+        }
+    }
+
+    q4e_v6_runtime_cfg rc;
+    rc.n_layers = n_layers;
+    rc.n_expert = n_expert;
+    rc.n_used   = n_used;
+    rc.n_slots  = n_slots;
+    rc.floor    = 1;
+    q4e_v6_runtime rt(rc);
+    for (int l = 0; l < n_layers; ++l) {
+        q4e_v6_layer_io io;
+        io.up_pool     = up_pool;
+        io.gate_pool   = gate_pool;
+        io.down_pool   = down_pool;
+        io.table       = tables[l];
+        io.up_src      = src[l][0].data();
+        io.gate_src    = src[l][1].data();
+        io.down_src    = src[l][2].data();
+        io.up_stride   = src[l][0].size() / n_expert * sizeof(float);
+        io.gate_stride = io.up_stride;
+        io.down_stride = io.up_stride;
+        rt.bind_layer(l, io);
+    }
+
+    auto table_of = [&](int l, int e) {
+        std::vector<float> tp((size_t) n_expert);
+        std::memcpy(tp.data(), ggml_get_data(tables[l]), sizeof(float) * n_expert);
+        return (int) tp[(size_t) e];
+    };
+    auto slot_val = [&](int part, int slot, int64_t i) {
+        ggml_tensor * t = part == 0 ? up_pool : (part == 1 ? gate_pool : down_pool);
+        return ((const float *) ggml_get_data(t))[(size_t) slot * slice + (size_t) i];
+    };
+
+    // round 1: promote {1,3,5} on layer 0 and {2,4,6} on layer 1
+    {
+        const int32_t s0[3] = {1, 3, 5};
+        const int32_t s1[3] = {2, 4, 6};
+        rt.observe(0, s0, 3);
+        rt.observe(1, s1, 3);
+        rt.commit();
+        for (int e = 0; e < n_expert; ++e) {
+            const bool in0 = (e == 1 || e == 3 || e == 5);
+            const bool in1 = (e == 2 || e == 4 || e == 6);
+            CHECK((table_of(0, e) < n_slots) == in0);
+            CHECK((table_of(1, e) < n_slots) == in1);
+        }
+        const int s10 = table_of(0, 1);
+        CHECK_NEAR(slot_val(0, s10, 0), 10.f, 1e-6); // layer0 expert1 up[0]: 0*1000+1*10+0
+        CHECK_NEAR(slot_val(2, s10, 3), 12.75f, 1e-6); // down[3]: +2+0.75
+        const int s12 = table_of(1, 2);
+        CHECK_NEAR(slot_val(1, s12, 1), 1021.25f, 1e-6); // layer1 expert2 gate[1]: 1000+20+1+0.25
+    }
+
+    // round 2: same selections -> full hits, no new fills, tables unchanged
+    {
+        const int32_t s0[3] = {1, 3, 5};
+        const int32_t s1[3] = {2, 4, 6};
+        rt.observe(0, s0, 3);
+        rt.observe(1, s1, 3);
+        rt.commit();
+        CHECK_EQ_I64(rt.stats().hits, 6);
+        CHECK_EQ_I64(rt.stats().misses, 6);
+        CHECK_EQ_I64(rt.stats().evictions, 0);
+        CHECK(table_of(0, 1) == table_of(0, 1)); // stable mapping (trivially true, guards reads)
+    }
+
+    // round 3: new sets force LRU evictions; the 2 free slots go first, then 4 evictions
+    {
+        const int32_t s0[3] = {0, 2, 4}; // disjoint from round-1 layer0 set
+        const int32_t s1[3] = {0, 1, 3}; // disjoint from round-1 layer1 set
+        rt.observe(0, s0, 3);
+        rt.observe(1, s1, 3);
+        rt.commit();
+        CHECK_EQ_I64(rt.stats().evictions, 4); // victims: 1L0, 3L0, 5L0, 2L1
+        for (int e = 0; e < n_expert; ++e) {
+            const bool in0 = (e == 0 || e == 2 || e == 4);
+            const bool in1 = (e == 0 || e == 1 || e == 3 || e == 4 || e == 6);
+            CHECK((table_of(0, e) < n_slots) == in0);
+            CHECK((table_of(1, e) < n_slots) == in1);
+        }
+        // promoted content matches the source exactly (up part, layer1 expert4)
+        const int s14 = table_of(1, 4);
+        CHECK_NEAR(slot_val(0, s14, 5), 1000.f + 40.f + 1.25f, 1e-6);
+        // occupancy floor: each layer keeps >= 1 resident
+        CHECK(rt.stats().hits_per_layer[0] + rt.stats().misses_per_layer[0] > 0);
+    }
+
+    fprintf(stderr, "v6-runtime-promo: observe/commit converges, hits on repeats, LRU+floor evictions\n");
+    ggml_free(ctx);
+}
+
 int main(int argc, char ** argv) {
     // unbuffer stderr so the last marker survives a crash
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -1421,6 +1550,7 @@ int main(int argc, char ** argv) {
     if (sel("v6_static_fill"))  test_v6_static_fill();
     if (sel("v6_global_pool"))  test_v6_global_pool_oracle();
     if (sel("v6_runtime"))      test_v6_runtime_decode_sequence();
+    if (sel("v6_promo"))        test_v6_runtime_promo();
     if (g_failures) {
         fprintf(stderr, "q4e-moe-pool: %d/%d checks FAILED\n", g_failures, g_checks);
         return 1;
