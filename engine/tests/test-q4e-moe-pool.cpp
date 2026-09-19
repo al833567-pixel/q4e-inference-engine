@@ -9,7 +9,7 @@
 #include "ggml-cpu.h"
 #include "ggml.h"
 #include "q4e-expert-warm.h"
-// #include "q4e-pool-backend.h" // BISECT: disabled
+#include "q4e-pool-backend.h"
 
 #include <algorithm>
 #include <cmath>
@@ -493,7 +493,6 @@ struct dyn_env {
     void sched_setup() {
         cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
         const char * st = std::getenv("Q4E_TEST_SINGLE_THREAD");
-        fprintf(stderr, "DBG sched_setup: Q4E_TEST_SINGLE_THREAD=%s\n", st ? st : "(null)");
         if (st != nullptr) {
             ggml_backend_cpu_set_n_threads(cpu, 1); // BISECT: force single-threaded compute
         }
@@ -502,22 +501,17 @@ struct dyn_env {
     }
 
     ~dyn_env() {
-        fprintf(stderr, "DBG D1 pre-sched-free\n");
         if (sched) {
             ggml_backend_sched_free(sched);
         }
-        fprintf(stderr, "DBG D2 pre-cpu-free\n");
         if (cpu) {
             ggml_backend_free(cpu);
         }
-        fprintf(stderr, "DBG D3 pre-ctx-free\n");
         if (ctx_d) {
             ggml_free(ctx_d);
         }
-        fprintf(stderr, "DBG D4 pre-delete\n");
         delete h2d;
         delete dyn;
-        fprintf(stderr, "DBG D5 done\n");
     }
 };
 
@@ -592,7 +586,6 @@ static double dyn_round(
     env.dyn->drain();
     CHECK(!env.h2d->has_pending());
     env.dyn->end_round(0);
-    fprintf(stderr, "DBG M1 round-end\n");
 
     // every selected expert must now be mapped (in the pool buffer)
     for (int i = 0; i < cd.k; ++i) {
@@ -607,11 +600,13 @@ static double dyn_round(
         tb[e] = (s >= 0) ? float(s) : float(R);
     }
 
-    fprintf(stderr, "DBG M2 table-filled\n");
     // fresh graph per round on the persistent sched (same pattern as llama_eval)
     env.res.reset();
+    // res.reset() recreates the compute ctx; llm_graph_context caches ctx0/gf at
+    // construction (upstream recreates gctx per eval), so refresh them here
+    env.gctx->ctx0 = env.res.get_ctx();
+    env.gctx->gf   = env.res.get_gf();
     ggml_backend_sched_reset(env.sched);
-    fprintf(stderr, "DBG M3 reset-done\n");
 
     ggml_tensor * ref = env.gctx->build_moe_ffn(
             env.cur, gate_inp,
@@ -622,7 +617,6 @@ static double dyn_round(
             LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, 0,
             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
     CHECK(ref != nullptr);
-    fprintf(stderr, "DBG M4 ref-built\n");
 
     ggml_tensor * pool = env.gctx->build_moe_ffn_pool(
             env.cur, gate_inp,
@@ -631,16 +625,12 @@ static double dyn_round(
             LLM_FFN_SILU, true, 2.5f,
             LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, 0, table);
     CHECK(pool != nullptr);
-    fprintf(stderr, "DBG M5 pool-built\n");
 
     const ggml_status st = ggml_backend_sched_graph_compute(env.sched, env.res.get_gf());
     CHECK(st == GGML_STATUS_SUCCESS);
-    fprintf(stderr, "DBG M6 computed\n");
 
     std::vector<float> ref_out = read_out(ref);
-    fprintf(stderr, "DBG M7 ref-read\n");
     std::vector<float> pool_out = read_out(pool);
-    fprintf(stderr, "DBG M8 pool-read\n");
 
     double max_abs = 0.0;
     for (int t = 0; t < cd.n_tokens; ++t) {
@@ -654,7 +644,6 @@ static double dyn_round(
         }
     }
     CHECK(max_abs <= 1e-4 * 2.0);
-    fprintf(stderr, "DBG M9 checks-done\n");
     return max_abs;
 }
 
@@ -735,7 +724,6 @@ static void test_dynamic_oracle_sequence() {
 
 // per-layer independence + L3 two-stage + range guards (no ggml tensors involved)
 static void test_dynamic_multilayer() {
-    fprintf(stderr, "DBG T2 multilayer-start\n");
     q4e_expert_pool_config pcfg;
     pcfg.n_layers = 2;
     pcfg.n_experts_per_layer = 8;
@@ -777,7 +765,6 @@ static void test_dynamic_multilayer() {
     CHECK_EQ_I64(dyn.slot_of(1, 8), -1);
 }
 
-#if 0 // BISECT: Phase 2 v6 tests disabled
 // ---- q4e v6 global expert pool (A-16 phase 2) ----
 
 // 2b: round-robin slot map math (no ggml)
@@ -1130,9 +1117,7 @@ static void test_v6_global_pool_oracle() {
     fprintf(stderr, "v6-global-pool-oracle: layer0 (all in pool) pool==full==oracle, layer1 (1 out of pool) diff = %.3e\n", max_diff);
     ggml_free(ctx);
 }
-#endif // BISECT: Phase 2 v6 tests disabled
 
-#if 0 // BISECT: Phase 3 test disabled
 // 3a: runtime promotion round. Decode sequence: 3 steps, 2 layers, one shared 6-slot
 // pool with LRU eviction between steps. The backend drives the round (reserve the
 // round's top-k, promote the missing through the pipeline, verify residency); its L1
@@ -1403,7 +1388,6 @@ static void test_v6_runtime_decode_sequence() {
     fprintf(stderr, "v6-runtime-decode: 3-step decode sequence, 16 promotions (15 fills + 1 L2 hit), 10 evictions, pool==full==oracle every step\n");
     ggml_free(ctx);
 }
-#endif // BISECT: Phase 3 test disabled
 
 int main(int argc, char ** argv) {
     // unbuffer stderr so the last marker survives a crash
@@ -1433,10 +1417,10 @@ int main(int argc, char ** argv) {
     if (sel("mixed"))           test_mixed_per_token();
     if (sel("oracle_sequence")) test_dynamic_oracle_sequence();
     if (sel("multilayer"))      test_dynamic_multilayer();
-    // test_v6_slot_map(); // BISECT
-    // test_v6_static_fill(); // BISECT
-    // test_v6_global_pool_oracle(); // BISECT
-    // test_v6_runtime_decode_sequence(); // BISECT: disabled
+    if (sel("v6_slot_map"))     test_v6_slot_map();
+    if (sel("v6_static_fill"))  test_v6_static_fill();
+    if (sel("v6_global_pool"))  test_v6_global_pool_oracle();
+    if (sel("v6_runtime"))      test_v6_runtime_decode_sequence();
     if (g_failures) {
         fprintf(stderr, "q4e-moe-pool: %d/%d checks FAILED\n", g_failures, g_checks);
         return 1;
