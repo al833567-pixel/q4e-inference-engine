@@ -333,7 +333,8 @@ static void test_graph_case(
             env.up_pool, env.gate_pool, env.down_pool,
             cd.n_expert, cd.k,
             LLM_FFN_SILU, true, w_scale,
-            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, 0);
+            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, 0,
+            nullptr, env.up, env.gate, env.down);
     CHECK(pool != nullptr);
 
     // compute through the CPU backend scheduler (same path as production);
@@ -363,24 +364,21 @@ static void test_graph_case(
     double max_abs = 0.0;
     double max_rel = 0.0;
     for (int t = 0; t < cd.n_tokens; ++t) {
-        std::vector<double> expect = host_token_out(cd, t, R, w_scale);
         std::vector<double> expect_full = host_token_out(cd, t, cd.n_expert, w_scale);
         for (int i = 0; i < cd.n_embd; ++i) {
             const float gv = pool_out[(size_t) i + (size_t) t * cd.n_embd];
             const float rv = ref_out[(size_t) i + (size_t) t * cd.n_embd];
-            const double ov = expect[(size_t) i];
             const double of = expect_full[(size_t) i];
-            CHECK_NEAR(gv, ov, 1e-4);
+            // hybrid dual path: the pool result equals the full oracle even when
+            // some selected experts are out of pool (they are computed on the CPU path)
+            CHECK_NEAR(gv, of, 1e-4);
             CHECK_NEAR(rv, of, 1e-4);
             const double d = std::fabs(gv - rv);
             max_abs = std::max(max_abs, d);
             if (std::fabs(rv) > 1e-6) {
                 max_rel = std::max(max_rel, d / std::fabs(rv));
             }
-            // pool and full must match only when no selected expert is out of pool
-            if (expected_out_of_pool == 0) {
-                CHECK(d <= 1e-4 * (1.0 + std::fabs(rv)));
-            }
+            CHECK(d <= 1e-4 * (1.0 + std::fabs(rv)));
         }
     }
     fprintf(stderr, "%s: pool vs full: max_abs_err = %.3e, max_rel_err = %.3e, out_of_pool = %lld\n",
@@ -624,7 +622,8 @@ static double dyn_round(
             env.up_pool, env.gate_pool, env.down_pool,
             cd.n_expert, cd.k,
             LLM_FFN_SILU, true, 2.5f,
-            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, 0, table);
+            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, 0, table,
+            env.up, env.gate, env.down);
     CHECK(pool != nullptr);
 
     const ggml_status st = ggml_backend_sched_graph_compute(env.sched, env.res.get_gf());
@@ -1069,7 +1068,8 @@ static void test_v6_global_pool_oracle() {
                 up_pool, gate_pool, down_pool,
                 n_expert, k,
                 LLM_FFN_SILU, true, w_scale,
-                LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, li, table[li]);
+                LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, li, table[li],
+                up_full[li], gate_full[li], down_full[li]);
         CHECK(pool[li] != nullptr);
     }
 
@@ -1101,21 +1101,21 @@ static void test_v6_global_pool_oracle() {
         }
     }
 
-    // layer 1: expert 6 out of pool -> pool path zero-weights it, full path keeps it
+    // layer 1: expert 6 out of pool -> the hybrid CPU path computes it, so
+    // pool == full == host oracle (the zeroing semantics are gone since C4-4)
     double max_diff = 0.0;
     for (int t = 0; t < n_tokens; ++t) {
-        std::vector<double> expect_pool = host_token_out_v6(cds[1], t, tables[1], n_slots, w_scale);
         std::vector<double> expect_full = host_token_out(cds[1], t, n_expert, w_scale);
         for (int i = 0; i < n_embd; ++i) {
             const float gv = pool_out[1][(size_t) i + (size_t) t * n_embd];
             const float rv = ref_out[1][(size_t) i + (size_t) t * n_embd];
-            CHECK_NEAR(gv, expect_pool[(size_t) i], 1e-4);
+            CHECK_NEAR(gv, expect_full[(size_t) i], 1e-4);
             CHECK_NEAR(rv, expect_full[(size_t) i], 1e-4);
             max_diff = std::max(max_diff, std::fabs((double) gv - (double) rv));
         }
     }
-    CHECK(max_diff > 1e-3); // expert 6 must be visible in the difference
-    fprintf(stderr, "v6-global-pool-oracle: layer0 (all in pool) pool==full==oracle, layer1 (1 out of pool) diff = %.3e\n", max_diff);
+    CHECK(max_diff <= 2e-4); // hybrid: pool path == full even with a pool miss
+    fprintf(stderr, "v6-global-pool-oracle: layer0 (all in pool) + layer1 (1 out of pool, hybrid CPU path) pool==full==oracle, diff = %.3e\n", max_diff);
     ggml_free(ctx);
 }
 
@@ -1348,7 +1348,8 @@ static void test_v6_runtime_decode_sequence() {
                     up_pool, gate_pool, down_pool,
                     n_expert, k,
                     LLM_FFN_SILU, true, w_scale,
-                    LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, li, table[li]);
+                    LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, li, table[li],
+                    up_full[li], gate_full[li], down_full[li]);
             CHECK(pool[li] != nullptr);
         }
         ggml_backend_t cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);

@@ -2360,7 +2360,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn_pool(
               float    w_scale,
        llama_expert_gating_func_type gating_op,
                 int    il,
-           ggml_tensor * slot_table) const {
+           ggml_tensor * slot_table,
+           ggml_tensor * up_cpu,
+           ggml_tensor * gate_cpu,
+           ggml_tensor * down_cpu) const {
     GGML_ASSERT(type_op == LLM_FFN_SILU);
     GGML_ASSERT(gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX);
     GGML_ASSERT(up_pool && gate_pool && down_pool);
@@ -2430,12 +2433,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn_pool(
 
     // weights is [1, k, n]; in_pool is [k, n] - reshape to match before the broadcast
     ggml_tensor * in_pool3 = ggml_reshape_3d(ctx0, in_pool, 1, n_expert_used, n_tokens);
+    ggml_tensor * weights_full = weights; // unmasked: the hybrid CPU path needs the miss weights
     weights = ggml_mul(ctx0, weights, in_pool3); // zero out out-of-pool contributions
     cb(weights, "ffn_moe_weights_pool", il);
 
     ggml_build_forward_expand(gf, weights);
 
     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
+    ggml_tensor * cur_in = cur; // layer input, reused by the hybrid CPU path below
 
     ggml_tensor * up = build_lora_mm_id(up_pool, cur, pool_ids, nullptr); // [n_ff, n_expert_used, n_tokens]
     cb(up, "ffn_moe_up", il);
@@ -2451,6 +2456,31 @@ ggml_tensor * llm_graph_context::build_moe_ffn_pool(
 
     experts = ggml_mul(ctx0, experts, weights);
     cb(experts, "ffn_moe_weights_pool_mul", il);
+
+    if (up_cpu && gate_cpu && down_cpu) {
+        // q4e v6 hybrid dual path: pool misses are computed on the host-resident
+        // original experts (cpu_ids keeps the real expert id for misses, 0 for hits,
+        // and w_cpu zeroes the hit rows), so the result is always the full oracle
+        ggml_tensor * miss2 = ggml_scale_bias(ctx0, in_pool, -1.0f, 1.0f); // 1 - in_pool, [k, n_tokens]
+        ggml_tensor * cpu_ids = ggml_cast(ctx0,
+                ggml_mul(ctx0, ggml_cast(ctx0, selected_experts, GGML_TYPE_F32), miss2), GGML_TYPE_I32);
+        ggml_tensor * w_cpu = ggml_reshape_3d(ctx0,
+                ggml_mul(ctx0, ggml_reshape_2d(ctx0, weights_full, n_expert_used, n_tokens), miss2),
+                1, n_expert_used, n_tokens);
+        cb(cpu_ids, "ffn_moe_cpu_ids", il);
+
+        ggml_tensor * up_c   = build_lora_mm_id(up_cpu, cur_in, cpu_ids, nullptr);
+        cb(up_c, "ffn_moe_up_cpu", il);
+        ggml_tensor * gate_c = build_lora_mm_id(gate_cpu, cur_in, cpu_ids, nullptr);
+        cb(gate_c, "ffn_moe_gate_cpu", il);
+        ggml_tensor * cur_c  = ggml_swiglu_split(ctx0, gate_c, up_c);
+        cb(cur_c, "ffn_moe_swiglu_cpu", il);
+        ggml_tensor * experts_c = build_lora_mm_id(down_cpu, cur_c, cpu_ids, nullptr);
+        cb(experts_c, "ffn_moe_down_cpu", il);
+
+        experts = ggml_add(ctx0, experts, ggml_mul(ctx0, experts_c, w_cpu));
+        cb(experts, "ffn_moe_hybrid_sum", il);
+    }
 
     ggml_build_forward_expand(gf, experts);
 

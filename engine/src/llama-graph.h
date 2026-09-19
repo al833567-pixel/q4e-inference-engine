@@ -1009,6 +1009,9 @@ struct q4e_v6_pool_state {
     ggml_tensor * down_pool = nullptr; // [n_ff, n_embd, n_slots]
     std::vector<ggml_tensor *> tables; // per layer: [n_expert] F32 slot ids, null when layer not in pool
     std::vector<int> moe_layers;       // layers wired to the pool (MTP blocks excluded)
+    std::vector<ggml_tensor *> up_cpu;   // per layer: host-resident original experts for the
+    std::vector<ggml_tensor *> gate_cpu; // hybrid CPU path (null when layer not in pool)
+    std::vector<ggml_tensor *> down_cpu;
     std::unique_ptr<class q4e_v6_runtime> rt; // promotion loop, null when off
     int n_slots = 0;
 
@@ -1180,6 +1183,8 @@ struct llm_graph_context {
     // up_pool/gate_pool: [n_ff, n_embd, R]; down_pool: [n_embd, n_ff, R]
     // static (slot_table = null): slot i = global expert i (i < R); id >= R contributes 0
     // dynamic: slot_table [n_expert] F32, table[id] = slot (0..R-1) or R (unmapped, weight 0)
+    // hybrid (up/gate/down_cpu set): pool misses are computed on the host-resident
+    // original experts and added to the pool path, so the result is always the full oracle
     ggml_tensor * build_moe_ffn_pool(
              ggml_tensor * cur,
              ggml_tensor * gate_inp,
@@ -1193,7 +1198,10 @@ struct llm_graph_context {
                    float   w_scale,
           llama_expert_gating_func_type gating_op,
                      int   il,
-              ggml_tensor * slot_table = nullptr) const;
+              ggml_tensor * slot_table = nullptr,
+              ggml_tensor * up_cpu   = nullptr,
+              ggml_tensor * gate_cpu = nullptr,
+              ggml_tensor * down_cpu = nullptr) const;
 
     ggml_tensor * build_moe_ffn(
              ggml_tensor * cur,

@@ -477,7 +477,7 @@ struct common_params {
     bool    fit_params_print   = false; // print the estimated required memory to run the model
     int32_t fit_params_min_ctx = 4096;  // minimum context size to set when trying to reduce memory use
 
-    int32_t q4e_moe_vram       = 5000;  // v6: L1 global VRAM pool: total routed experts resident, shared across all layers (not a per-layer pool); 0 = pool off
+    int32_t q4e_moe_vram       = 4000;  // v6: L1 global VRAM pool: total routed experts resident, shared across all layers (not a per-layer pool); 4000 slots ~= 12.3 GiB (12B budget, 2x the 6B active set); 0 = pool off
     int32_t q4e_v6_pool_slots  = 0;     // v6: expert-granular global pool slots (set from q4e_moe_vram at load, whole-layer fallback only via Q4E_MOE_VRAM_FALLBACK)
     int32_t q4e_moe_ram        = 4000;  // v5: routed MoE experts resident in L2 pinned RAM (0 = L2 off)
     bool    q4e_prefetch       = true;  // live expert page-warm prefetch (A-14.1); off = A-9 hook only

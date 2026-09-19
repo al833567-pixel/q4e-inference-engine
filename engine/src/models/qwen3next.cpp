@@ -197,6 +197,9 @@ void llama_model_qwen3next::load_arch_tensors(llama_model_loader & ml) {
 
             // v6 runtime promotion (C4-0): tables start all-sentinel and the runtime
             // fills slots on demand from the router selections after each decode round
+            q4e_v6->up_cpu.assign(n_layer, nullptr);
+            q4e_v6->gate_cpu.assign(n_layer, nullptr);
+            q4e_v6->down_cpu.assign(n_layer, nullptr);
             std::vector<ggml_tensor *> up_full(n_moe), gate_full(n_moe), down_full(n_moe);
             for (int li = 0; li < n_moe; ++li) {
                 const auto & layer = layers[moe_layers[li]];
@@ -211,6 +214,10 @@ void llama_model_qwen3next::load_arch_tensors(llama_model_loader & ml) {
                     gate_full[li] = layer.ffn_gate_exps;
                 }
                 down_full[li] = layer.ffn_down_exps;
+                // keep the host-resident originals for the hybrid CPU path (C4-4)
+                q4e_v6->up_cpu[moe_layers[li]]   = up_full[li];
+                q4e_v6->gate_cpu[moe_layers[li]] = gate_full[li];
+                q4e_v6->down_cpu[moe_layers[li]] = down_full[li];
             }
 
             {
@@ -712,7 +719,8 @@ ggml_tensor * llama_model_qwen3next::graph::build_layer_ffn(ggml_tensor * cur, c
         ggml_tensor * moe_out;
         const auto & q4e_v6 = static_cast<const llama_model_qwen3next &>(model).q4e_v6;
         if (q4e_v6 != nullptr && q4e_v6->tables.size() > (size_t) il && q4e_v6->tables[il] != nullptr) {
-            // v6 global pool path: all MoE layers share one N-slot pool (A-16 phase 2)
+            // v6 global pool path: all MoE layers share one N-slot pool (A-16 phase 2);
+            // hybrid: misses are computed on the host-resident original experts (C4-4)
             moe_out =
                 build_moe_ffn_pool(cur,
                     model.layers[il].ffn_gate_inp,
@@ -721,7 +729,8 @@ ggml_tensor * llama_model_qwen3next::graph::build_layer_ffn(ggml_tensor * cur, c
                     LLM_FFN_SILU, true,
                     hparams.expert_weights_scale,
                     LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-                    q4e_v6->tables[il]);
+                    q4e_v6->tables[il],
+                    q4e_v6->up_cpu[il], q4e_v6->gate_cpu[il], q4e_v6->down_cpu[il]);
         } else {
             moe_out =
                 build_moe_ffn(cur,

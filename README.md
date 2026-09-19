@@ -47,7 +47,7 @@ cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxil
 ### v6 CLI 參數（6 項）
 | 參數 | 預設 | 說明 |
 |---|---|---|
-| `--q4e-moe-vram` | 5000 | **v6 重定義**：L1 全局 VRAM pool 駐留 routed 專家總數（0 = pool off） |
+| `--q4e-moe-vram` | 4000 | **v6 重定義**：L1 全局 VRAM pool 駐留 routed 專家總數（4000 槽 ≈ 12.3 GiB＝12B 預算；0 = pool off；未命中專家由 CPU 路徑計算——混合雙路徑） |
 | `--q4e-moe-ram` | 4000 | L2 Pinned RAM 駐留專家數（**100k 極限配置顯式傳 3000**，見 02 主規劃 §一） |
 | `--q4e-staging-mb` | 128 | Staging Buffer（A/B 雙緩衝）總大小 MB |
 | `--q4e-layer-floor` | 10 | Layer-Aware LRU 每層保底 expert 數（0 = 純全局 LRU） |

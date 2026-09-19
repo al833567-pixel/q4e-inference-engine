@@ -309,7 +309,7 @@ static void test(void) {
     {
         common_params q4e_params;
         q4e_params.model.path = "model_file.gguf"; // satisfy the required-model check (same as earlier blocks)
-        assert(q4e_params.q4e_moe_vram == 5000); // v5 default: routed experts in the L1 VRAM pool
+        assert(q4e_params.q4e_moe_vram == 4000); // v6 default: 12B budget (4000 slots ~= 12.3 GiB)
 
         argv = {"binary_name", "--q4e-moe-vram", "5"};
         assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), q4e_params, LLAMA_EXAMPLE_COMMON));
@@ -553,7 +553,7 @@ static void test(void) {
 
         common_params v6p;
         v6p.model.path = "model_file.gguf"; // satisfy the required-model check (same as earlier blocks)
-        check(v6p.q4e_moe_vram == 5000, "v6 default q4e_moe_vram == 5000");
+        check(v6p.q4e_moe_vram == 4000, "v6 default q4e_moe_vram == 4000 (12B budget)");
         check(v6p.q4e_v6_pool_slots == 0, "v6 default q4e_v6_pool_slots == 0 (set at load, not parse)");
         check(v6p.q4e_moe_ram == 4000, "v6 default q4e_moe_ram == 4000 (v5 unchanged)");
         check(v6p.q4e_staging_mb == 128, "v6 default q4e_staging_mb == 128");
