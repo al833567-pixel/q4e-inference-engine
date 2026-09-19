@@ -171,10 +171,14 @@ void llama_model_qwen3next::load_arch_tensors(llama_model_loader & ml) {
             for (int il : moe_layers) {
                 total += ggml_nbytes_pad(q4e_v6->tables[il]);
             }
-            q4e_v6->buf = ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), total);
-            if (q4e_v6->buf == nullptr) {
+            // v6: the pool lives on the device that computes the MoE layers (VRAM when offloaded);
+            // the buffer is handed to the model (q4e_register_pool_buffer) after init so that
+            // memory breakdown / VRAM-fit accounting include it
+            ggml_backend_buffer_t pool_buf = ggml_backend_buft_alloc_buffer(select_buft(moe_layers[0]), total);
+            if (pool_buf == nullptr) {
                 throw std::runtime_error(arch_name() + ": q4e v6 pool buffer alloc failed");
             }
+            q4e_v6->buf = pool_buf;
             ggml_backend_buffer_clear(q4e_v6->buf, 0); // zero slots not covered by the round-robin map
             if (ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->up_pool)   != GGML_STATUS_SUCCESS ||
                 ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->gate_pool) != GGML_STATUS_SUCCESS ||
@@ -208,11 +212,17 @@ void llama_model_qwen3next::load_arch_tensors(llama_model_loader & ml) {
 
             // slot table per layer: slot id, or the n_slots sentinel when the expert is not in the pool
             for (int li = 0; li < n_moe; ++li) {
-                float * tp = (float *) ggml_get_data(q4e_v6->tables[moe_layers[li]]);
+                std::vector<float> tp((size_t) n_expert);
                 for (int e = 0; e < n_expert; ++e) {
-                    tp[e] = (float) tables[li][e];
+                    tp[(size_t) e] = (float) tables[li][e];
                 }
+                ggml_backend_tensor_set(q4e_v6->tables[moe_layers[li]], tp.data(), 0, tp.size() * sizeof(float));
             }
+
+            // hand the pool buffer to the model: memory breakdown / VRAM-fit include it,
+            // and the model frees it on unload (q4e_v6 keeps the ctx and tensor pointers)
+            q4e_register_pool_buffer(pool_buf);
+            q4e_v6->buf = nullptr;
         }
     }
 }

@@ -1155,6 +1155,9 @@ struct llama_model::impl {
     // contexts where the model tensors metadata is stored as well as the corresponding buffers:
     std::vector<std::pair<ggml_context_ptr, std::vector<ggml_backend_buffer_ptr>>> ctxs_bufs;
 
+    // q4e v6: external weight buffers (global expert pool), counted in memory_breakdown
+    std::vector<ggml_backend_buffer_ptr> q4e_extra_bufs;
+
     buft_list_t cpu_buft_list;
     std::map<ggml_backend_dev_t, buft_list_t> gpu_buft_list;
 
@@ -1871,6 +1874,9 @@ llama_split_mode llama_model::split_mode() const {
 
 std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() const {
     std::map<ggml_backend_buffer_type_t, size_t> ret;
+    for (const auto & buf : pimpl->q4e_extra_bufs) {
+        ret[ggml_backend_buffer_get_type(buf.get())] += ggml_backend_buffer_get_size(buf.get());
+    }
     for (const auto & [ctx, bufs] : pimpl->ctxs_bufs) {
         if (hparams.no_alloc) {
             GGML_ASSERT(bufs.size() == 1);
@@ -1886,6 +1892,11 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() con
         }
     }
     return ret;
+}
+
+// q4e v6: take ownership of the global expert pool buffer; counted in memory_breakdown
+void llama_model::q4e_register_pool_buffer(ggml_backend_buffer_t buf) {
+    pimpl->q4e_extra_bufs.emplace_back(buf);
 }
 
 uint64_t llama_model::n_elements() const {

@@ -2304,15 +2304,23 @@ void q4e_v6_pool_fill(
         const std::vector<ggml_tensor *> & gate_full,
         const std::vector<ggml_tensor *> & down_full,
         const std::vector<std::vector<int>> & tables) {
+    // backend-aware: expert slices are contiguous on both sides (expert dim last),
+    // so one tensor_set per part covers the slot; CPU buffers memcpy, GPU buffers H2D.
+    // tensors without a backend buffer (plain test contexts) fall back to direct memcpy.
+    // the fused gate_up source view carries nb[2] of the parent (gate+up halves), so the
+    // slice size comes from the destination and the source base from s_idx * src->nb[2]
     auto copy_expert_block = [](ggml_tensor * dst, ggml_tensor * src, int d_idx, int s_idx) {
         GGML_ASSERT(dst->type == src->type);
         GGML_ASSERT(dst->ne[0] == src->ne[0] && dst->ne[1] == src->ne[1]);
-        const size_t row_bytes = ggml_row_size(src->type, src->ne[0]);
+        const size_t slice = (size_t) dst->nb[2];
+        GGML_ASSERT(slice == (size_t) src->ne[1] * src->nb[1]); // contiguous source rows
         const uint8_t * p = (const uint8_t *) ggml_get_data(src) + (std::size_t) s_idx * src->nb[2];
-        uint8_t * q = (uint8_t *) ggml_get_data(dst) + (std::size_t) d_idx * dst->nb[2];
-        for (int64_t a = 0; a < src->ne[1]; ++a) {
-            std::memcpy(q + a * dst->nb[1], p + a * src->nb[1], row_bytes);
+        if (dst->buffer == nullptr) {
+            uint8_t * q = (uint8_t *) ggml_get_data(dst) + (std::size_t) d_idx * dst->nb[2];
+            std::memcpy(q, p, slice);
+            return;
         }
+        ggml_backend_tensor_set(dst, p, (std::size_t) d_idx * dst->nb[2], slice);
     };
     const int n_slots = (int) up_pool->ne[2];
     for (size_t l = 0; l < tables.size(); ++l) {

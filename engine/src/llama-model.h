@@ -730,6 +730,9 @@ struct llama_model {
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;
 
+    // q4e v6: take ownership of the global expert pool buffer; counted in memory_breakdown
+    void q4e_register_pool_buffer(ggml_backend_buffer_t buf);
+
     // total number of parameters in the model
     uint64_t n_elements() const;
 
