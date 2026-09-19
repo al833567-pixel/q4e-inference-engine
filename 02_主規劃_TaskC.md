@@ -15,8 +15,9 @@
 |---|---|
 | 模型 | Qwen3.8-Flash-Next GGUF 4 片 103.7 GiB（`D:\AI_Model\Qwen3.8-Flash-Next\`）；MoE 48 層，每層 512 routed（≈3.07 MB/個）＋1 shared，router 選 10 |
 | 專家級動態池 | L1（VRAM 全局池）N 槽跨 48 層共享、Layer-Aware LRU（floor F=10）＋L2（Pinned RAM N2）＋L3（SSD） |
+| **混合雙路徑（9/19 用戶拍板）** | **命中→GPU 池算；未命中→CPU 用原始 512 專家算（歸零語義廢除）**。`build_moe_ffn_pool` 同圖雙路：GPU 路＝現有 mm_id over 池槽；CPU 路＝mm_id over 原層專家張量（CPU mmap），`cpu_ids=selected×(1-in_pool)`、`w_cpu=w×(1-in_pool)`，兩路相加＝完整輸出。池純粹是加速器，正確性不再依賴命中率 |
 | **破碎執行** | 選中專家散布於池槽 → **VRAM 內 Gather**：staging 雙緩衝（A/B）連續化 → `MUL_MAT_ID` over staging → slot_table 動態映射 → promotion op 回填 |
-| **活躍集預算** | 「活躍 6B」解讀：每 token 活躍 routed ≈48×10×~5.1M≈2.4B 參數（＋shared/attn 量級湊數 B）；對應 L1 池權重 **N≈1200（≈3.7 GiB，=6B 參數口徑）~2000（≈6.1 GiB，=6 GB 權重口徑）**。**起始配置 N=2000，C5 真機以 VRAM-fit 門＋t/s 實測收斂定案** |
+| **活躍集預算（9/19 用戶拍板）** | **池預算＝12B（6B 的兩倍）→ 預設 N=4000 槽 ≈ 12.3 GiB**（≈24B 權重參數量級）；`--q4e-moe-vram` 可設。VRAM 總帳：池 12.3＋attn/router/shared/KV/compute ≈ 14 GB ≤ 24 GB 紅線內 |
 | 100k KV | PagedAttention 分頁：L1 active window 8k＋L2 pinned 6 GB＋L3 pagefile；強制 q8_0（≈35 GB→分頁 Offload） |
 | PLE/ngram | 28.8 GB 恆 SSD mmap（紅線，不佔 RAM/VRAM） |
 | 對外 | OpenAI 相容 `/v1`＋API key＋`/q4e/stats`（真實池統計） |
@@ -60,22 +61,25 @@
 
 | 步 | 內容 | 門 |
 |---|---|---|
-| C4-1 | gather kernel CUDA 實作（staging 版）：非連續池槽 → 連續 staging；`cudaMemcpyAsync` H2D 管線接真 GPU | 單元＋oracle 對 CPU 版 |
-| C4-2 | CUDA build（已證配方，見 §九）：含 A-16.9 之後全部 HEAD | server.exe 冒煙 `--version` commit==HEAD |
-| C4-3 | PagedAttention 深度接線（原 16.5b-2，屬此處）：KV 量化分頁走真 GPU attention 路徑 | KV 分頁統計真實、100k 滑窗 oracle 綠 |
+| C4-1 | 池 buffer 上運算裝置（select_buft）＋註冊進 model（fit 自動計帳）＋fill backend-aware | 31686 ×3 綠 |
+| C4-2 | runtime promotion 接進 decode（observe→LRU→填槽→改表；graph output 讀回選擇） | 全套綠＋promo 測試 43 斷言 |
+| C4-3 | 專家張量 CPU override（池路徑不把 77GB 推上 GPU） | VRAM-fit N=2000 過＋真機 decode 通 |
+| **C4-4** | **混合雙路徑 MoE（9/19 用戶拍板）**：`build_moe_ffn_pool` 加 CPU 路（原層專家張量 mm_id，`cpu_ids=selected×(1-in_pool)`、`w_cpu=w×(1-in_pool)`，兩路相加）；歸零語義廢除 | 雙路徑 oracle：混合命中/未命中＝完整答案（現有 out_of_pool 測試語義改為全 oracle）＋全套綠 |
+| **C4-5** | **池預設 12B（N=4000 ≈ 12.3 GiB）**，`--q4e-moe-vram` 可設；README/01/arg-parser 預設值同步 | 預設斷言 4000；VRAM 總帳 ≤ 24 GB |
+| C4-6 | CUDA 重編＋真機重驗：正確性（不再歸零）＋t/s＋prefill 時間 | 見 C5 門 |
 
 ## 七、Phase C5 — 真機驗收（收編原 B-16 全部門，Task C 親自跑）
 
-**前置**：VRAM=0（**9/19 實測已空 0/24576 MiB**，需再驗）；無殘留 server；GGUF 4 片可讀。
+**前置**：VRAM=0；無殘留 server；GGUF 4 片可讀。
 
 | # | 門 | 準 |
 |---|---|---|
-| 1 | VRAM-fit：`--q4e-moe-vram 2000` 載入成功，VRAM ≤ 24 GB | 不觸發 fit 拒載；超出→降 N 收斂，紅線不動 |
-| 2 | 100k Context：`--ctx-size 100000 --cache-type-k q8_0` 載入不 OOM，KV 分頁運作 | 分頁統計非零、無 OOM |
-| 3 | Oracle 對答案：48 層全 GPU（attn/router/shared）＋專家池＋Gather 逐層輸出＝oracle | max_err=0（池內）／out_of_pool 誤差符合設計 |
-| 4 | 效能：ON 暖 t/s ≥ 8（理想 L1 全命中 ≥ 40） | `/q4e/stats` 命中分佈佐證 |
-| 5 | 回歸門：e2e 5 閘綠＋冷載入 ≤~250 s＋收尾 VRAM 歸零 | 全綠 |
-| 6 | 活躍集收斂：N=1200/2000 兩檔 t/s＋命中分佈對比，定案生產 N | 數據入本文件 §十一 |
+| 1 | VRAM-fit：`--q4e-moe-vram 4000` 載入成功，VRAM ≤ 24 GB | 不觸發 fit 拒載；超出→降 N 收斂，紅線不動 |
+| 2 | 正確性：混合命中/未命中下輸出與 CPU 全量路徑一致（抽樣比對） | 雙路徑使歸零消失；短文生成語義合理 |
+| 3 | 效能：ON 暖 t/s ≥ 8；prefill 不再 SSD 填池風暴（61 token 從 141 s 量級降到 ~10 s 內） | `/q4e/stats` 命中分佈佐證（C3-3 完成後） |
+| 4 | 100k Context：`--ctx-size 100000 --cache-type-k q8_0` 載入不 OOM，KV 分頁運作 | 分頁統計非零、無 OOM |
+| 5 | 回歸門：e2e 閘綠＋收尾 VRAM 歸零 | 全綠 |
+| 6 | 活躍集收斂：N=2000/4000 兩檔 t/s＋命中分佈對比，定案生產 N | 數據入本文件 §十一 |
 
 失敗＝錯誤原文＋證據歸檔回報用戶，不猜、不調參越權。
 
