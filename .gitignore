@@ -10,3 +10,6 @@ _testtmp/
 # 未來 P0.2 之後：q4e C++ build 輸出（build/ 等）
 engine/build/
 engine/build*/
+
+# 除錯/應力/證據工作區（保留在磁碟，不進版控）
+/v6_work/
