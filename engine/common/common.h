@@ -1196,6 +1196,18 @@ inline int llm_q4e_moe_vram_keep_layers(int n_layers, int n_expert, int64_t n_ex
 // common_params_parse pads this buffer with null entries (for llama_params_fit), so
 // appending after the padding would leave the patterns past the terminator, and the
 // loader (null-terminated array) would apply zero overrides
+inline void llm_insert_overrides_before_terminator(std::vector<llama_model_tensor_buft_override> & ovs,
+                                                   const std::vector<llama_model_tensor_buft_override> & pats) {
+    size_t pos = 0;
+    while (pos < ovs.size() && ovs[pos].pattern != nullptr) {
+        pos++;
+    }
+    ovs.insert(ovs.begin() + pos, pats.begin(), pats.end());
+    if (pos + pats.size() >= ovs.size() || ovs[pos + pats.size()].pattern != nullptr) {
+        ovs.insert(ovs.begin() + pos + pats.size(), llama_model_tensor_buft_override{nullptr, nullptr});
+    }
+}
+
 inline void llm_insert_q4e_moe_vram_overrides(int n_layers, int k, std::vector<llama_model_tensor_buft_override> & ovs) {
     const int n_cpu = n_layers - k;
     if (n_cpu <= 0) {
@@ -1205,14 +1217,15 @@ inline void llm_insert_q4e_moe_vram_overrides(int n_layers, int k, std::vector<l
     std::vector<llama_model_tensor_buft_override> pats;
     llm_add_n_cpu_ffn_overrides(n_cpu, LLM_FFN_EXPS_REGEX, pats);
 
-    size_t pos = 0;
-    while (pos < ovs.size() && ovs[pos].pattern != nullptr) {
-        pos++;
-    }
-    ovs.insert(ovs.begin() + pos, pats.begin(), pats.end());
-    if (pos + pats.size() >= ovs.size() || ovs[pos + pats.size()].pattern != nullptr) {
-        ovs.insert(ovs.begin() + pos + pats.size(), llama_model_tensor_buft_override{nullptr, nullptr});
-    }
+    llm_insert_overrides_before_terminator(ovs, pats);
+}
+
+// q4e v6 pool path: all routed expert weights stay on the host (mmap); the VRAM pool
+// holds the hot set and the runtime promotion loop copies experts in on demand
+inline void llm_insert_q4e_moe_vram_cpu_exps(std::vector<llama_model_tensor_buft_override> & ovs) {
+    std::vector<llama_model_tensor_buft_override> pats;
+    pats.push_back(llm_ffn_exps_cpu_override());
+    llm_insert_overrides_before_terminator(ovs, pats);
 }
 
 //

@@ -1308,9 +1308,10 @@ static bool common_q4e_moe_vram_apply(common_params & params) {
         return false; // dense model, nothing to do
     }
 
-    // v6 primary path: q4e_moe_vram > 0 drives the expert-granular global pool
-    // (slots shared across all layers); whole-layer buft overrides are not used
+    // v6 primary path: q4e_moe_vram > 0 drives the expert-granular global pool;
+    // the per-layer expert weights stay on the host (mmap) so only the pool is VRAM
     if (params.q4e_moe_vram > 0 && std::getenv("Q4E_MOE_VRAM_FALLBACK") == nullptr) {
+        llm_insert_q4e_moe_vram_cpu_exps(params.tensor_buft_overrides);
         params.q4e_v6_pool_slots = params.q4e_moe_vram;
         return true;
     }
