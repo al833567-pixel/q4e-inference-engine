@@ -111,8 +111,8 @@ README/01 對齊實況（含本文件狀態更新）；`git tag v6.1-<date>`（�
 | Phase | 狀態 |
 |---|---|
 | C0 現場固化 | ✅ DBG 還原（llama-graph/q4e-expert-warm 歸零）；保留 P0-2 CLI filter＋setvbuf 無緩衝 stderr；基線 16/16 全綠（moe-pool v6 區段仍 `#if 0`，全序不穩定屬 C1）；規劃重整 commit `172f2fc` |
-| C1 崩潰解卡 | ⏳ |
-| C2 物理路徑驗收 | ⏳ |
+| C1 崩潰解卡 | ✅ root cause＝測試端 dyn_round 在 res.reset() 後重用 gctx，快取 ctx0/gf 懸掛（UAF，同址重用掩護故 8/15 隨機崩）；MSVC ASan 全閉包重編抓到 stack 定案；修法＝reset 後重同步 ctx0/gf（零斷言變更）；v5×15＋full×15 bad=0、ASan×3 綠；commit `f2d7bee` |
+| C2 物理路徑驗收 | ✅ 31686 checks ×15 全綠（超出 ×3 門）＋stress 15/15；即 C1 修後 full 序列 |
 | C3 server 接線 | ⏳ |
 | C4 CUDA＋Gather kernel | ⏳ |
 | C5 真機驗收 | ⏳（GPU 9/19 實測空） |
