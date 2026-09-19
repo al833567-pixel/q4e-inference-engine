@@ -1308,7 +1308,14 @@ static bool common_q4e_moe_vram_apply(common_params & params) {
         return false; // dense model, nothing to do
     }
 
-    // v6: q4e_moe_vram is the global expert count; map it to whole layers for the buft overrides
+    // v6 primary path: q4e_moe_vram > 0 drives the expert-granular global pool
+    // (slots shared across all layers); whole-layer buft overrides are not used
+    if (params.q4e_moe_vram > 0 && std::getenv("Q4E_MOE_VRAM_FALLBACK") == nullptr) {
+        params.q4e_v6_pool_slots = params.q4e_moe_vram;
+        return true;
+    }
+
+    // fallback (A-16.9, Q4E_MOE_VRAM_FALLBACK=1): map expert count to whole layers for the buft overrides
     const int k = llm_q4e_moe_vram_keep_layers(n_layers, n_expert, params.q4e_moe_vram);
     llm_insert_q4e_moe_vram_overrides(n_layers, k, params.tensor_buft_overrides);
     return true;
@@ -1791,6 +1798,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.check_tensors   = params.check_tensors;
     mparams.use_extra_bufts = !params.no_extra_bufts;
     mparams.no_host         = params.no_host;
+    mparams.q4e_v6_pool_slots = params.q4e_v6_pool_slots;
 
     if (params.kv_overrides.empty()) {
         mparams.kv_overrides = NULL;

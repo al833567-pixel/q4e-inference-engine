@@ -554,6 +554,7 @@ static void test(void) {
         common_params v6p;
         v6p.model.path = "model_file.gguf"; // satisfy the required-model check (same as earlier blocks)
         check(v6p.q4e_moe_vram == 5000, "v6 default q4e_moe_vram == 5000");
+        check(v6p.q4e_v6_pool_slots == 0, "v6 default q4e_v6_pool_slots == 0 (set at load, not parse)");
         check(v6p.q4e_moe_ram == 4000, "v6 default q4e_moe_ram == 4000 (v5 unchanged)");
         check(v6p.q4e_staging_mb == 128, "v6 default q4e_staging_mb == 128");
         check(v6p.q4e_layer_floor == 10, "v6 default q4e_layer_floor == 10");
