@@ -110,14 +110,41 @@ README/01 對齊實況（含本文件狀態更新）；`git tag v6.1-<date>`（�
 | 3 | N=2000 VRAM-fit 爆 | 降 N 收斂（活躍集語義不變）；KV window 8k 可縮至 4k 換預算 |
 | 4 | 「6B」口徑歧義（參數 vs 權重 GiB） | §一雙口徑並陳，C5-6 真機數據定案 |
 
-## 十二、進度狀態（本文件維護）
+## 十二、進度狀態（本文件維護；9/20 用戶拍板「混合雙路徑＋池 12B」後更新）
 
 | Phase | 狀態 |
 |---|---|
-| C0 現場固化 | ✅ DBG 還原（llama-graph/q4e-expert-warm 歸零）；保留 P0-2 CLI filter＋setvbuf 無緩衝 stderr；基線 16/16 全綠（moe-pool v6 區段仍 `#if 0`，全序不穩定屬 C1）；規劃重整 commit `172f2fc` |
-| C1 崩潰解卡 | ✅ root cause＝測試端 dyn_round 在 res.reset() 後重用 gctx，快取 ctx0/gf 懸掛（UAF，同址重用掩護故 8/15 隨機崩）；MSVC ASan 全閉包重編抓到 stack 定案；修法＝reset 後重同步 ctx0/gf（零斷言變更）；v5×15＋full×15 bad=0、ASan×3 綠；commit `f2d7bee` |
-| C2 物理路徑驗收 | ✅ 31686 checks ×15 全綠（超出 ×3 門）＋stress 15/15；即 C1 修後 full 序列 |
-| C3 server 接線 | 🟡 C3-1/2 完成：`--q4e-moe-vram N>0` → `q4e_v6_pool_slots=N`（真池主路徑，整層 fallback 改 `Q4E_MOE_VRAM_FALLBACK=1` env 門控）；16/16＋moe-pool 31686×3 綠。C3-3 stats 活體接線併入 C4-0 runtime wiring |
-| C4 CUDA＋Gather kernel | 🟡 C4-0 runtime promotion 接進 decode（`25cee4f`：observe→LRU→填槽→改表，48 層選擇經 graph output 讀回）；C4-1 池上運算裝置（`3cfcd58`）；C4-3 專家 CPU override 修 VRAM-fit（`e4cb1c8`）。CUDA build 92 `25cee4f`：真機載入成功（VRAM 6965 MiB）、端到端 decode 通。遺留：prefill 池無法覆蓋（61-token 每層需 ~500 專家 ≫ 41/層）→ 專家貢獻大量歸零、prefill 走 CPU MoE 0.43 t/s、decode 1.03 t/s ≪ 門 8 |
-| C5 真機驗收 | 🔴 六門未過；卡點＝prefill 策略（CPU MoE prefill＋池 decode 之類的混合）＋C3-3 stats 活體接線＋非同步填槽 |
-| C6 交付收尾 | ⏳（按用戶指示：全 pass 才打包） |
+| C0 現場固化 | ✅ DBG 還原；基線 16/16 綠；commit `172f2fc` |
+| C1 崩潰解卡 | ✅ root cause＝測試端 gctx 快取 ctx0/gf 懸掛（UAF）；ASan 定案；v5×15＋full×15 bad=0；commit `f2d7bee` |
+| C2 物理路徑驗收 | ✅ 31686 checks ×15 全綠＋stress 15/15 |
+| C3 server 接線 | ✅ 真池主路徑＋CPU override（`9b9b30c`/`e4cb1c8`）；C3-3 stats 活體接線移入剩餘工作 |
+| C4 CUDA＋Gather | 🟡 大部分完成（見 §十三 剩餘工作）；混合雙路徑＋池 12B 預設（`862258e`）；**池整合已移植到生產 arch `qwen4exp`＋池配置延後到權重 buffer 之後＋alloc 失敗自動退回 host 池**（`546189d`）；CPU 全套綠＋moe-pool 32241 綠 |
+| C5 真機驗收 | 🔴 待 CUDA 重編後重驗（歷史教訓：qwen3next 上的「成功」其實池未建立） |
+| C6 交付收尾 | ⏳ 全 pass 後：清暫存＋舊 llama.cpp 對比數據報告＋打包 |
+
+## 十三、剩餘工作清單（9/20 盤點）
+
+**主線（必做，完成即打包）：**
+
+| # | 工作 | 門 |
+|---|---|---|
+| R1 | CUDA 重編（含 `546189d`）＋冒煙 commit==HEAD | build OK、`--version` 正確 |
+| R2 | 真機載入：**驗證池真的建在 CUDA0**（log 出現 `q4e v6 pool: ... total=11718.8 MiB buft=CUDA0` **且之後無 CUDA error**）；若 alloc 仍敗→驗證 host 池退路生效（`retrying on host`）且整機可跑 | 載入成功＋VRAM 帳合理（池 11.7GB＋KV＋雜項） |
+| R3 | 正確性：混合雙路徑下真機輸出合理（不再歸零）——短文生成語義連貫；如可取得 CPU 全量基準則抽樣比對 | 語義正確 |
+| R4 | 效能重測：prefill 時間（61 token，對比 CPU-MoE 時代的 141 s）＋ON 暖 decode t/s（門 ≥8）；池命中後 GPU 路徑比重 | prefill 大幅下降；t/s 達門或記錄實測值 |
+| R5 | C3-3 stats 活體接線：`/q4e/stats` 從合成元件改掛真實 `q4e_v6->rt` 的 pool stats（hits/misses/evictions/rounds）＋runtime IO | 真機請求後 stats 非零且與 log 一致 |
+| R6 | 收尾門：e2e 綠＋收尾 VRAM 歸零 | 全綠 |
+
+**打包（R1~R6 全綠後，按用戶 9/20 指示）：**
+
+| # | 工作 |
+|---|---|
+| P1 | git commit 剩餘修正 |
+| P2 | 清開發暫存：`v6_work/`（gitignore 內，磁碟可留可刪）、`_testtmp/`、build 目錄不入庫確認、根目錄散落 log |
+| P3 | 對比驗證：舊 `D:\llama\llama-server.exe` vs 新 `q4e-server.exe`（同模型、同 prompt、同 ctx）：載入時間／prefill t/s／decode t/s／VRAM 峰值／輸出樣例，留數據 |
+| P4 | 數據報告（`REPORT_v6.1.md`：架構、門表結果、對比表、已知限制）＋打包準備 GitLab |
+
+**已知風險／備註：**
+- WDDM：即便延後分配，CUDA0 上 11.7GB 仍可能失敗（診斷證實單獨行程可成功；若 R2 再敗→host 池退路保正確，效能門以 R4 實測為準，t/s 不達門時回報用戶裁決）。
+- 舊 llama.cpp 對比基準：舊版無 q4e 池語義，對比表重點＝「能否載入 103.7GB 模型」與 t/s 量級差異，非同構對比。
+- runtime promotion 目前為同步填槽（SSD→host→GPU 逐專家 copy）；非同步管線（h2d-pipeline 接入）為後續效能優化項，不擋打包。
