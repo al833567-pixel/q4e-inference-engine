@@ -2,9 +2,11 @@
 #include "llama-impl.h"
 #include "llama-memory-hybrid-idx.h"
 #include "llama-memory-recurrent.h"
+#include "q4e-v6-runtime.h"
 
 #include <algorithm>
 #include <cinttypes>
+#include <string>
 
 void llama_model_qwen4exp::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH,        hparams.n_ff_exp, false);
@@ -207,10 +209,172 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
         layer.ffn_up_shexp       = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,       "weight", il), { n_embd, n_ff_shexp }, 0);
         layer.ffn_down_shexp     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,     "weight", il), { n_ff_shexp, n_embd }, 0);
     }
+
+    // q4e v6: stage the global expert pool spec; the buffer is allocated later from
+    // q4e_v6_pool_alloc(), after all weight buffers exist (see llama-model.cpp)
+    LLAMA_LOG_WARN("%s: q4e v6 pool gate: arch=%s slots=%d no_alloc=%d\n",
+            __func__, arch_name().c_str(), params.q4e_v6_pool_slots, (int) hparams.no_alloc);
+    if (params.q4e_v6_pool_slots > 0 && !hparams.no_alloc) {
+        std::vector<int> moe_layers;
+        for (int i = 0; i < n_layer; ++i) {
+            if (layers[i].ffn_gate_inp != nullptr) {
+                moe_layers.push_back(i);
+            }
+        }
+        if (!moe_layers.empty()) {
+            q4e_v6_pool_pending = std::make_unique<q4e_v6_pool_state>();
+            q4e_v6_pool_pending->n_slots = params.q4e_v6_pool_slots;
+            q4e_v6_pool_pending->moe_layers = moe_layers;
+        }
+    }
+}
+
+// build the pool tensors/buffer from the pending spec; runs after the weight
+// buffers hold their VRAM so the budget is real (WDDM reserve makes early
+// checks lie); on device allocation failure retry on the host - the hybrid
+// CPU path keeps results correct either way
+void llama_model_qwen4exp::q4e_v6_pool_alloc() {
+    if (!q4e_v6_pool_pending) {
+        return;
+    }
+    q4e_v6 = std::move(q4e_v6_pool_pending);
+    const int n_slots = q4e_v6->n_slots;
+    const std::vector<int> & moe_layers = q4e_v6->moe_layers;
+    const int n_moe = (int) moe_layers.size();
+    LLAMA_LOAD_LOCALS;
+    const int64_t n_ff_exp = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff / n_expert_used;
+    const auto & ref = layers[moe_layers[0]];
+    const ggml_type up_type   = ref.ffn_up_exps != nullptr ? ref.ffn_up_exps->type : ref.ffn_gate_up_exps->type;
+    const ggml_type down_type = ref.ffn_down_exps->type;
+
+    ggml_init_params cp;
+    cp.mem_size   = (size_t) ggml_tensor_overhead() * (16 + n_moe);
+    cp.mem_buffer = nullptr;
+    cp.no_alloc   = true; // tensors are placed in the pool buffer below
+    q4e_v6->ctx = ggml_init(cp);
+    if (q4e_v6->ctx == nullptr) {
+        throw std::runtime_error(arch_name() + ": q4e v6 pool context init failed");
+    }
+
+    q4e_v6->up_pool   = ggml_new_tensor_3d(q4e_v6->ctx, up_type, n_embd, n_ff_exp, n_slots);
+    q4e_v6->gate_pool = ggml_new_tensor_3d(q4e_v6->ctx, up_type, n_embd, n_ff_exp, n_slots);
+    q4e_v6->down_pool = ggml_new_tensor_3d(q4e_v6->ctx, down_type, n_ff_exp, n_embd, n_slots);
+
+    q4e_v6->tables.assign(n_layer, nullptr);
+    for (int il : moe_layers) {
+        q4e_v6->tables[il] = ggml_new_tensor_1d(q4e_v6->ctx, GGML_TYPE_F32, n_expert);
+    }
+
+    size_t total = ggml_nbytes_pad(q4e_v6->up_pool) + ggml_nbytes_pad(q4e_v6->gate_pool) + ggml_nbytes_pad(q4e_v6->down_pool);
+    for (int il : moe_layers) {
+        total += ggml_nbytes_pad(q4e_v6->tables[il]);
+    }
+    ggml_backend_buffer_type_t pool_buft = q4e_v6_pool_buft_select(select_buft(moe_layers[0]), total);
+    ggml_backend_buffer_t pool_buf = ggml_backend_buft_alloc_buffer(pool_buft, total);
+    if (pool_buf == nullptr && !ggml_backend_buft_is_host(pool_buft)) {
+        LLAMA_LOG_WARN("%s: q4e v6 pool: device alloc failed, retrying on host\n", __func__);
+        pool_buft = ggml_backend_cpu_buffer_type();
+        pool_buf = ggml_backend_buft_alloc_buffer(pool_buft, total);
+    }
+    if (pool_buf == nullptr) {
+        throw std::runtime_error(arch_name() + ": q4e v6 pool buffer alloc failed");
+    }
+    LLAMA_LOG_WARN("%s: q4e v6 pool: slots=%d layers=%d experts/layer=%d total=%.1f MiB buft=%s\n",
+            __func__, n_slots, n_moe, (int) n_expert, total / (1024.0 * 1024.0),
+            ggml_backend_buft_name(pool_buft));
+    q4e_v6->buf = pool_buf;
+    ggml_backend_buffer_clear(q4e_v6->buf, 0);
+    if (ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->up_pool)   != GGML_STATUS_SUCCESS ||
+        ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->gate_pool) != GGML_STATUS_SUCCESS ||
+        ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->down_pool) != GGML_STATUS_SUCCESS) {
+        throw std::runtime_error(arch_name() + ": q4e v6 pool tensor init failed");
+    }
+    for (int il : moe_layers) {
+        if (ggml_backend_buffer_init_tensor(q4e_v6->buf, q4e_v6->tables[il]) != GGML_STATUS_SUCCESS) {
+            throw std::runtime_error(arch_name() + ": q4e v6 pool table init failed");
+        }
+    }
+
+    // host-resident originals for the hybrid CPU path + runtime IO bindings
+    q4e_v6->up_cpu.assign(n_layer, nullptr);
+    q4e_v6->gate_cpu.assign(n_layer, nullptr);
+    q4e_v6->down_cpu.assign(n_layer, nullptr);
+    std::vector<ggml_tensor *> up_full(n_moe), gate_full(n_moe), down_full(n_moe);
+    for (int li = 0; li < n_moe; ++li) {
+        const auto & layer = layers[moe_layers[li]];
+        if (layer.ffn_gate_up_exps != nullptr) {
+            // fused gate_up [n_embd, 2*n_ff, n_expert]: first half gate, second half up
+            const auto & gu = layer.ffn_gate_up_exps;
+            gate_full[li] = ggml_view_3d(q4e_v6->ctx, gu, gu->ne[0], n_ff_exp, gu->ne[2], gu->nb[1], gu->nb[2], 0);
+            up_full[li]   = ggml_view_3d(q4e_v6->ctx, gu, gu->ne[0], n_ff_exp, gu->ne[2], gu->nb[1], gu->nb[2], (size_t) n_ff_exp * gu->nb[1]);
+        } else {
+            up_full[li]   = layer.ffn_up_exps;
+            gate_full[li] = layer.ffn_gate_exps;
+        }
+        down_full[li] = layer.ffn_down_exps;
+        q4e_v6->up_cpu[moe_layers[li]]   = up_full[li];
+        q4e_v6->gate_cpu[moe_layers[li]] = gate_full[li];
+        q4e_v6->down_cpu[moe_layers[li]] = down_full[li];
+    }
+
+    {
+        std::vector<float> tp((size_t) n_expert, (float) n_slots); // n_slots = miss sentinel
+        for (int il : moe_layers) {
+            ggml_backend_tensor_set(q4e_v6->tables[il], tp.data(), 0, tp.size() * sizeof(float));
+        }
+    }
+
+    q4e_v6_runtime_cfg rc;
+    rc.n_layers = n_moe;
+    rc.n_expert = (int) n_expert;
+    rc.n_used   = (int) hparams.n_expert_used;
+    rc.n_slots  = n_slots;
+    rc.floor    = params.q4e_v6_pool_floor;
+    q4e_v6->rt.reset(new q4e_v6_runtime(rc));
+    for (int li = 0; li < n_moe; ++li) {
+        q4e_v6_layer_io io;
+        io.up_pool     = q4e_v6->up_pool;
+        io.gate_pool   = q4e_v6->gate_pool;
+        io.down_pool   = q4e_v6->down_pool;
+        io.table       = q4e_v6->tables[moe_layers[li]];
+        io.up_src      = ggml_get_data(up_full[li]);
+        io.gate_src    = ggml_get_data(gate_full[li]);
+        io.down_src    = ggml_get_data(down_full[li]);
+        io.up_stride   = up_full[li]->nb[2];
+        io.gate_stride = gate_full[li]->nb[2];
+        io.down_stride = down_full[li]->nb[2];
+        q4e_v6->rt->bind_layer(li, io);
+    }
+
+    // hand the pool buffer to the model: memory breakdown / VRAM-fit include it,
+    // and the model frees it on unload (q4e_v6 keeps the ctx and tensor pointers)
+    q4e_register_pool_buffer(pool_buf);
+    q4e_v6->buf = nullptr;
 }
 
 std::unique_ptr<llm_graph_context> llama_model_qwen4exp::build_arch_graph(const llm_graph_params & params) const {
     return std::make_unique<graph>(*this, params);
+}
+
+// q4e v6: read back the router selections of this round and run one promotion step
+// (LRU fills for the misses + slot table rewrite), so the next round starts warm
+void llama_model_qwen4exp::q4e_v6_after_compute(const ggml_cgraph * gf, int n_tokens) const {
+    if (!q4e_v6 || !q4e_v6->rt || !q4e_v6->rt->enabled() || n_tokens <= 0) {
+        return;
+    }
+    std::vector<int32_t> sel;
+    for (int il : q4e_v6->moe_layers) {
+        ggml_tensor * t = ggml_graph_get_tensor(gf, ("ffn_moe_sel_" + std::to_string(il)).c_str());
+        if (t == nullptr) {
+            continue; // pool path not taken for this layer in this graph
+        }
+        const int64_t count = ggml_nelements(t);
+        sel.resize((size_t) count);
+        ggml_backend_tensor_get(t, sel.data(), 0, (size_t) count * sizeof(int32_t));
+        const int ridx = (int) (std::find(q4e_v6->moe_layers.begin(), q4e_v6->moe_layers.end(), il) - q4e_v6->moe_layers.begin());
+        q4e_v6->rt->observe(ridx, sel.data(), count);
+    }
+    q4e_v6->rt->commit();
 }
 
 // Hyper-connections keep hc parallel residual streams [n_embd, hc, T] in place of layer norms.
@@ -912,21 +1076,38 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
 ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, const int il) {
     GGML_ASSERT(model.layers[il].ffn_gate_inp != nullptr);
 
-    ggml_tensor * moe_out =
-        build_moe_ffn(cur,
-            model.layers[il].ffn_gate_inp,
-            model.layers[il].ffn_up_exps,
-            model.layers[il].ffn_gate_exps,
-            model.layers[il].ffn_down_exps,
-            nullptr,
-            n_expert, n_expert_used,
-            LLM_FFN_SILU, true,
-            hparams.expert_weights_scale,
-            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-            nullptr, model.layers[il].ffn_gate_up_exps,
-            model.layers[il].ffn_up_exps_s,
-            model.layers[il].ffn_gate_exps_s,
-            model.layers[il].ffn_down_exps_s);
+    ggml_tensor * moe_out;
+    const auto & q4e_v6 = static_cast<const llama_model_qwen4exp &>(model).q4e_v6;
+    if (q4e_v6 != nullptr && q4e_v6->tables.size() > (size_t) il && q4e_v6->tables[il] != nullptr) {
+        // v6 global pool path: all MoE layers share one N-slot pool; hybrid: misses
+        // are computed on the host-resident original experts (C4-4)
+        moe_out =
+            build_moe_ffn_pool(cur,
+                model.layers[il].ffn_gate_inp,
+                q4e_v6->up_pool, q4e_v6->gate_pool, q4e_v6->down_pool,
+                n_expert, n_expert_used,
+                LLM_FFN_SILU, true,
+                hparams.expert_weights_scale,
+                LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+                q4e_v6->tables[il],
+                q4e_v6->up_cpu[il], q4e_v6->gate_cpu[il], q4e_v6->down_cpu[il]);
+    } else {
+        moe_out =
+            build_moe_ffn(cur,
+                model.layers[il].ffn_gate_inp,
+                model.layers[il].ffn_up_exps,
+                model.layers[il].ffn_gate_exps,
+                model.layers[il].ffn_down_exps,
+                nullptr,
+                n_expert, n_expert_used,
+                LLM_FFN_SILU, true,
+                hparams.expert_weights_scale,
+                LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+                nullptr, model.layers[il].ffn_gate_up_exps,
+                model.layers[il].ffn_up_exps_s,
+                model.layers[il].ffn_gate_exps_s,
+                model.layers[il].ffn_down_exps_s);
+    }
     cb(moe_out, "ffn_moe_out", il);
 
     // shared experts, as in the Qwen3Next reference

@@ -5,6 +5,9 @@
 #include "llama-hparams.h"
 #include "llama-adapter.h"
 
+#include "ggml-backend.h"
+#include "llama-impl.h"
+
 #include <cstdint>
 #include <vector>
 #include <memory>
@@ -1001,6 +1004,32 @@ inline int64_t q4e_pool_count_out_of_pool(const int32_t * ids, int64_t n_ids, in
 // q4e v6: global expert pool shared by all MoE layers (A-16 phase 2)
 // slots are filled by the runtime promotion loop (q4e-v6-runtime) at decode time;
 // tables start all-sentinel (n_slots) and converge to the active set from round 1
+
+// choose the pool buffer type: the MoE compute device when the pool fits with headroom,
+// else the host (the hybrid CPU path keeps results correct either way). the device free
+// memory reported on Windows WDDM overstates what one allocation can get, so this is a
+// hint only: callers must still retry on the host when the device allocation fails
+inline ggml_backend_buffer_type_t q4e_v6_pool_buft_select(
+        ggml_backend_buffer_type_t gpu_buft, size_t pool_bytes) {
+    ggml_backend_buffer_type_t cpu_buft = ggml_backend_cpu_buffer_type();
+    if (gpu_buft == nullptr || ggml_backend_buft_is_host(gpu_buft)) {
+        return cpu_buft;
+    }
+    ggml_backend_dev_t dev = ggml_backend_buft_get_device(gpu_buft);
+    size_t free = 0, total = 0;
+    if (dev != nullptr) {
+        ggml_backend_dev_memory(dev, &free, &total);
+    }
+    const size_t margin = (size_t) 3 * 1024 * 1024 * 1024;
+    if (free == 0 || pool_bytes + margin > free) {
+        LLAMA_LOG_WARN("q4e v6 pool: %.1f MiB does not fit in %.1f MiB free on %s; using host pool\n",
+                pool_bytes / (1024.0 * 1024.0), free / (1024.0 * 1024.0),
+                ggml_backend_buft_name(gpu_buft));
+        return cpu_buft;
+    }
+    return gpu_buft;
+}
+
 struct q4e_v6_pool_state {
     ggml_context * ctx = nullptr;
     ggml_backend_buffer_t buf = nullptr;

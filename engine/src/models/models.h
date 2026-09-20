@@ -2188,6 +2188,9 @@ struct llama_model_qwen3next : public llama_model_base {
     llama_model_qwen3next(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
+    void q4e_v6_pool_alloc() override;
+
+    std::unique_ptr<q4e_v6_pool_state> q4e_v6_pool_pending; // staged spec, allocated after weights
 
     struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);
@@ -2286,6 +2289,9 @@ struct llama_model_qwen4exp : public llama_model_base {
 
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
+    void q4e_v6_pool_alloc() override;
+
+    std::unique_ptr<q4e_v6_pool_state> q4e_v6_pool_pending; // staged spec, allocated after weights
 
     struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);
@@ -2382,6 +2388,10 @@ struct llama_model_qwen4exp : public llama_model_base {
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+
+    void q4e_v6_after_compute(const struct ggml_cgraph * gf, int n_tokens) const override;
+
+    std::unique_ptr<q4e_v6_pool_state> q4e_v6; // v6 global expert pool, null when off
 };
 
 struct llama_model_qwen35moe : public llama_model_base {

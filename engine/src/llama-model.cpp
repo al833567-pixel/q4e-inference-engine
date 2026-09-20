@@ -1815,6 +1815,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
+    // q4e v6: allocate the expert pool AFTER all weight buffers hold their VRAM,
+    // so the pool sees the true residual budget (WDDM reserve makes early checks lie)
+    q4e_v6_pool_alloc();
+
     if (use_mmap_buffer) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));

@@ -773,6 +773,10 @@ struct llama_model {
         GGML_UNUSED(n_tokens);
     }
 
+    // q4e v6: allocate the deferred expert pool (staged by load_arch_tensors);
+    // runs after all weight buffers exist so the VRAM budget is real; no-op by default
+    virtual void q4e_v6_pool_alloc() {}
+
 protected:
     llama_model_params params;
 
