@@ -21,6 +21,7 @@
 #        define NOMINMAX
 #    endif
 #    include <windows.h>
+#    include <psapi.h>
 #else
 #    include <sys/mman.h>
 #    include <unistd.h>
@@ -53,6 +54,17 @@ static size_t q4e_free_ram() {
 #else
     return (size_t) sysconf(_SC_AVPHYS_PAGES)*q4e_page_size();
 #endif
+}
+
+// the mapped model pages this process already touched count as used, but the RAM tier locks those same pages
+static size_t q4e_resident_ram() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return (size_t) pmc.WorkingSetSize;
+    }
+#endif
+    return 0;
 }
 
 // locks whole pages; a page shared by two blocks stays locked until both are unlocked, so unlock only frees the
@@ -128,8 +140,10 @@ constexpr uint64_t Q4E_PACK_MAGIC   = 0x31504b4e57443451ull; // "Q4DWNKP1"
 constexpr uint32_t Q4E_PROF_MAGIC   = 0x46503451u;           // "Q4PF"
 constexpr size_t   Q4E_PACK_ALIGN   = 65536;
 static float       Q4E_DECAY        = 0.995f; // per token, half-life ~140 tokens (env Q4E_DECAY)
-static float       Q4E_HYSTERESIS   = 1.25f;  // a block replaces a VRAM block only if it scores this much higher (env Q4E_HYST)
-static size_t      Q4E_SWAP_BYTES   = 32u*1048576; // copies per ubatch once the pool is full (env Q4E_SWAP_MB)
+static float       Q4E_HYSTERESIS   = 1.1f;   // a block replaces a VRAM block only if it scores this much higher (env Q4E_HYST)
+static size_t      Q4E_SWAP_BYTES   = 128u*1048576; // copies per ubatch once the pool is full (env Q4E_SWAP_MB)
+static size_t      Q4E_RAM_SWAP_BYTES = 0; // blocks read from the SSD into the RAM tier per ubatch (env Q4E_RAM_SWAP_MB), off:
+                                                 // on GLM-5.3-Flash with 47 GB of RAM it competed with the CPU blocks for the SSD
 constexpr int      Q4E_MAX_BACKENDS = 16;
 
 } // namespace
@@ -198,6 +212,18 @@ struct llama_q4e::impl {
         size_t  off; // in the staging buffer of the device
     };
 
+    struct blk_ref {
+        float   s;
+        int32_t il;
+        int32_t v;
+    };
+
+    struct ram_move {
+        int32_t il;
+        int32_t v;
+        bool    lock; // false: unlock
+    };
+
     struct counters {
         uint64_t tokens   = 0;
         uint64_t ubatches = 0;
@@ -230,6 +256,7 @@ struct llama_q4e::impl {
     size_t ram_budget = 0;
 
     std::vector<fill> pending;
+    std::vector<ram_move> ram_moves; // done by the worker after the copies, the in_ram flags are set when planned
     std::vector<int32_t> ids;
 
     // the copies into VRAM: a worker reads the blocks into the staging buffers and queues them on the second
@@ -263,6 +290,9 @@ struct llama_q4e::impl {
         }
         if (const char * e = getenv("Q4E_HYST")) {
             Q4E_HYSTERESIS = (float) atof(e);
+        }
+        if (const char * e = getenv("Q4E_RAM_SWAP_MB")) {
+            Q4E_RAM_SWAP_BYTES = (size_t) atoi(e)*1048576;
         }
         if (const char * e = getenv("Q4E_SWAP_MB")) {
             Q4E_SWAP_BYTES = (size_t) atoi(e)*1048576;
@@ -816,6 +846,35 @@ struct llama_q4e::impl {
         }
     }
 
+    // worker: the RAM tier changes - unlocking first frees the budget, locking reads the block from the SSD
+    void do_ram_moves() {
+        for (int pass = 0; pass < 2; ++pass) {
+            for (const ram_move & m : ram_moves) {
+                if (m.lock != (pass == 1)) {
+                    continue;
+                }
+                const layer & l = layers[m.il];
+                const group & g = groups[l.ig];
+                const uint8_t * ptr[N_PARTS];
+                block_ptrs(l, g, m.v, ptr);
+                if (m.lock) {
+                    llama_memory_ranges r;
+                    for (int p = 0; p < N_PARTS; ++p) {
+                        r.push_back({ ptr[p], g.blk_bytes[p] });
+                    }
+                    llama_prefetch(r);
+                }
+                for (int p = 0; p < N_PARTS; ++p) {
+                    if (m.lock) {
+                        locker.lock(ptr[p], g.blk_bytes[p]);
+                    } else {
+                        locker.unlock(ptr[p], g.blk_bytes[p]);
+                    }
+                }
+            }
+        }
+    }
+
     void work() {
         std::unique_lock<std::mutex> lk(mtx);
         while (true) {
@@ -825,14 +884,78 @@ struct llama_q4e::impl {
             }
             lk.unlock();
             copy_fills();
+            do_ram_moves();
             lk.lock();
             job = false;
             cv.notify_all();
         }
     }
 
+    bool worker_idle() {
+        std::lock_guard<std::mutex> lk(mtx);
+        return !job;
+    }
+
+    // the RAM tier: the best scored blocks read from the SSD in this ubatch replace the worst scored RAM blocks
+    void plan_ram(std::vector<blk_ref> & cand) {
+        std::sort(cand.begin(), cand.end(), [](const blk_ref & a, const blk_ref & b) {
+            return a.s != b.s ? a.s > b.s : a.il != b.il ? a.il < b.il : a.v < b.v;
+        });
+        cand.erase(std::unique(cand.begin(), cand.end(), [](const blk_ref & a, const blk_ref & b) { return a.il == b.il && a.v == b.v; }), cand.end());
+
+        size_t budget = Q4E_RAM_SWAP_BYTES;
+        size_t n_try = 0;
+        for (; n_try < cand.size(); ++n_try) {
+            const size_t bytes = groups[layers[cand[n_try].il].ig].slot_bytes;
+            if (bytes > budget) {
+                break;
+            }
+            budget -= bytes;
+        }
+        if (n_try == 0) {
+            return;
+        }
+
+        // the worst scored blocks of the RAM tier
+        std::vector<blk_ref> victims;
+        for (size_t il = 0; il < layers.size(); ++il) {
+            const layer & l = layers[il];
+            if (l.ig < 0) {
+                continue;
+            }
+            const int32_t nb = groups[l.ig].n_blocks;
+            for (int32_t v = 0; v < l.n_virt; ++v) {
+                if (l.in_ram[v]) {
+                    victims.push_back({ score_now(l, v / nb), (int32_t) il, v });
+                }
+            }
+        }
+        const size_t k = std::min(victims.size(), n_try);
+        std::partial_sort(victims.begin(), victims.begin() + k, victims.end(), [](const blk_ref & a, const blk_ref & b) { return a.s < b.s; });
+
+        size_t planned = locker.locked;
+        size_t iv = 0;
+        for (size_t i = 0; i < n_try; ++i) {
+            layer & l = layers[cand[i].il];
+            const size_t bytes = groups[l.ig].slot_bytes;
+            if (planned + bytes > ram_budget) {
+                if (iv >= k || cand[i].s <= victims[iv].s*Q4E_HYSTERESIS + 0.5f) {
+                    break;
+                }
+                layer & lv = layers[victims[iv].il];
+                lv.in_ram[victims[iv].v] = 0;
+                ram_moves.push_back({ victims[iv].il, victims[iv].v, false });
+                planned -= std::min(planned, groups[lv.ig].slot_bytes);
+                iv++;
+            }
+            l.in_ram[cand[i].v] = 1;
+            ram_moves.push_back({ cand[i].il, cand[i].v, true });
+            planned += bytes;
+        }
+    }
+
     void issue_fills() {
-        if (pending.empty()) {
+        if (pending.empty() && ram_moves.empty()) {
             return;
         }
         {
@@ -848,9 +971,11 @@ struct llama_q4e::impl {
             std::unique_lock<std::mutex> lk(mtx);
             cv.wait(lk, [this]() { return !job; });
             busy = false;
-        } else if (!pending.empty()) {
+        } else if (!pending.empty() || !ram_moves.empty()) {
             copy_fills(); // planned but not handed to the worker (start-up)
+            do_ram_moves();
         }
+        ram_moves.clear();
         if (pending.empty()) {
             return;
         }
@@ -987,8 +1112,8 @@ struct llama_q4e::impl {
         for (const group & g : groups) {
             need += g.host_bytes - (size_t) g.n_slots*g.slot_bytes;
         }
-        const size_t headroom = (size_t) 4*1073741824ull;
-        const size_t free_ram = q4e_free_ram();
+        const size_t headroom = (size_t) 6*1073741824ull;
+        const size_t free_ram = q4e_free_ram() + q4e_resident_ram();
         ram_budget = params.ram_mib >= 0 ? (size_t) params.ram_mib*1048576 : (free_ram > headroom ? free_ram - headroom : 0);
         ram_budget = std::min(ram_budget, need);
         locker.reserve(ram_budget + 256u*1048576);
@@ -1071,7 +1196,12 @@ struct llama_q4e::impl {
         const auto t0 = q4e_clock::now();
         const double ms_wall = q4e_ms(t_begin, t0);
 
-        finish_fills();
+        // the moves planned after an earlier ubatch: finished, or still running (blocks read from the SSD are slow),
+        // then this ubatch plans none and does not wait
+        const bool ready = !busy || worker_idle();
+        if (ready) {
+            finish_fills();
+        }
 
         // count the selections, read at once from each device
         const int64_t n_used = model.hparams.n_expert_used_max();
@@ -1086,6 +1216,7 @@ struct llama_q4e::impl {
         }
         struct cand { float s; int32_t il; int32_t v; };
         std::vector<std::vector<cand>> cands(groups.size());
+        std::vector<blk_ref> ram_cands; // blocks read from the SSD
         counters c;
         for (size_t il = 0; il < layers.size(); ++il) {
             layer & l = layers[il];
@@ -1112,6 +1243,9 @@ struct llama_q4e::impl {
                         }
                         if (l.slot_of[v] < 0) {
                             cands[l.ig].push_back({ l.score[e], (int32_t) il, v });
+                            if (!l.in_ram[v]) {
+                                ram_cands.push_back({ l.score[e], (int32_t) il, v });
+                            }
                         }
                     }
                 }
@@ -1120,7 +1254,7 @@ struct llama_q4e::impl {
         token += n_tokens;
 
         // move the best scored missing blocks into VRAM, in place of worse scored ones
-        for (size_t ig = 0; ig < groups.size(); ++ig) {
+        for (size_t ig = 0; ig < groups.size() && ready; ++ig) {
             group & g = groups[ig];
             auto & cg = cands[ig];
             if (cg.empty() || g.n_slots == 0) {
@@ -1177,6 +1311,11 @@ struct llama_q4e::impl {
             }
         }
 
+        // the RAM tier follows too: the best scored blocks read from the SSD replace the worst scored RAM blocks
+        if (ready && !ram_cands.empty()) {
+            plan_ram(ram_cands);
+        }
+
         for (layer & l : layers) {
             if (l.ig >= 0 && l.dirty) {
                 upload_table(l);
@@ -1184,7 +1323,9 @@ struct llama_q4e::impl {
         }
 
         // the worker reads the blocks and queues the copies while the next ubatch computes
-        issue_fills();
+        if (ready) {
+            issue_fills();
+        }
 
         // a killed process does not run the destructor: keep the profile on disk
         if (q4e_ms(t_saved, t0) > 60000.0) {
