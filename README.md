@@ -1,5 +1,9 @@
 # 推理工具 — Qwen3.8-Flash-Next（qwen4exp）推理（v6 主線）
 
+> **v7（2026-10-22，目前主線）**：`engine-v7/` = llama.cpp b11796 + q4e 三層專家快取（VRAM/RAM/SSD、專家切 block、CPU 先算未命中、熱門 block 非同步搬進 VRAM、profile 記憶）。能跑 Qwen3.8-Flash-Next 與 GLM-5.3-Flash，VRAM 池依顯卡剩餘容量自動調整。
+> 實測（T10 16 GB）：Flash-Next **18.4 / 21.3 t/s**（官方 15.5 / 16.4），GLM 2.1–2.3 t/s。完整報告：[REPORT_v7.md](REPORT_v7.md)；交接：[03_v7_進度交接.md](03_v7_進度交接.md)；建置：`engine-v7\build-clang-t10.bat`；啟動：`D:\AI model\bat\Run_q4e-*.bat`。
+> 以下為 v6 歷史內容。
+
 > **現況**：A-16.0~A-16.9 已交付（17 測試 CPU 綠）。**舊 A/B 分工規劃已廢除**，改由 **Task C 單軌執行全部工作**：專家級（每層小專家）動態快取＋VRAM 內破碎 Gather，只把活躍工作集（~6B 量級）放 GPU，**整層快取非目標**。主規劃見 [02_主規劃_TaskC.md](02_主規劃_TaskC.md)；**未經用戶「開始」訊號不得動工**。
 > **歷史版本**：v4.1/v5 **已全面廢棄**，本 repo 不保留其歷史程式碼與除錯紀錄（證據/報告/舊手冊已清除；git log 可查）。
 > **策略**：**C++ 唯一**（`engine/` q4e 樹）；交付樹零 .py/.ps1（上游 `engine/` 開發工具除外）。
