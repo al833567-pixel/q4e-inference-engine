@@ -1,124 +1,153 @@
-# q4e v7 報告（2026-10-22）
+# q4e v7 報告（2026-10-22，第二輪最佳化後）
 
-硬體：Tesla T10 16 GB（CUDA）＋ Ryzen 7 H 255（Zen 4，8C/16T，AVX-512）（12 執行緒、AVX-512）＋ 48 GB RAM ＋ NVMe。
-引擎：`engine-v7/`，以 llama.cpp b11796 為底，加入 q4e 三層專家快取。clang-cl 靜態建置，以符合 Smart App Control。
+- 硬體：Tesla T10 16 GB（CUDA）＋ Ryzen 7 H 255（Zen 4，8C/16T，AVX-512）＋ 48 GB RAM ＋ NVMe。
+- 引擎：`engine-v7/`，以 llama.cpp b11796 為底，加入 q4e 三層專家快取。clang-cl 靜態建置，以符合 Smart App Control。
 
 ## 1. 結論
 
 | 模型 | 設定 | tg 文章 | tg 程式 | pp | 對照 |
 |---|---|---|---|---|---|
-| Qwen3.8-Flash-Next IQ2_XS | q4e + MTP n=3 | **18.4** | **21.3** | 90–124 | 官方 b11796：15.5 / 16.4，pp 54 |
-| Qwen3.8-Flash-Next IQ2_XS | q4e 不用 MTP | 18.0 | 16.9 | ~101 | Strata（T10+CPU）：46 / 54.5 |
-| GLM-5.3-Flash Maya-S24 | q4e，B=1 | 2.1–2.3 | 2.0–2.1 | 26–34 | Maya：3.3–3.9 |
+| Qwen3.8-Flash-Next IQ2_XS | q4e + MTP n=3，8 執行緒 | **19.1–20.5** | **26.5–28.0** | ~210 | 官方 b11796：15.5 / 16.4，pp 54 |
+| Qwen3.8-Flash-Next IQ2_XS | q4e 不用 MTP | 19.2 | 20.0 | ~200 | Strata（T10+CPU）：46 / 54.5 |
+| GLM-5.3-Flash Maya-S24 | q4e，每專家 1 塊 | **4.3–5.3** | | ~37 | Maya：3.3–3.9 |
 
-- Flash-Next 比官方快 +19%（文章）、+30%（程式），pp 快 1.7–2.3 倍。
-- **50 t/s 的目標沒有達成。** 理由見第 5 節；Strata 的 46/54.5 走的是不同的路線。
-- GLM 受 SSD 頻寬限制：專家共 80 GiB，VRAM+RAM 只有 43 GiB。q4e 在 GLM 上比 Maya 慢。
+- 與第一輪（18.4 / 21.3，pp 90–124；GLM 2.1–2.3）相比：
+  - Flash-Next 文章 +8%、程式 +27%，pp 約 2 倍。
+  - GLM 約 2.3 倍，現在比 Maya 快。
+- Flash-Next 對官方：文章 +27%，程式 +66%，pp 約 4 倍。
+- **50 t/s 的目標還沒有達成。** 理由見第 6 節。
 
-## 2. 每個 token 花在哪（Flash-Next，單 token 解碼，`GGML_SCHED_TIMING=1`，每 64 token 取平均）
+## 2. 每個 token 花在哪（Flash-Next，`GGML_SCHED_TIMING=1`，每 64 token 平均）
+
+### 單 token 解碼（約 46 ms → 21.5 t/s，server 實測 19–20）
+
+| 階段 | 第一輪 ms | 現在 ms |
+|---|---|---|
+| T10 計算（dense、router、VRAM 命中的專家 block） | 27.5 | 24.7 |
+| T10 等待並接收 CPU 的結果（copy-in） | 5.8 | 8.4 |
+| CPU 計算（沒命中 VRAM 的專家 block） | 14.5 | **4.8** |
+| CPU 接收輸入（copy-in） | 2.7 | 2.6 |
+| 分層管理（統計、搬移規劃、table 上傳） | 3.2 | 2.8 |
+| 空隙 | ~1.5 | ~2.8 |
+| **合計** | **~55** | **~46** |
+
+### MTP：一次 verify pass，4 個 token，約 87 ms
 
 | 階段 | ms |
 |---|---|
-| T10 計算（attention、dense、shared expert、router，以及 VRAM 命中的專家 block） | 27.5 |
-| CPU 計算（RAM／SSD 命中的專家 block） | 14.5 |
-| GPU←→CPU 資料搬移（CUDA copy-in 5.8 ＋ CPU copy-in 2.7） | 8.5 |
-| 分層管理（統計、規劃、table 上傳、同步） | 3.2 |
-| 排程與同步的空隙 | ~1.5 |
-| **合計** | **~55 ms/token → 18 t/s** |
+| T10 計算 | 40 |
+| T10 copy-in | 9 |
+| CPU 計算 | 16 |
+| CPU copy-in | 4 |
+| 分層管理 | 5 |
+| 空隙 | ~5 |
+| MTP draft（3 個草稿 token） | 6.6 |
+| **合計** | **~87** |
 
-- 用 MTP 時，一次 verify pass 跑 4 個 token：
-  - 目標模型約 104 ms（每 token 26 ms，GPU 與 CPU 重疊比較好）。
-  - MTP draft 約 34 ms。
-  - 平均每次接受 2.5–3.2 個 token，所以是 18.4–21.3 t/s。
-- Prefill：每個 token 11 ms，2182 個 token 共 24 s。
+平均每次 pass 接受 2.75 個 token（各位置接受率 0.79 / 0.56 / 0.39），換算約 31 t/s。server 實測 19–28 t/s：文章的接受率較低，另有 sampling 和 HTTP 的開銷。
 
 ## 3. 三層各放什麼
 
-專家依 decayed score（每次使用 +1，每步 ×0.995）排序。分數高的放 VRAM，次高的鎖在 RAM，其餘留在 SSD，靠 mmap 按需讀取。
+專家依 decayed score 排序（每次使用 +1，每步 ×0.995）：
+
+- 分數最高的放 VRAM。
+- 次高的鎖在 RAM。
+- 其餘留在 SSD，靠 mmap 按需讀取。
 
 ### Qwen3.8-Flash-Next（48 層，每層 512 專家，每個專家切 2 個 block）
 
 | 層 | 容量 | 內容 | 解碼時命中率 |
 |---|---|---|---|
-| VRAM | 7.10 GiB（free VRAM − 640 MiB，自動調整） | 約 21% 的 block，就是本次對話最常用的那些。每 64 token 換入約 1 GiB | 70–88% |
-| RAM | 25.9 GiB（VirtualLock） | 其餘全部的 block | 11–30% |
-| SSD | 0 GiB | — | 0–2%（暖機期間） |
+| VRAM | 7.1 GiB（用 MTP）／9.4 GiB（不用 MTP）；自動取 free VRAM − 640 MiB | 這次對話最常用的 21–28% block，每 64 token 換入約 1 GiB | 單 token 78–83%；MTP 63–70% |
+| RAM | 23.6–25.9 GiB（VirtualLock） | 其餘全部 block | 17–34% |
+| SSD | 0 GiB | — | 0–3% |
 
-- block 大小：
-  - iq2_s 層 0.72 MiB（34 層）
-  - iq2_xxs 層 0.62 MiB（11 層）
-  - iq1_m 層 0.56 MiB（3 層）
-- 每個專家的 down 部分重新打包成 `<model>.q4e-down.bin`，block 才能切成連續的小塊。
+block 大小：
+- iq2_s 層 0.72 MiB（34 層）
+- iq2_xxs 層 0.62 MiB（11 層）
+- iq1_m 層 0.56 MiB（3 層）
 
 ### GLM-5.3-Flash（42 層 MoE，每個專家 1 個 block，6.7–7.2 MiB）
 
 | 層 | 容量 | 內容 | 解碼時命中率 |
 |---|---|---|---|
-| VRAM | 7.78 GiB | 前 10% 的專家 | 27–42% |
-| RAM | 35.2 GiB | 接下來的 44% | 22–46% |
-| SSD | 37.1 GiB | 其餘 | 30–48% |
+| VRAM | 7.78 GiB | 前 10% 的專家 | 25–32% |
+| RAM | 35.2 GiB | 接下來的 44% | 46% |
+| SSD | 37.1 GiB | 其餘 | 22–29% |
 
-GLM 每個 token 約 460 ms：
-- graph 410 ms，大多是 CPU 等 SSD 的 page fault。
-- 分層管理 40–60 ms。
+GLM 每個 token 約 200–240 ms（第一輪約 460 ms）：
+- graph 150–180 ms。
+- 分層管理 50–60 ms。
 
 ## 4. 「個人使用、對話只用到一部分專家」：實測工作集
 
-| 模型 | token 數 | 用到的專家 | 90% 的使用量落在 | 95% | 99% |
+| 模型 | token 數 | 用到的專家 | 90% 的使用落在 | 95% | 99% |
 |---|---|---|---|---|---|
 | Flash-Next | 99 | 11.4 GiB | 6.7 GiB | 8.3 GiB | 10.7 GiB |
 | Flash-Next | 355 | 17.4 GiB | 8.5 GiB | 10.9 GiB | 15.1 GiB |
-| Flash-Next | 894 | 24.5 GiB | 12.0 GiB | 15.2 GiB | 20.4 GiB |
+| Flash-Next | 897 | 24.6 GiB | 12.2 GiB | 15.3 GiB | 20.4 GiB |
 | GLM | 86 | 44.3 GiB | 28.0 GiB | 34.8 GiB | 42.4 GiB |
 
-- 這個假設部分成立：使用量很集中，Flash-Next 有 90% 落在 12 GiB 內。
-- 但工作集會跟著 token 數成長，換了話題也會跟著移動。VRAM 只有 7 GiB，所以命中率卡在 70–88%。
-- GLM 光是 86 個 token，工作集就有 44 GiB，已經超過 VRAM+RAM 的 43 GiB。
+使用量確實集中，但工作集會隨對話成長、移動。VRAM 7–9 GiB 只裝得下約 90% 使用量的一半到七成。
 
-## 5. 試過的方向與結果
+## 5. 第二輪改了什麼
 
-| 方向 | 結果 |
+| 改動 | 結果 |
 |---|---|
-| 專家切更小（Flash-Next 每專家 B=1/2/5 個 block） | 13.9 / 11.0 / 9.6 t/s（VRAM 層關閉時測）。切得越細越慢，因為每多一份就多一組 kernel 與搬移。自動模式選 ≤1 MiB 的 block（Flash-Next B=2，GLM B=1） |
-| 非同步搬移：第二條 CUDA stream＋pinned staging＋worker thread | 搬移不再擋住解碼，分層管理從 >10 ms 降到 1–3 ms |
-| GPU 前段與 CPU split 重疊（scheduler early launch） | 有效，已預設開啟 |
-| AVX-512 多列 IQ2 kernel（移植自 Maya，MIT） | CPU 專家計算達 31.6 GB/s（IQ2_S）與 42.8 GB/s（Q2_0） |
-| profile 檔：重開時直接把常用專家填進 VRAM | 第一個請求就有 60% 以上的命中率 |
-| 自適應 RAM 層（SSD→RAM 換入） | GLM 上與 CPU 搶 SSD，3.1 降到 2.4，**預設關閉**（`Q4E_RAM_SWAP_MB`） |
-| RAM 預算計入已映射頁 | 修正 Flash-Next 有 13 GiB 落在 SSD 的問題（14.1 回到 18.4 t/s） |
-| BF16→F16（pre-Ampere） | +1%，改為 opt-in（`LLAMA_BF16_AS_F16=1`） |
-| 16 執行緒、n_max 2/4、reserve 256、`--cpu-moe-draft`、poll | 都沒有改善 |
-| 780M iGPU 當第四層 | 需要 Vulkan SDK（要系統管理員權限），而且 Smart App Control 擋未簽章 DLL。沒有做 |
+| **略過低權重的未命中專家**（`Q4E_SKIP`，預設 0.12：權重不到該 token 總路由權重 12% 的未命中專家不算，命中的照算） | Flash-Next CPU 每 token 12.6 → 5.2 ms；GLM 少讀很多 SSD，2.1 → 5.3 t/s。輸出仍通順。**這是有損的**，Strata 也有類似做法；設 `Q4E_SKIP=0` 即回到精確模式 |
+| CPU 端 routing op：CPU 自己由 host 端 slot table 算出 ids／權重，並寫入選擇結果 | 省掉 selection 從 GPU 讀回 |
+| GPU 端保留自己的 routing（`Q4E_ROUTE_GPU=1`，預設） | GPU 的命中 block 不必等 CPU 來回：MTP 17.9 / 25.2 → 18.8 / 27.1 |
+| 執行緒 12 → 8 | CPU 那段很短，執行緒少，barrier 開銷也少：+1–2 t/s；16 執行緒反而掉到 16 / 21 |
+| CUDA op profiler 改用 event 計時 | 不再每個 op 同步，數字比較準 |
 
-### 為什麼到不了 50 t/s
+### 試了但沒有用
 
-- 光是 dense 部分，就要在 T10 上跑約 2000 個小 op，每 token 27 ms。即使 100% 命中 VRAM，上限也只有 ~35 t/s；加上 MTP 約 45 t/s。
-- 要超過 50 t/s，需要的是 GPU 端的 op 融合或 micro-batch pipeline，而不是快取：
-  - 減少 kernel 數量和 launch 開銷；
-  - 或把 GPU 與 CPU 排成兩條 token 管線交錯執行。
-- Strata 達到 46/54.5，是因為它走完全不同的執行器路線。
+| 改動 | 結果 |
+|---|---|
+| 專家切更細（GLM 每專家 2 塊） | VRAM 命中率不變（27%）且更慢。原因：被選中的專家，每一塊每次都要算，所以各塊熱度一樣，切細無法讓 VRAM 多放熱門部分 |
+| MTP draft 的專家也交給 q4e（`Q4E_DRAFT_MIB`） | draft 每步慢 2.5 倍，主池反而變小：8.5 / 14.5 t/s，預設關閉 |
+| KV cache q8_0 | 沒有差別 |
+| MTP n=4 | 程式 27.4，但文章 16.7，平均沒比 n=3 好 |
+| 第一輪已試：16 執行緒、reserve 256、`--cpu-moe-draft`、poll、BF16→F16、自適應 RAM 層 | 沒有改善 |
 
-## 6. 使用
+## 6. 為什麼還到不了 50 t/s
 
-- `D:\AI model\bat\Run_q4e-Flash-Next.bat`（建議使用）
+- 現在的瓶頸是 T10 本身：單 token 時 GPU 佔約 33 ms（計算 24.7 ＋ 等待 8.4），CPU 只剩約 5 ms。
+- 這個架構（hyper-connections、linear attention、indexer）在 llama.cpp 裡，每個 token 要跑約 2000 個小 kernel。即使 CUDA graph 已經開著，dense 部分仍要 ~25 ms。
+- 要到 50 t/s，需要 GPU 端的 kernel 融合，把每層幾十個小 op 合成幾個。這是自己寫 decode kernel 的工作，Strata 就是這麼做的；不是快取或分層能解決的。
+- 次要的改善空間：把 GPU routing 的 ~14 個小 op 寫成一個 CUDA op，估計省 2–3 ms/token。
+
+## 7. 使用
+
+- `D:\AI model\bat\Run_q4e-Flash-Next.bat`（建議）
 - `D:\AI model\bat\Run_q4e-GLM-5.3-Flash.bat`
-- 選項：
-  - `--q4e`
-  - `--q4e-blocks N`
-  - `--q4e-vram-mib`
-  - `--q4e-ram-mib`
-  - `--q4e-reserve-mib`（預設 640）
-  - `--q4e-profile 路徑|none`
-- 環境變數：
-  - `Q4E_SWAP_MB`（每步換入 VRAM 的上限，預設 128）
-  - `Q4E_HYST`（換入門檻，預設 1.1）
-  - `Q4E_DECAY`（預設 0.995）
-  - `Q4E_RAM_SWAP_MB`（預設 0）
-  - `GGML_SCHED_TIMING=1`（每段 ms）
-- 建置：`engine-v7\build-clang-t10.bat`
+
+選項：
+- `--q4e`
+- `--q4e-blocks N`
+- `--q4e-vram-mib`
+- `--q4e-ram-mib`
+- `--q4e-reserve-mib`（預設 640）
+- `--q4e-profile 路徑|none`
+
+環境變數：
+- `Q4E_SKIP`（預設 0.12，0 = 精確）
+- `Q4E_ROUTE_GPU`（預設 1）
+- `Q4E_SWAP_MB`（預設 128；GLM bat 設 32）
+- `Q4E_HYST`（預設 1.1）
+- `Q4E_DECAY`（預設 0.995）
+- `Q4E_RAM_SWAP_MB`（預設 0）
+- `Q4E_DRAFT_MIB`（預設 0）
+- `GGML_SCHED_TIMING=1`（各段 ms）
+- `GGML_CUDA_PROFILE=1` ＋ `GGML_CUDA_DISABLE_GRAPHS=1`（各 op 的 GPU 時間）
+
+建置：`engine-v7\build-clang-t10.bat`。
+- Smart App Control 偶爾會擋下新編出的 llama-server.exe。
+- 遇到時，隨意改一行字串再編一次即可；不需要更改系統設定。
 
 程式碼位置：
 - `engine-v7/src/llama-q4e.{h,cpp}`
-- `engine-v7/src/llama-graph.cpp`（`build_moe_ffn_q4e`）
-- `engine-v7/ggml/src/ggml-cpu/`（`mul_mat_id` 與 kernel）
-- `engine-v7/ggml/src/ggml-backend.cpp`（timing 與 overlap）
+- `engine-v7/src/llama-graph.cpp`（`build_moe_ffn_q4e`、`q4e_route_*`）
+- `engine-v7/ggml/src/ggml-cpu/`
+- `engine-v7/ggml/src/ggml-backend.cpp`
+- `engine-v7/ggml/src/ggml-cuda/ggml-cuda.cu`
