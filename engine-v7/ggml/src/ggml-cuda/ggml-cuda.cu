@@ -5240,8 +5240,10 @@ struct ggml_cuda_op_profile {
         }
         std::string key = name + " (" + ggml_op_desc(node);
         if (node->src[0] && (node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID)) {
-            key += std::string(" ") + ggml_type_name(node->src[0]->type);
+            key += std::string(" ") + ggml_type_name(node->src[0]->type) + " [" + std::to_string(node->src[0]->ne[0]) + "x" +
+                std::to_string(node->src[0]->ne[1]) + "]";
         }
+        key += " t" + std::to_string(node->op == GGML_OP_MUL_MAT_ID ? node->ne[2] : node->ne[1]);
         key += ")";
         return key;
     }
@@ -5303,7 +5305,7 @@ struct ggml_cuda_op_profile {
             total += e.second.first;
         }
         fprintf(stderr, "CUDA op profile: %.1f ms total\n", total);
-        for (size_t i = 0; i < v.size() && i < 70; ++i) {
+        for (size_t i = 0; i < v.size() && i < 110; ++i) {
             fprintf(stderr, "  %9.1f ms %5.1f%% %8lld  %s\n", v[i].second.first, 100.0*v[i].second.first/total, (long long) v[i].second.second, v[i].first.c_str());
         }
     }

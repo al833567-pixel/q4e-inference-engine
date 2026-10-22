@@ -383,7 +383,8 @@ int main(int argc, char ** argv) {
         for (shape s : { shape{ GGML_TYPE_Q8_0, 10240, 320 }, shape{ GGML_TYPE_Q8_0, 320, 10240 }, shape{ GGML_TYPE_BF16, 10240, 320 },
                          shape{ GGML_TYPE_BF16, 320, 10240 }, shape{ GGML_TYPE_Q8_0, 10240, 4 }, shape{ GGML_TYPE_BF16, 2560, 512 },
                          shape{ GGML_TYPE_Q8_0, 2560, 512 }, shape{ GGML_TYPE_IQ4_XS, 2560, 4096 }, shape{ GGML_TYPE_IQ4_XS, 4096, 2560 },
-                         shape{ GGML_TYPE_Q8_0, 2560, 4096 }, shape{ GGML_TYPE_Q8_0, 2560, 1 }, shape{ GGML_TYPE_BF16, 2560, 1 } }) {
+                         shape{ GGML_TYPE_Q8_0, 2560, 4096 }, shape{ GGML_TYPE_Q8_0, 2560, 1 }, shape{ GGML_TYPE_BF16, 2560, 1 },
+                         shape{ GGML_TYPE_IQ2_S, 2560, 4096 }, shape{ GGML_TYPE_IQ2_S, 2560, 320 }, shape{ GGML_TYPE_Q2_0, 320, 2560 }, shape{ GGML_TYPE_Q2_0, 2560, 4096 } }) {
             bench_gpu_mm(be, s.t, s.a, s.b, nt);
         }
         ggml_backend_free(be);
