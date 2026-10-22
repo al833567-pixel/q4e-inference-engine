@@ -990,6 +990,7 @@ struct ggml_backend_sched {
 
     // a GPU split that follows a CPU split starts the nodes that do not read the copied inputs before the CPU split computes
     bool overlap;
+    bool fast_join; // async copies between host and device splits (env GGML_SCHED_FAST_JOIN, default on)
 
     // [GGML_SCHED_TIMING] wall time of the input copies and of the compute of each backend, the splits are synchronized
     bool timing;
@@ -1847,6 +1848,17 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
         return;
     }
 
+    // host data (a CPU split's output) into a device split: queue the upload on the split backend's own stream, the
+    // stream order already keeps it behind the work that used the copy before, so the device is not drained here.
+    // the host data stays valid until the next host split, whose inputs from the device wait for this stream
+    if (sched->fast_join && input_backend != split_backend && input->buffer && ggml_backend_buffer_is_host(input->buffer) &&
+        ggml_backend_dev_type(ggml_backend_get_device(input_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU &&
+        split_backend->iface.set_tensor_async && ggml_is_contiguous(input) && ggml_is_contiguous(input_cpy) &&
+        !ggml_backend_sched_is_host_weight(input)) {
+        ggml_backend_tensor_set_async(split_backend, input_cpy, input->data, 0, ggml_nbytes(input));
+        return;
+    }
+
     // wait for the split backend to finish using the input before overwriting it
     if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
         ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
@@ -1920,9 +1932,45 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
         const int64_t t_split_us = sched->timing ? ggml_time_us() : 0;
 
+        // device data into a host split: queue every download, then wait once per device instead of a drain and a
+        // blocking copy per input
+        bool fetched[GGML_SCHED_MAX_SPLIT_INPUTS] = {};
+        if (sched->fast_join && !sched->callback_eval &&
+            ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+            ggml_backend_t waits[GGML_SCHED_MAX_BACKENDS];
+            int n_waits = 0;
+            for (int input_id = 0; input_id < split->n_inputs && input_id < GGML_SCHED_MAX_SPLIT_INPUTS; input_id++) {
+                struct ggml_tensor * input = split->inputs[input_id];
+                if (ggml_backend_sched_is_host_weight(input) || (input->flags & GGML_TENSOR_FLAG_INPUT)) {
+                    continue;
+                }
+                ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, input);
+                struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
+                if (input_backend == split_backend || !input_backend->iface.get_tensor_async || !input_cpy->buffer ||
+                    !ggml_backend_buffer_is_host(input_cpy->buffer) || !ggml_is_contiguous(input) || !ggml_is_contiguous(input_cpy)) {
+                    continue;
+                }
+                ggml_backend_tensor_get_async(input_backend, input, input_cpy->data, 0, ggml_nbytes(input));
+                fetched[input_id] = true;
+                bool seen = false;
+                for (int w = 0; w < n_waits; w++) {
+                    seen = seen || waits[w] == input_backend;
+                }
+                if (!seen) {
+                    waits[n_waits++] = input_backend;
+                }
+            }
+            for (int w = 0; w < n_waits; w++) {
+                ggml_backend_synchronize(waits[w]);
+            }
+        }
+
         // copy the input tensors to the split backend
         // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+            if (input_id < GGML_SCHED_MAX_SPLIT_INPUTS && fetched[input_id]) {
+                continue;
+            }
             if (!ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id]);
             }
@@ -2046,6 +2094,9 @@ ggml_backend_sched_t ggml_backend_sched_new(
 
     const char * GGML_SCHED_TIMING = getenv("GGML_SCHED_TIMING");
     sched->timing = GGML_SCHED_TIMING ? atoi(GGML_SCHED_TIMING) != 0 : false;
+
+    const char * GGML_SCHED_FAST_JOIN = getenv("GGML_SCHED_FAST_JOIN");
+    sched->fast_join = GGML_SCHED_FAST_JOIN ? atoi(GGML_SCHED_FAST_JOIN) != 0 : true;
 
     sched->n_backends = n_backends;
     sched->n_copies = parallel ? GGML_SCHED_MAX_COPIES : 1;

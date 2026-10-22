@@ -2771,7 +2771,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
         const char * e = getenv("Q4E_ROUTE_GPU");
         return e ? atoi(e) != 0 : true;
     }();
-    if (route_gpu) {
+    ggml_tensor * fused_ids = route_gpu ? ggml_q4e_route(ctx0, selected_experts, weights, t.table, (int) n_blocks, t.zero_slot, false) : nullptr;
+    if (fused_ids && ggml_backend_supports_op(t.backend_gpu, fused_ids)) {
+        // one kernel each where the backend has the op
+        ids_gpu = fused_ids;
+        w_gpu   = ggml_q4e_route(ctx0, selected_experts, weights, t.table, (int) n_blocks, t.zero_slot, true);
+    } else if (route_gpu) {
         ggml_tensor * vsel = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
         ggml_tensor * w    = weights; // [1, n_used, n_tokens]
         if (n_blocks > 1) {
@@ -2824,7 +2829,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
             h = keep(ggml_swiglu_split(ctx0, g, u));
         }
         ggml_tensor * y = mm(down_w, h, "down");                            // [n_embd, n_rows, n_tokens]
-        if (backend == backend_cpu) {
+        ggml_tensor * ws = ggml_q4e_wsum(ctx0, y, wt);
+        if (ggml_backend_supports_op(backend, ws)) {
+            y = keep(ws);
+        } else if (backend == backend_cpu) {
             GGML_ASSERT(ggml_is_contiguous(wt));
             ggml_tensor * args[2] = { y, wt };
             y = keep(ggml_custom_4d(ctx0, GGML_TYPE_F32, n_embd, n_tokens, 1, 1, args, 2, q4e_weighted_row_sum, GGML_N_TASKS_MAX, nullptr));

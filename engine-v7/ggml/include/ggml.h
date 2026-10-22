@@ -585,6 +585,8 @@ extern "C" {
         GGML_OP_DSV4_HC_COMB,
         GGML_OP_DSV4_HC_PRE,
         GGML_OP_DSV4_HC_POST,
+        GGML_OP_Q4E_ROUTE,
+        GGML_OP_Q4E_WSUM,
 
         GGML_OP_UNARY,
 
@@ -2731,6 +2733,25 @@ extern "C" {
             struct ggml_tensor  * residual,
             struct ggml_tensor  * post,
             struct ggml_tensor  * comb);
+
+    // q4e expert tiers: for row r = k*n_blocks + b of a token (block b of its k-th selected expert e, virtual expert
+    // v = e*n_blocks + b) and table[v] = the VRAM slot of v or -1:
+    //   ids     = I32 [n_rows, n_tokens]: table[v] if >= 0, else zero_slot + r
+    //   weights = F32 [1, n_rows, n_tokens]: w[k] if table[v] >= 0, else 0
+    GGML_API struct ggml_tensor * ggml_q4e_route(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * sel,    // I32 [n_used, n_tokens]
+            struct ggml_tensor  * w,      // F32 [1, n_used, n_tokens]
+            struct ggml_tensor  * table,  // F32 [1, n_expert*n_blocks]
+            int                   n_blocks,
+            int                   zero_slot,
+            bool                  weights);
+
+    // out[e, t] = sum_r y[e, r, t] * w[r, t]
+    GGML_API struct ggml_tensor * ggml_q4e_wsum(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * y,      // F32 [n_embd, n_rows, n_tokens]
+            struct ggml_tensor  * w);     // F32 [1, n_rows, n_tokens]
 
     // custom operators
 

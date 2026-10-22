@@ -11719,6 +11719,74 @@ static void ggml_compute_forward_dsv4_hc_post_f32(
     }
 }
 
+// ggml_compute_forward_q4e_route
+
+void ggml_compute_forward_q4e_route(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    if (params->ith != 0) {
+        return;
+    }
+    const ggml_tensor * sel   = dst->src[0];
+    const ggml_tensor * w     = dst->src[1];
+    const float       * table = (const float *) dst->src[2]->data;
+    const int32_t n_blocks  = ggml_get_op_params_i32(dst, 0);
+    const int32_t zero_slot = ggml_get_op_params_i32(dst, 1);
+    const bool    weights   = ggml_get_op_params_i32(dst, 2) != 0;
+    const int64_t n_virt    = ggml_nelements(dst->src[2]);
+    const int64_t n_used    = sel->ne[0];
+    const int64_t n_tokens  = sel->ne[1];
+    const int64_t n_rows    = n_used*n_blocks;
+
+    for (int64_t t = 0; t < n_tokens; ++t) {
+        for (int64_t k = 0; k < n_used; ++k) {
+            const int32_t e  = *(const int32_t *) ((const char *) sel->data + k*sel->nb[0] + t*sel->nb[1]);
+            const float   wk = *(const float *) ((const char *) w->data + k*w->nb[1] + t*w->nb[2]);
+            for (int32_t b = 0; b < n_blocks; ++b) {
+                const int64_t r = k*n_blocks + b;
+                const int64_t v = (int64_t) e*n_blocks + b;
+                const float slot = v >= 0 && v < n_virt ? table[v] : -1.0f;
+                if (weights) {
+                    ((float *) dst->data)[t*n_rows + r] = slot >= 0.0f ? wk : 0.0f;
+                } else {
+                    ((int32_t *) dst->data)[t*n_rows + r] = slot >= 0.0f ? (int32_t) slot : zero_slot + (int32_t) r;
+                }
+            }
+        }
+    }
+}
+
+// ggml_compute_forward_q4e_wsum
+
+void ggml_compute_forward_q4e_wsum(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * y = dst->src[0];
+    const ggml_tensor * w = dst->src[1];
+    const int64_t n_embd   = y->ne[0];
+    const int64_t n_rows   = y->ne[1];
+    const int64_t n_tokens = y->ne[2];
+    const int64_t per = (n_embd + params->nth - 1)/params->nth;
+    const int64_t e0  = std::min<int64_t>(n_embd, params->ith*per);
+    const int64_t e1  = std::min<int64_t>(n_embd, e0 + per);
+    for (int64_t t = 0; t < n_tokens; ++t) {
+        float * out = (float *) ((char *) dst->data + t*dst->nb[1]);
+        for (int64_t e = e0; e < e1; ++e) {
+            out[e] = 0.0f;
+        }
+        for (int64_t r = 0; r < n_rows; ++r) {
+            const float wr = *(const float *) ((const char *) w->data + r*w->nb[1] + t*w->nb[2]);
+            if (wr == 0.0f) {
+                continue;
+            }
+            const float * yr = (const float *) ((const char *) y->data + r*y->nb[1] + t*y->nb[2]);
+            for (int64_t e = e0; e < e1; ++e) {
+                out[e] += wr*yr[e];
+            }
+        }
+    }
+}
+
 void ggml_compute_forward_dsv4_hc_post(
         const ggml_compute_params * params,
         ggml_tensor * dst) {

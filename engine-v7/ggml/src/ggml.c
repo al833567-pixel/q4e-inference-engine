@@ -1095,6 +1095,8 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "DSV4_HC_COMB",
     "DSV4_HC_PRE",
     "DSV4_HC_POST",
+    "Q4E_ROUTE",
+    "Q4E_WSUM",
 
     "UNARY",
 
@@ -1112,7 +1114,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1210,6 +1212,8 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "dsv4_hc_comb(mixes, scale, base)",
     "dsv4_hc_pre(x, weights)",
     "dsv4_hc_post(x, residual, post, comb)",
+    "q4e_route(sel, w, table)",
+    "q4e_wsum(y, w)",
 
     "unary(x)",
 
@@ -1227,7 +1231,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6580,6 +6584,56 @@ struct ggml_tensor * ggml_dsv4_hc_pre_gated(
         struct ggml_tensor  * gate,
         float                 scale) {
     return ggml_dsv4_hc_pre_impl(ctx, x, gate, scale, true);
+}
+
+// ggml_q4e_route
+
+struct ggml_tensor * ggml_q4e_route(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * sel,
+        struct ggml_tensor  * w,
+        struct ggml_tensor  * table,
+        int                   n_blocks,
+        int                   zero_slot,
+        bool                  weights) {
+    GGML_ASSERT(sel->type == GGML_TYPE_I32 && w->type == GGML_TYPE_F32 && table->type == GGML_TYPE_F32);
+    GGML_ASSERT(w->ne[0] == 1 && w->ne[1] == sel->ne[0] && w->ne[2] == sel->ne[1]);
+    GGML_ASSERT(ggml_is_contiguous(table) && n_blocks > 0);
+
+    const int64_t n_rows   = sel->ne[0]*n_blocks;
+    const int64_t n_tokens = sel->ne[1];
+
+    struct ggml_tensor * result = weights ?
+        ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, n_rows, n_tokens) :
+        ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_rows, n_tokens);
+
+    const int32_t params[] = { n_blocks, zero_slot, weights ? 1 : 0 };
+    ggml_set_op_params(result, params, sizeof(params));
+
+    result->op     = GGML_OP_Q4E_ROUTE;
+    result->src[0] = sel;
+    result->src[1] = w;
+    result->src[2] = table;
+
+    return result;
+}
+
+// ggml_q4e_wsum
+
+struct ggml_tensor * ggml_q4e_wsum(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * y,
+        struct ggml_tensor  * w) {
+    GGML_ASSERT(y->type == GGML_TYPE_F32 && w->type == GGML_TYPE_F32);
+    GGML_ASSERT(w->ne[0] == 1 && w->ne[1] == y->ne[1] && w->ne[2] == y->ne[2]);
+
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, y->ne[0], y->ne[2]);
+
+    result->op     = GGML_OP_Q4E_WSUM;
+    result->src[0] = y;
+    result->src[1] = w;
+
+    return result;
 }
 
 // ggml_dsv4_hc_post

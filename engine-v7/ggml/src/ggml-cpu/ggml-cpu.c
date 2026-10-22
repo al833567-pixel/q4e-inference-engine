@@ -2183,6 +2183,14 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_dsv4_hc_post(params, tensor);
             } break;
+        case GGML_OP_Q4E_ROUTE:
+            {
+                ggml_compute_forward_q4e_route(params, tensor);
+            } break;
+        case GGML_OP_Q4E_WSUM:
+            {
+                ggml_compute_forward_q4e_wsum(params, tensor);
+            } break;
         case GGML_OP_MAP_CUSTOM1:
             {
                 ggml_compute_forward_map_custom1(params, tensor);
@@ -2366,8 +2374,13 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_DSV4_HC_COMB:
         case GGML_OP_DSV4_HC_PRE:
         case GGML_OP_DSV4_HC_POST:
+        case GGML_OP_Q4E_WSUM:
             {
                 n_tasks = n_threads;
+            } break;
+        case GGML_OP_Q4E_ROUTE:
+            {
+                n_tasks = 1;
             } break;
         case GGML_OP_REPEAT:
         case GGML_OP_REPEAT_BACK:
