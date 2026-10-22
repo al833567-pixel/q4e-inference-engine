@@ -606,6 +606,8 @@ static constexpr __host__ __device__ int calc_rows_per_block(ggml_type type, int
             case 2:
             case 3:
             case 4:
+                // q4e: small K (the hc up projection, K = 320) leaves most threads idle, a row per warp
+                return small_k ? nwarps : 2;
             case 5:
             case 6:
             case 7:
@@ -1258,28 +1260,52 @@ static void mul_mat_vec_q_switch_ncols_dst(
             }
         } break;
         case 2: {
-            constexpr int c_ncols_dst = 2;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
+            static constexpr int c_ncols_dst = 2;
+            const auto launch = [&](auto small_k_tag) {
+                constexpr bool c_small_k = decltype(small_k_tag)::value;
+                std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id, c_small_k);
+                mul_mat_vec_q_switch_fusion<type, c_ncols_dst, c_small_k>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
+                     channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
+                     sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
+                     dims.first, dims.second, 0, ids_stride, stream);
+            };
+            if (should_use_small_k(c_ncols_dst)) {
+                launch(std::true_type{});
+            } else {
+                launch(std::false_type{});
+            }
         } break;
         case 3: {
-            constexpr int c_ncols_dst = 3;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
+            static constexpr int c_ncols_dst = 3;
+            const auto launch = [&](auto small_k_tag) {
+                constexpr bool c_small_k = decltype(small_k_tag)::value;
+                std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id, c_small_k);
+                mul_mat_vec_q_switch_fusion<type, c_ncols_dst, c_small_k>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
+                     channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
+                     sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
+                     dims.first, dims.second, 0, ids_stride, stream);
+            };
+            if (should_use_small_k(c_ncols_dst)) {
+                launch(std::true_type{});
+            } else {
+                launch(std::false_type{});
+            }
         } break;
         case 4: {
-            constexpr int c_ncols_dst = 4;
-            std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id);
-            mul_mat_vec_q_switch_fusion<type, c_ncols_dst>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
-                 channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
-                 dims.first, dims.second, 0, ids_stride, stream);
+            static constexpr int c_ncols_dst = 4;
+            const auto launch = [&](auto small_k_tag) {
+                constexpr bool c_small_k = decltype(small_k_tag)::value;
+                std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst, nsamples_dst, warp_size, table_id, c_small_k);
+                mul_mat_vec_q_switch_fusion<type, c_ncols_dst, c_small_k>(vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
+                     channel_ratio_fd, stride_channel_x, stride_channel_y, stride_channel_dst,
+                     sample_ratio_fd, stride_sample_x, stride_sample_y, stride_sample_dst,
+                     dims.first, dims.second, 0, ids_stride, stream);
+            };
+            if (should_use_small_k(c_ncols_dst)) {
+                launch(std::true_type{});
+            } else {
+                launch(std::false_type{});
+            }
         } break;
         case 5: {
             constexpr int c_ncols_dst = 5;
