@@ -4939,6 +4939,11 @@ vk_device ggml_vk_get_device(size_t idx) {
             device->mmvq_mode = -1;
         } else if (getenv("GGML_VK_FORCE_MMVQ")) {
             device->mmvq_mode = 1;
+        } else if (device->uma && device->vendor_id == VK_VENDOR_ID_AMD &&
+                   (device->architecture == AMD_RDNA3 || device->architecture == AMD_RDNA4)) {
+            // q4e: the float dequant mat-vecs run the MoE experts of a Radeon 780M faster than the integer dot ones
+            // (Flash-Next on 780M + T10: 20.0/22.4 -> 21.1/24.9 t/s)
+            device->mmvq_mode = -1;
         }
 
         // publish the device only when it is fully built
