@@ -110,6 +110,7 @@ void ggml_compute_forward_dsv4_hc_pre(const struct ggml_compute_params * params,
 void ggml_compute_forward_dsv4_hc_post(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_q4e_route(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_q4e_wsum(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_q4e_wsum_acc(float * out, const float * y, float w, int64_t n);
 void ggml_compute_forward_q4e_hc_mix(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_map_custom1(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_map_custom2(const struct ggml_compute_params * params, struct ggml_tensor * dst);

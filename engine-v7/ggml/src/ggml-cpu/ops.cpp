@@ -11848,10 +11848,15 @@ void ggml_compute_forward_q4e_wsum(
                 continue;
             }
             const float * yr = (const float *) ((const char *) y->data + r*y->nb[1] + t*y->nb[2]);
-            for (int64_t e = e0; e < e1; ++e) {
-                out[e] += wr*yr[e];
-            }
+            ggml_q4e_wsum_acc(out + e0, yr + e0, wr, e1 - e0);
         }
+    }
+}
+
+// one step of the weighted sum, shared with GGML_OP_Q4E_EXPERTS so that both round the same way
+void ggml_q4e_wsum_acc(float * out, const float * y, float w, int64_t n) {
+    for (int64_t e = 0; e < n; ++e) {
+        out[e] += w*y[e];
     }
 }
 

@@ -51,6 +51,11 @@ void ggml_vec_dot_q2_0_q8_0_nc   (int n, float * GGML_RESTRICT s, const void * G
 void ggml_vec_dot_iq2_s_q8_K_avx512_nc  (int n, float * s, const void * vx, const void * const * vy, int nc);
 void ggml_vec_dot_iq2_xxs_q8_K_avx512_nc(int n, float * s, const void * vx, const void * const * vy, int nc);
 void ggml_vec_dot_q2_0_q8_0_avx512_nc   (int n, float * s, const void * vx, const void * const * vy, int nc);
+// nr Q2_0 rows (stride bx) against nc <= 4 activation rows prepared from Q8_0: yq the int8 values, yd the scales as
+// float, ys minus the sum of each 4 consecutive values; s[c][r]. The values of ggml_vec_dot_q2_0_q8_0 (two_acc) or of
+// ggml_vec_dot_q2_0_q8_0_nc bit for bit. false: not built (needs AVX-512 VBMI and VNNI)
+bool ggml_q4e_dot_q2_0_rows(int n, const void * vx, size_t bx, int nr, const int8_t * const * yq, const float * const * yd,
+                            const int32_t * const * ys, int nc, bool two_acc, float * const * s);
 void ggml_vec_dot_q4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 void ggml_vec_dot_q4_1_q8_1(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 void ggml_vec_dot_q5_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);

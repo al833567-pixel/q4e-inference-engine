@@ -469,6 +469,15 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
 
             return max_bias == 0.0f;
         }
+        case GGML_OP_Q4E_EXPERTS: {
+            // quantized activations, up to 4 tokens, gate/up rows in whole q8 blocks of h
+            const ggml_type vt_gu = ggml_get_type_traits_cpu(src0->type)->vec_dot_type;
+            const ggml_type vt_d  = ggml_get_type_traits_cpu(op->src[2]->type)->vec_dot_type;
+            return src0->type == src1->type && ggml_is_quantized(vt_gu) && ggml_is_quantized(vt_d) &&
+                   ggml_get_type_traits_cpu(vt_gu)->from_float && ggml_get_type_traits_cpu(vt_d)->from_float &&
+                   op->src[4]->ne[1] <= 4 && src0->ne[1] % 32 == 0 && 32 % ggml_blck_size(vt_d) == 0 &&
+                   src0->nb[0] == ggml_type_size(src0->type) && op->src[2]->nb[0] == ggml_type_size(op->src[2]->type);
+        }
         case GGML_OP_IM2COL_BACK:
             return src0->type == GGML_TYPE_F32 && (src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_F16);
         case GGML_OP_GET_ROWS_BACK:

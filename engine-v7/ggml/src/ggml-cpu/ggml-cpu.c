@@ -1813,6 +1813,290 @@ static void ggml_compute_forward_mul_mat_id(
     }
 }
 
+// ggml_compute_forward_q4e_experts
+//
+// the CPU tier of a q4e MoE layer in one op: one wake-up of the thread pool, three phases split by barriers
+//   A: x -> the vec_dot type of gate/up; one thread groups the rows by expert block (up to 4 tokens per group)
+//   B: work units (group, 32 rows of n_ff): the gate and up rows of a block are streamed together, swiglu and the
+//      quantization of h to the vec_dot type of down happen on the 32 values right away (one q8 block)
+//   C: work units of 64 output rows: the down rows of every group, then the weighted sum of these rows
+// every value is computed by the same kernels in the same order as mul_mat_id + swiglu + mul_mat_id + q4e_wsum
+
+#define Q4E_X_FF  32
+#define Q4E_X_OUT 64
+
+struct q4e_x_group {
+    int32_t id;     // expert block
+    int32_t n;      // tokens, <= 4
+    int32_t ent[4]; // entries (rows of h), in token order
+    int32_t tok[4];
+};
+
+struct q4e_x_layout {
+    size_t x_q, groups, ent_of, h_q, h_p, h_p_one, ctr, scratch, scratch_one, total;
+    int64_t max_ent;
+};
+
+// down Q2_0 with AVX-512 VBMI/VNNI: h is also kept as int8 values, float scales and minus the sums of 4 values
+static bool q4e_x_q2_0_rows(const struct ggml_tensor * down) {
+#if defined(__AVX512F__) && defined(__AVX512BW__) && (defined(__x86_64__) || defined(_M_X64))
+    return down->type == GGML_TYPE_Q2_0 && type_traits_cpu[GGML_TYPE_Q2_0].vec_dot_type == GGML_TYPE_Q8_0 &&
+        ggml_q4e_dot_q2_0_rows(0, NULL, 0, 0, NULL, NULL, NULL, 1, false, NULL);
+#else
+    GGML_UNUSED(down);
+    return false;
+#endif
+}
+
+static struct q4e_x_layout ggml_q4e_experts_layout(const struct ggml_tensor * node, int n_tasks) {
+    const struct ggml_tensor * gate = node->src[0];
+    const struct ggml_tensor * down = node->src[2];
+    const struct ggml_tensor * ids  = node->src[4];
+    const enum ggml_type vt_gu = type_traits_cpu[gate->type].vec_dot_type;
+    const enum ggml_type vt_d  = type_traits_cpu[down->type].vec_dot_type;
+    const int64_t n_embd   = gate->ne[0];
+    const int64_t n_ff     = gate->ne[1];
+    const int64_t n_rows   = ids->ne[0];
+    const int64_t n_tokens = ids->ne[1];
+
+    struct q4e_x_layout l;
+    l.max_ent = n_rows*n_tokens;
+    size_t off = 0;
+    l.x_q    = off; off = GGML_PAD(off + n_tokens*ggml_row_size(vt_gu, n_embd), 64);
+    l.groups = off; off = GGML_PAD(off + sizeof(int32_t) + l.max_ent*sizeof(struct q4e_x_group), 64);
+    l.ent_of = off; off = GGML_PAD(off + l.max_ent*sizeof(int32_t), 64);
+    l.h_q    = off; off = GGML_PAD(off + l.max_ent*ggml_row_size(vt_d, n_ff), 64);
+    // prepared h for q4e_x_q2_0_rows: int8 [n_ff], float [n_ff/32], int32 [n_ff/4]
+    l.h_p_one = GGML_PAD(n_ff + (n_ff/32)*sizeof(float) + (n_ff/4)*sizeof(int32_t), 64);
+    l.h_p    = off; off = GGML_PAD(off + (q4e_x_q2_0_rows(down) ? l.max_ent*l.h_p_one : 0), 64);
+    l.ctr    = off; off = GGML_PAD(off + 2*CACHE_LINE_SIZE, 64);
+    // per thread: g and u of 4 tokens x Q4E_X_FF, h of Q4E_X_FF, y of max_ent x Q4E_X_OUT, a zero row
+    l.scratch_one = GGML_PAD((9*Q4E_X_FF + (l.max_ent + 1)*Q4E_X_OUT)*sizeof(float), 64);
+    l.scratch = off; off += n_tasks*l.scratch_one;
+    l.total = off + 64; // + alignment of wdata
+    return l;
+}
+
+static size_t ggml_q4e_experts_wsize(const struct ggml_tensor * node, int n_tasks) {
+    return ggml_q4e_experts_layout(node, n_tasks).total;
+}
+
+// the kernels mul_mat_id uses for nc activation rows of one expert
+static inline void q4e_x_dot(enum ggml_type type, ggml_vec_dot_nc_t nc_fn, bool nc_one, int64_t n, float * out,
+                             const char * row, const void * const * cols, int nc) {
+    if (nc_fn && nc >= (nc_one ? 1 : 2)) {
+        nc_fn((int) n, out, row, cols, nc);
+    } else {
+        for (int c = 0; c < nc; ++c) {
+            type_traits_cpu[type].vec_dot((int) n, &out[c], 0, row, 0, cols[c], 0, 1);
+        }
+    }
+}
+
+static void ggml_compute_forward_q4e_experts(
+        const struct ggml_compute_params * params,
+              struct ggml_tensor * dst) {
+    const struct ggml_tensor * gate = dst->src[0];
+    const struct ggml_tensor * up   = dst->src[1];
+    const struct ggml_tensor * down = dst->src[2];
+    const struct ggml_tensor * x    = dst->src[3];
+    const struct ggml_tensor * ids  = dst->src[4];
+    const struct ggml_tensor * w    = dst->src[5];
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t n_embd   = gate->ne[0];
+    const int64_t n_ff     = gate->ne[1];
+    const int64_t n_rows   = ids->ne[0];
+    const int64_t n_tokens = ids->ne[1];
+
+    const enum ggml_type vt_gu = type_traits_cpu[gate->type].vec_dot_type;
+    const enum ggml_type vt_d  = type_traits_cpu[down->type].vec_dot_type;
+    const size_t rs_x  = ggml_row_size(vt_gu, n_embd);
+    const size_t rs_h  = ggml_row_size(vt_d, n_ff);
+    const size_t rs_hb = ggml_row_size(vt_d, Q4E_X_FF);
+
+    const struct q4e_x_layout l = ggml_q4e_experts_layout(dst, nth);
+    GGML_ASSERT(params->wsize >= l.total);
+    char * wdata = (char *) GGML_PAD((uintptr_t) params->wdata, 64);
+
+    char               * x_q    = wdata + l.x_q;
+    int32_t            * n_grp  = (int32_t *) (wdata + l.groups);
+    struct q4e_x_group * groups = (struct q4e_x_group *) (wdata + l.groups + sizeof(int32_t));
+    int32_t            * ent_of = (int32_t *) (wdata + l.ent_of);
+    char               * h_q    = wdata + l.h_q;
+    char               * h_p    = wdata + l.h_p;
+    const bool           fast_d = q4e_x_q2_0_rows(down);
+    const int64_t        o_yd   = n_ff;                                  // offsets in a prepared row
+    const int64_t        o_ys   = n_ff + (n_ff/32)*(int64_t) sizeof(float);
+    atomic_int         * ctr_b  = (atomic_int *) (wdata + l.ctr);
+    atomic_int         * ctr_c  = (atomic_int *) (wdata + l.ctr + CACHE_LINE_SIZE);
+    float              * scr    = (float *) (wdata + l.scratch + ith*l.scratch_one);
+
+    const int64_t PT0 = ggml_time_us(); // PROF
+    // A: quantize x like mul_mat_id (blocks of each row split over the threads)
+    {
+        const ggml_from_float_t from_float = type_traits_cpu[vt_gu].from_float;
+        const int64_t bs = ggml_blck_size(vt_gu);
+        const int64_t b0 = (ith*(n_embd/bs))/nth;
+        const int64_t b1 = ((ith + 1)*(n_embd/bs))/nth;
+        for (int64_t t = 0; t < n_tokens; ++t) {
+            from_float((const float *) ((const char *) x->data + t*n_embd*sizeof(float)) + b0*bs,
+                       x_q + t*rs_x + b0*ggml_type_size(vt_gu), (b1 - b0)*bs);
+        }
+    }
+    if (ith == 0) {
+        // entries in (token, row) order, grouped by block like mul_mat_id's matrix_rows
+        int32_t n_ent = 0;
+        int32_t ng = 0;
+        for (int64_t t = 0; t < n_tokens; ++t) {
+            for (int64_t r = 0; r < n_rows; ++r) {
+                const int32_t id = *(const int32_t *) ((const char *) ids->data + r*ids->nb[0] + t*ids->nb[1]);
+                if (id < 0) {
+                    ent_of[t*n_rows + r] = -1;
+                    continue;
+                }
+                GGML_ASSERT(id < gate->ne[2]);
+                const int32_t e = n_ent++;
+                ent_of[t*n_rows + r] = e;
+                int32_t g = 0;
+                while (g < ng && (groups[g].id != id || groups[g].n == 4)) {
+                    ++g;
+                }
+                if (g == ng) {
+                    groups[ng].id = id;
+                    groups[ng].n  = 0;
+                    ++ng;
+                }
+                groups[g].ent[groups[g].n] = e;
+                groups[g].tok[groups[g].n] = (int32_t) t;
+                groups[g].n++;
+            }
+        }
+        *n_grp = ng;
+        atomic_store_explicit(ctr_b, nth, memory_order_relaxed);
+        atomic_store_explicit(ctr_c, nth, memory_order_relaxed);
+    }
+    ggml_barrier(params->threadpool);
+    const int64_t PT1 = ggml_time_us(); // PROF
+
+    const int32_t ng = *n_grp;
+
+    // B: gate and up, swiglu, h -> vec_dot type of down
+    {
+        bool one_gu = false;
+        const ggml_vec_dot_nc_t nc_gu = ggml_cpu_vec_dot_nc(gate->type, &one_gu);
+        const ggml_from_float_t from_float = type_traits_cpu[vt_d].from_float;
+        float * g = scr;                 // [4][Q4E_X_FF]
+        float * u = scr + 4*Q4E_X_FF;    // [4][Q4E_X_FF]
+        float * h = scr + 8*Q4E_X_FF;    // [Q4E_X_FF]
+        const int64_t n_ch = n_ff/Q4E_X_FF;
+        const int64_t n_units = ng*n_ch;
+        for (int64_t unit = ith; unit < n_units; unit = atomic_fetch_add_explicit(ctr_b, 1, memory_order_relaxed)) {
+            const struct q4e_x_group * gr = &groups[unit/n_ch];
+            const int64_t i0 = (unit % n_ch)*Q4E_X_FF;
+            const void * cols[4];
+            for (int c = 0; c < gr->n; ++c) {
+                cols[c] = x_q + gr->tok[c]*rs_x;
+            }
+            const char * gate_b = (const char *) gate->data + gr->id*gate->nb[2];
+            const char * up_b   = (const char *) up->data   + gr->id*up->nb[2];
+            for (int64_t i = 0; i < Q4E_X_FF; ++i) {
+                float og[4], ou[4];
+                q4e_x_dot(gate->type, nc_gu, one_gu, n_embd, og, gate_b + (i0 + i)*gate->nb[1], cols, gr->n);
+                q4e_x_dot(up->type,   nc_gu, one_gu, n_embd, ou, up_b   + (i0 + i)*up->nb[1],   cols, gr->n);
+                for (int c = 0; c < gr->n; ++c) {
+                    g[c*Q4E_X_FF + i] = og[c];
+                    u[c*Q4E_X_FF + i] = ou[c];
+                }
+            }
+            for (int c = 0; c < gr->n; ++c) {
+                ggml_vec_swiglu_f32(Q4E_X_FF, h, g + c*Q4E_X_FF, u + c*Q4E_X_FF);
+                char * hb = h_q + gr->ent[c]*rs_h + (i0/Q4E_X_FF)*rs_hb;
+                from_float(h, hb, Q4E_X_FF);
+                if (fast_d) {
+                    const block_q8_0 * qb = (const block_q8_0 *) hb;
+                    char * p = h_p + gr->ent[c]*l.h_p_one;
+                    memcpy(p + i0, qb->qs, QK8_0);
+                    ((float *) (p + o_yd))[i0/QK8_0] = GGML_CPU_FP16_TO_FP32(qb->d);
+                    int32_t * ys = (int32_t *) (p + o_ys) + i0/4;
+                    for (int k = 0; k < QK8_0/4; ++k) {
+                        ys[k] = -((int32_t) qb->qs[4*k] + qb->qs[4*k + 1] + qb->qs[4*k + 2] + qb->qs[4*k + 3]);
+                    }
+                }
+            }
+        }
+    }
+    ggml_barrier(params->threadpool);
+    const int64_t PT2 = ggml_time_us(); // PROF
+
+    // C: down and the weighted sum, by output rows
+    {
+        bool one_d = false;
+        const ggml_vec_dot_nc_t nc_d = ggml_cpu_vec_dot_nc(down->type, &one_d);
+        float * y    = scr + 9*Q4E_X_FF;            // [max_ent][Q4E_X_OUT]
+        float * zero = y + l.max_ent*Q4E_X_OUT;     // [Q4E_X_OUT]
+        memset(zero, 0, Q4E_X_OUT*sizeof(float));
+        const int64_t n_units = (n_embd + Q4E_X_OUT - 1)/Q4E_X_OUT;
+        for (int64_t unit = ith; unit < n_units; unit = atomic_fetch_add_explicit(ctr_c, 1, memory_order_relaxed)) {
+            const int64_t e0 = unit*Q4E_X_OUT;
+            const int64_t ne = MIN(Q4E_X_OUT, n_embd - e0);
+            for (int32_t gi = 0; gi < ng; ++gi) {
+                const struct q4e_x_group * gr = &groups[gi];
+                const void * cols[4];
+                for (int c = 0; c < gr->n; ++c) {
+                    cols[c] = h_q + gr->ent[c]*rs_h;
+                }
+                const char * down_b = (const char *) down->data + gr->id*down->nb[2];
+                if (fast_d) {
+                    // the order of the kernel mul_mat_id would take: vec_dot (two accumulators) or the nc kernel
+                    const bool two_acc = !(nc_d && gr->n >= (one_d ? 1 : 2));
+                    const int8_t  * yq[4];
+                    const float   * yd[4];
+                    const int32_t * ys[4];
+                    float * so[4];
+                    for (int c = 0; c < gr->n; ++c) {
+                        const char * p = h_p + gr->ent[c]*l.h_p_one;
+                        yq[c] = (const int8_t *) p;
+                        yd[c] = (const float *) (p + o_yd);
+                        ys[c] = (const int32_t *) (p + o_ys);
+                        so[c] = y + gr->ent[c]*Q4E_X_OUT;
+                    }
+                    ggml_q4e_dot_q2_0_rows((int) n_ff, down_b + e0*down->nb[1], down->nb[1], (int) ne, yq, yd, ys, gr->n, two_acc, so);
+                    continue;
+                }
+                for (int64_t i = 0; i < ne; ++i) {
+                    float o[4];
+                    q4e_x_dot(down->type, nc_d, one_d, n_ff, o, down_b + (e0 + i)*down->nb[1], cols, gr->n);
+                    for (int c = 0; c < gr->n; ++c) {
+                        y[gr->ent[c]*Q4E_X_OUT + i] = o[c];
+                    }
+                }
+            }
+            // q4e_wsum over these rows: the same steps per value
+            for (int64_t t = 0; t < n_tokens; ++t) {
+                float * out = (float *) ((char *) dst->data + t*dst->nb[1]) + e0;
+                for (int64_t i = 0; i < ne; ++i) {
+                    out[i] = 0.0f;
+                }
+                for (int64_t r = 0; r < n_rows; ++r) {
+                    const float wr = *(const float *) ((const char *) w->data + r*w->nb[1] + t*w->nb[2]);
+                    if (wr == 0.0f) {
+                        continue;
+                    }
+                    const int32_t e = ent_of[t*n_rows + r];
+                    ggml_q4e_wsum_acc(out, e >= 0 ? y + e*Q4E_X_OUT : zero, wr, ne);
+                }
+            }
+        }
+    }
+    { // PROF
+        static int64_t acc[4]; static int cnt; const int64_t PT3 = ggml_time_us();
+        if (ith == 0 && getenv("Q4E_X_PROF")) { acc[0] += PT1 - PT0; acc[1] += PT2 - PT1; acc[2] += PT3 - PT2; if (++cnt % 200 == 0) { fprintf(stderr, "q4e_x: A %.1f B %.1f C %.1f us\n", acc[0]/200.0, acc[1]/200.0, acc[2]/200.0); acc[0] = acc[1] = acc[2] = 0; } }
+    }
+}
+
 /////////////////////////////////
 
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
@@ -2195,6 +2479,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_q4e_hc_mix(params, tensor);
             } break;
+        case GGML_OP_Q4E_EXPERTS:
+            {
+                ggml_compute_forward_q4e_experts(params, tensor);
+            } break;
         case GGML_OP_MAP_CUSTOM1:
             {
                 ggml_compute_forward_map_custom1(params, tensor);
@@ -2379,6 +2667,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_DSV4_HC_PRE:
         case GGML_OP_DSV4_HC_POST:
         case GGML_OP_Q4E_WSUM:
+        case GGML_OP_Q4E_EXPERTS:
             {
                 n_tasks = n_threads;
             } break;
@@ -3007,6 +3296,10 @@ struct ggml_cplan ggml_graph_plan(
                         // Workspace for tiled (see tiled.h)
                         cur = GGML_PAD(cur, 64);
                         cur += ggml_tiled_wdata_size(n_tasks, node);
+                    } break;
+                case GGML_OP_Q4E_EXPERTS:
+                    {
+                        cur = ggml_q4e_experts_wsize(node, n_tasks);
                     } break;
                 case GGML_OP_OUT_PROD:
                     {
