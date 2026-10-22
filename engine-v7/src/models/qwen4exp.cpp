@@ -1181,6 +1181,13 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, co
         ffn_shexp = ggml_mul(ctx0, ffn_shexp, shared_gate);
         cb(ffn_shexp, "ffn_shexp_gated", il);
 
+        // add the shared expert to the graph before the routed output: with the routed experts split between the GPU
+        // and the CPU, the GPU computes it while it waits for the CPU's blocks
+        static const bool shexp_early = [] { const char * e = getenv("LLAMA_SHEXP_EARLY"); return e == nullptr || atoi(e) != 0; }();
+        if (shexp_early) {
+            ggml_build_forward_expand(gf, ffn_shexp);
+        }
+
         cur = ggml_add(ctx0, moe_out, ffn_shexp);
         cb(cur, "ffn_out", il);
     } else {

@@ -3,6 +3,8 @@
 // and prints GB/s of weights, for ggml's vec_dot and for the multi-row kernels.
 #include "ggml.h"
 #include "ggml-cpu.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
 
 #include <atomic>
 #include <chrono>
@@ -104,7 +106,80 @@ static void bench_mmid(ggml_type type, int64_t ne0, int64_t ne1, int n_tokens, i
     ggml_free(ctx);
 }
 
+// GPU mode: one weight [ne0, ne1] times 64 activation vectors as 64 independent mul_mats in one graph on the first
+// GPU backend, so the time per op is the kernel time without the launch of a graph; prints us/op and GB/s
+static void bench_gpu_mm(ggml_backend_t be, ggml_type type, int64_t ne0, int64_t ne1, int n_tokens) {
+    const int n_ops = 64;
+    ggml_init_params ip = { (size_t) (3*n_ops + 8)*ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    ggml_tensor * w = ggml_new_tensor_2d(ctx, type, ne0, ne1);
+    std::vector<ggml_tensor *> xs, outs;
+    for (int i = 0; i < n_ops; ++i) {
+        xs.push_back(ggml_new_tensor_2d(ctx, GGML_TYPE_F32, ne0, n_tokens));
+    }
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+    for (int i = 0; i < n_ops; ++i) {
+        outs.push_back(ggml_mul_mat(ctx, w, xs[i]));
+        ggml_build_forward_expand(gf, outs.back());
+    }
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
+    std::mt19937 rng(3);
+    std::vector<float> f(ne0*ne1);
+    for (auto & v : f) {
+        v = (float) (rng() % 2000) / 1000.0f - 1.0f;
+    }
+    std::vector<uint8_t> q(ggml_nbytes(w));
+    if (type == GGML_TYPE_F32) {
+        memcpy(q.data(), f.data(), q.size());
+    } else if (type == GGML_TYPE_BF16) {
+        ggml_fp32_to_bf16_row(f.data(), (ggml_bf16_t *) q.data(), ne0*ne1);
+    } else if (type == GGML_TYPE_F16) {
+        ggml_fp32_to_fp16_row(f.data(), (ggml_fp16_t *) q.data(), ne0*ne1);
+    } else {
+        ggml_quantize_chunk(type, f.data(), q.data(), 0, ne1, ne0, nullptr);
+    }
+    ggml_backend_tensor_set(w, q.data(), 0, q.size());
+    std::vector<float> xv(ne0*n_tokens, 0.5f);
+    for (auto * x : xs) {
+        ggml_backend_tensor_set(x, xv.data(), 0, xv.size()*sizeof(float));
+    }
+    for (int i = 0; i < 3; ++i) {
+        ggml_backend_graph_compute(be, gf);
+    }
+    const int reps = 20;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < reps; ++i) {
+        ggml_backend_graph_compute(be, gf);
+    }
+    ggml_backend_synchronize(be);
+    const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count()/(reps*n_ops);
+    printf("  %-7s [%6lld x %6lld] x %d: %7.2f us/op, %6.1f GB/s\n", ggml_type_name(type), (long long) ne0, (long long) ne1,
+        n_tokens, us, ggml_nbytes(w)/us/1e3);
+    ggml_backend_buffer_free(buf);
+    ggml_free(ctx);
+}
+
 int main(int argc, char ** argv) {
+    if (argc > 1 && strcmp(argv[1], "gpu") == 0) {
+        ggml_backend_load_all();
+        ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+        if (!dev) {
+            printf("no GPU\n");
+            return 1;
+        }
+        ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
+        printf("%s\n", ggml_backend_dev_description(dev));
+        const int nt = argc > 2 ? atoi(argv[2]) : 1;
+        struct shape { ggml_type t; int64_t a, b; };
+        for (shape s : { shape{ GGML_TYPE_Q8_0, 10240, 320 }, shape{ GGML_TYPE_Q8_0, 320, 10240 }, shape{ GGML_TYPE_BF16, 10240, 320 },
+                         shape{ GGML_TYPE_BF16, 320, 10240 }, shape{ GGML_TYPE_Q8_0, 10240, 4 }, shape{ GGML_TYPE_BF16, 2560, 512 },
+                         shape{ GGML_TYPE_Q8_0, 2560, 512 }, shape{ GGML_TYPE_IQ4_XS, 2560, 4096 }, shape{ GGML_TYPE_IQ4_XS, 4096, 2560 },
+                         shape{ GGML_TYPE_Q8_0, 2560, 4096 }, shape{ GGML_TYPE_Q8_0, 2560, 1 }, shape{ GGML_TYPE_BF16, 2560, 1 } }) {
+            bench_gpu_mm(be, s.t, s.a, s.b, nt);
+        }
+        ggml_backend_free(be);
+        return 0;
+    }
     const size_t mib = argc > 1 ? (size_t) atoi(argv[1]) : 1024;
     ggml_cpu_init();
     if (argc > 2) {
