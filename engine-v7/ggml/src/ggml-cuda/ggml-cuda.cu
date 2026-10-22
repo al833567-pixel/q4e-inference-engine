@@ -64,7 +64,6 @@
 #include "ggml-cuda/dsv4-hc.cuh"
 #include "ggml-cuda/q4e.cuh"
 #include "ggml-cuda/q4e-fuse.cuh"
-#include "ggml-cuda/q4e-mmid.cuh"
 #include "ggml-cuda/set.cuh"
 #include "ggml-cuda/set-rows.cuh"
 #include "ggml-cuda/pad_reflect_1d.cuh"
@@ -4396,83 +4395,6 @@ static int ggml_cuda_q4e_try_fuse(ggml_backend_cuda_context * ctx, ggml_cgraph *
     return n;
 }
 
-// the q4e GPU expert tier (build_moe_ffn_q4e) for 1-4 tokens, see q4e-mmid.cu:
-//   MUL_MAT_ID gate, MUL_MAT_ID up, GLU            -> one kernel (blocks selected by several tokens read once)
-//   MUL_MAT_ID down, [Q4E_ROUTE weights], Q4E_WSUM -> one kernel (no per-block rows)
-// only where the down projection feeds a Q4E_WSUM, other MoE graphs keep the generic kernels
-static int ggml_cuda_find_q4e_wsum(const ggml_cgraph * cgraph, int down_idx) {
-    const ggml_tensor * down = cgraph->nodes[down_idx];
-    for (int k = down_idx + 1; k <= down_idx + 2 && k < cgraph->n_nodes; ++k) {
-        const ggml_tensor * n = cgraph->nodes[k];
-        if (n->op == GGML_OP_Q4E_WSUM) {
-            return n->src[0] == down ? k : -1;
-        }
-        for (int s = 0; s < GGML_MAX_SRC; ++s) {
-            if (n->src[s] == down) {
-                return -1;
-            }
-        }
-    }
-    return -1;
-}
-
-static bool ggml_cuda_q4e_mmid_ok(const ggml_tensor * mm) {
-    const ggml_tensor * src0 = mm->src[0];
-    const ggml_tensor * src1 = mm->src[1];
-    const ggml_tensor * ids  = mm->src[2];
-    return ggml_cuda_q4e_mmid_type_supported(src0->type) && src0->ne[3] == 1 &&
-        src0->ne[0] % ggml_blck_size(src0->type) == 0 && src0->nb[1] % ggml_type_size(src0->type) == 0 &&
-        src1->type == GGML_TYPE_F32 && src1->ne[3] == 1 && mm->type == GGML_TYPE_F32 && ggml_is_contiguous(mm) &&
-        ids->type == GGML_TYPE_I32 && ids->nb[0] == sizeof(int32_t) &&
-        mm->ne[2] >= 1 && mm->ne[2] <= Q4E_MMID_MAX_TOKENS && ids->ne[0]*ids->ne[1] <= Q4E_MMID_MAX_PAIRS;
-}
-
-static int ggml_cuda_try_fuse_q4e_mmid(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
-    if (!ggml_cuda_q4e_mmid_enabled()) {
-        return 0;
-    }
-    ggml_tensor * node = cgraph->nodes[i];
-
-    // gate/up: the down projection that reads the glu must feed a Q4E_WSUM
-    if (i + 3 < cgraph->n_nodes && ggml_cuda_can_fuse(cgraph, i, { GGML_OP_MUL_MAT_ID, GGML_OP_MUL_MAT_ID, GGML_OP_GLU }, {})) {
-        ggml_tensor * glu  = cgraph->nodes[i + 2];
-        ggml_tensor * gate = glu->src[0];
-        ggml_tensor * up   = glu->src[1];
-        const ggml_tensor * down = cgraph->nodes[i + 3];
-        const int out_idx = i + 2;
-        if (((gate == node && up == cgraph->nodes[i + 1]) || (up == node && gate == cgraph->nodes[i + 1])) &&
-                ggml_cuda_should_fuse_mul_mat(up, gate, glu) && ggml_cuda_q4e_mmid_ok(up) &&
-                up->src[1]->ne[1] == 1 && ggml_is_contiguous(up->src[1]) &&
-                down->op == GGML_OP_MUL_MAT_ID && down->src[1] == glu && ggml_cuda_find_q4e_wsum(cgraph, i + 3) > 0 &&
-                ggml_cuda_check_fusion_memory_ranges(cgraph, i, 3, &out_idx, 1)) {
-            ggml_cuda_q4e_mmid_gate_up(*cuda_ctx, gate->src[0], up->src[0], up->src[1], up->src[2], glu,
-                ggml_get_glu_op(glu), ggml_get_op_params_f32(glu, 3));
-            return 2;
-        }
-    }
-
-    // down + weighted sum, with the weights op in between computed first
-    const int ws_idx = ggml_cuda_find_q4e_wsum(cgraph, i);
-    if (ws_idx > 0 && ggml_cuda_q4e_mmid_ok(node) && node->src[1]->ne[1] == node->src[2]->ne[0]) {
-        ggml_tensor * ws = cgraph->nodes[ws_idx];
-        const int idxs[2] = { i, ws_idx };
-        const ggml_op ops[2] = { GGML_OP_MUL_MAT_ID, GGML_OP_Q4E_WSUM };
-        const ggml_tensor * w = ws->src[1];
-        if (ggml_can_fuse_subgraph_ext(cgraph, idxs, 2, ops, &ws_idx, 1) &&
-                w->type == GGML_TYPE_F32 && w->ne[1] == node->ne[1] && w->ne[2] == node->ne[2] &&
-                ws->ne[0] == node->ne[0] && ws->ne[1] == node->ne[2]) {
-            ggml_tensor * mid = ws_idx == i + 2 ? cgraph->nodes[i + 1] : nullptr;
-            ggml_cuda_q4e_mmid_down_wsum(*cuda_ctx, node->src[0], node->src[1], node->src[2], w, ws, [&] {
-                if (mid && !ggml_cuda_is_view_or_noop(mid) && (mid->flags & GGML_TENSOR_FLAG_COMPUTE)) {
-                    GGML_ASSERT(ggml_cuda_compute_forward(*cuda_ctx, mid));
-                }
-            });
-            return ws_idx - i;
-        }
-    }
-    return 0;
-}
-
 // try and fuse nodes and return the number of nodes to skip
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
@@ -4485,13 +4407,6 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     }
 
     ggml_tensor * node = cgraph->nodes[i];
-
-    if (node->op == GGML_OP_MUL_MAT_ID && cuda_ctx->stream_context().concurrent_events.empty()) {
-        const int n_skip = ggml_cuda_try_fuse_q4e_mmid(cuda_ctx, cgraph, i);
-        if (n_skip > 0) {
-            return n_skip;
-        }
-    }
 
     if (node->op == GGML_OP_MUL_MAT_ID && cuda_ctx->stream_context().concurrent_events.empty() &&
             ggml_cuda_match_shared_expert(cgraph, i, i + 3) &&
