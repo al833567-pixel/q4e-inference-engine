@@ -2612,9 +2612,19 @@ common_params common_base_params_to_speculative(const common_params & params) {
         result.n_ubatch = params_spec.n_ubatch;
     }
 
-    // the MoE cache and q4e are only used by the target context
+    // the MoE cache is only used by the target context; q4e also keeps the draft's experts, with a small VRAM tier
     result.moe_cache_size = 0;
     result.q4e_blocks     = -1;
+    if (const int32_t mib = common_q4e_draft_mib(params); mib > 0 && has_draft) {
+        result.q4e_blocks      = params.q4e_blocks;
+        result.q4e_vram_mib    = mib;
+        result.q4e_reserve_mib = 0;
+        result.q4e_profile     = "";
+        result.tensor_buft_overrides.insert(result.tensor_buft_overrides.begin(), llm_ffn_exps_cpu_override());
+        if (result.tensor_buft_overrides.back().pattern != nullptr) {
+            result.tensor_buft_overrides.push_back({ nullptr, nullptr });
+        }
+    }
 
     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
     // TODO: refactor such properties to be announced by the speculative types

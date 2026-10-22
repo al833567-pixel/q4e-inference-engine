@@ -1757,6 +1757,9 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.q4e_vram_mib = params.q4e_vram_mib;
     cparams.q4e_ram_mib  = params.q4e_ram_mib;
     cparams.q4e_reserve_mib = params.q4e_reserve_mib;
+    if (params.q4e_vram_mib < 0 && params.q4e_reserve_mib < 0 && common_q4e_draft_mib(params) > 0) {
+        cparams.q4e_reserve_mib = 640 + common_q4e_draft_mib(params); // the draft's tier is sized after the target's
+    }
     if (params.q4e_blocks >= 0) {
         q4e_pack    = params.model.path + ".q4e-down.bin";
         q4e_profile = params.q4e_profile.empty() ? params.model.path + ".q4e-profile" : params.q4e_profile;

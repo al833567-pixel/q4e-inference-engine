@@ -4587,7 +4587,7 @@ struct ggml_cuda_op_profile {
         return on;
     }
 
-    void add(const ggml_tensor * node, double t) {
+    static std::string key_of(const ggml_tensor * node) {
         std::string name = node->name;
         const size_t dash = name.rfind('-');
         if (dash != std::string::npos && dash + 1 < name.size() && isdigit((unsigned char) name[dash + 1])) {
@@ -4598,6 +4598,10 @@ struct ggml_cuda_op_profile {
             key += std::string(" ") + ggml_type_name(node->src[0]->type);
         }
         key += ")";
+        return key;
+    }
+
+    void add_key(const std::string & key, double t) {
         std::lock_guard<std::mutex> lk(mtx);
         auto & e = ms[key];
         e.first  += t;
@@ -4613,6 +4617,31 @@ struct ggml_cuda_op_profile {
     }
 
     std::chrono::steady_clock::time_point t_last{};
+
+    struct pending_op { std::string key; cudaEvent_t a, b; };
+    std::vector<pending_op> pending;
+
+    void pend(const ggml_tensor * node, cudaEvent_t a, cudaEvent_t b) {
+        pending.push_back({ key_of(node), a, b });
+    }
+
+    // after the graph: the GPU time of each op, then the totals
+    void flush(cudaStream_t stream) {
+        if (pending.empty()) {
+            return;
+        }
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        for (auto & p : pending) {
+            float t = 0.0f;
+            CUDA_CHECK(cudaEventElapsedTime(&t, p.a, p.b));
+            add_key(p.key, t);
+            CUDA_CHECK(cudaEventDestroy(p.a));
+            CUDA_CHECK(cudaEventDestroy(p.b));
+        }
+        pending.clear();
+        n_graphs++;
+    }
+    int64_t n_graphs = 0;
 
     ~ggml_cuda_op_profile() {
         print();
@@ -4776,21 +4805,23 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
 
-                const bool profile = ggml_cuda_op_profile::enabled() && !use_cuda_graph;
-                std::chrono::steady_clock::time_point t_prof;
+                // decode-sized ops only (one to a few tokens), timed with events so the GPU is not stalled per op
+                const bool profile = ggml_cuda_op_profile::enabled() && !use_cuda_graph && node->ne[1] <= 64 && node->ne[2] <= 4 && node->ne[3] <= 4;
+                cudaEvent_t ev_prof[2] = {};
                 if (profile) {
-                    CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
-                    t_prof = std::chrono::steady_clock::now();
+                    CUDA_CHECK(cudaEventCreate(&ev_prof[0]));
+                    CUDA_CHECK(cudaEventCreate(&ev_prof[1]));
+                    CUDA_CHECK(cudaEventRecord(ev_prof[0], cuda_ctx->stream()));
                 }
                 struct prof_guard {
-                    bool on; ggml_backend_cuda_context * ctx; const ggml_tensor * node; std::chrono::steady_clock::time_point t0;
+                    bool on; ggml_backend_cuda_context * ctx; const ggml_tensor * node; cudaEvent_t * ev;
                     ~prof_guard() {
                         if (on) {
-                            CUDA_CHECK(cudaStreamSynchronize(ctx->stream()));
-                            g_cuda_op_profile.add(node, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                            CUDA_CHECK(cudaEventRecord(ev[1], ctx->stream()));
+                            g_cuda_op_profile.pend(node, ev[0], ev[1]);
                         }
                     }
-                } guard { profile, cuda_ctx, node, t_prof };
+                } guard { profile, cuda_ctx, node, ev_prof };
 
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
@@ -4830,6 +4861,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 if (!is_concurrent_event_active) {
                     try_launch_concurrent_event(node);
                }
+            }
+            if (ggml_cuda_op_profile::enabled() && !use_cuda_graph) {
+                g_cuda_op_profile.flush(cuda_ctx->stream());
             }
         }
 

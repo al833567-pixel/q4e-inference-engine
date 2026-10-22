@@ -1261,6 +1261,16 @@ inline std::string llm_ffn_block_regex(int idx, const char * ffn_regex) {
     return string_format("blk\\.%d%s", idx, ffn_regex);
 }
 
+// q4e: VRAM tier of the draft model's experts in MiB, 0 = the draft keeps its experts where -ngld puts them
+// (env Q4E_DRAFT_MIB, default 0: on Flash-Next the draft's CPU blocks made each draft step 2.5x slower)
+inline int32_t common_q4e_draft_mib(const common_params & params) {
+    if (params.q4e_blocks < 0 || !params.speculative.has_dft()) {
+        return 0;
+    }
+    const char * e = getenv("Q4E_DRAFT_MIB");
+    return e ? atoi(e) : 0;
+}
+
 inline llama_model_tensor_buft_override llm_ffn_exps_cpu_override() {
     return { LLM_FFN_EXPS_REGEX, ggml_backend_cpu_buffer_type() };
 }

@@ -200,6 +200,7 @@ struct llama_q4e::impl {
         std::vector<float>    score;  // per expert, decayed use count
         std::vector<uint64_t> last;   // token of the last update of score
         std::vector<uint32_t> uses;   // per expert, uses since the start: the working set
+        std::vector<int32_t>  sel;    // the selections of the last ubatch, written by the routing op
         bool dirty = false;
 
         mutable bool has_sel = false; // the current graph copies the selections of this layer to sel_all
@@ -675,6 +676,10 @@ struct llama_q4e::impl {
                 l.score.assign(g.n_expert, 0.0f);
                 l.last.assign(g.n_expert, 0);
                 l.uses.assign(g.n_expert, 0);
+                l.sel.assign((size_t) model.hparams.n_expert_used_max()*params.max_batch, -1);
+                l.t.n_expert   = g.n_expert;
+                l.t.table_host = l.table.data();
+                l.t.sel_host   = l.sel.data();
             }
         }
 
@@ -1203,17 +1208,10 @@ struct llama_q4e::impl {
             finish_fills();
         }
 
-        // count the selections, read at once from each device
+        // count the selections, the routing ops wrote them on the host
         const int64_t n_used = model.hparams.n_expert_used_max();
         const int64_t n_sel  = n_used*n_tokens;
-        std::vector<std::vector<int32_t>> sel(devices.size());
-        for (size_t id = 0; id < devices.size(); ++id) {
-            const device & d = devices[id];
-            if (d.sel_all && n_tokens <= params.max_batch) {
-                sel[id].resize(n_sel*layers.size());
-                ggml_backend_tensor_get(d.sel_all, sel[id].data(), 0, sel[id].size()*sizeof(int32_t));
-            }
-        }
+
         struct cand { float s; int32_t il; int32_t v; };
         std::vector<std::vector<cand>> cands(groups.size());
         std::vector<blk_ref> ram_cands; // blocks read from the SSD
@@ -1224,7 +1222,7 @@ struct llama_q4e::impl {
                 continue;
             }
             const group & g = groups[l.ig];
-            const int32_t * ids_l = sel[g.dev].data() + il*n_sel;
+            const int32_t * ids_l = l.sel.data();
             for (int64_t i = 0; i < n_sel; ++i) {
                 const int32_t e = ids_l[i];
                 if (e < 0 || e >= g.n_expert) {

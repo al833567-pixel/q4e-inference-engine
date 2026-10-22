@@ -2662,6 +2662,77 @@ static void q4e_weighted_row_sum(ggml_tensor * dst, int ith, int nth, void * use
     }
 }
 
+// q4e routing, on the CPU: for row r = k*n_blocks + b of a token (block b of its k-th expert e, virtual expert
+// v = e*n_blocks + b) the GPU reads the VRAM slot of v, or zero slot zero_slot + r; the CPU reads v if it is not in
+// VRAM, or -1. an expert not in VRAM with less than Q4E_SKIP of the token's router weight is skipped (CPU id -1)
+static float q4e_skip_frac() {
+    static const float v = [] {
+        const char * e = getenv("Q4E_SKIP");
+        return e ? (float) atof(e) : 0.0f;
+    }();
+    return v;
+}
+
+template <typename F>
+static void q4e_route_each(const ggml_tensor * sel, const ggml_tensor * w, const llama_q4e::layer_tensors & t, F && f) {
+    const int64_t n_used   = sel->ne[0];
+    const int64_t n_tokens = sel->ne[1];
+    const float   skip     = q4e_skip_frac();
+    for (int64_t tok = 0; tok < n_tokens; ++tok) {
+        const int32_t * s  = (const int32_t *) ((const char *) sel->data + tok*sel->nb[1]);
+        const char    * wt = (const char *) w->data + tok*w->nb[2];
+        float wsum = 0.0f;
+        for (int64_t k = 0; k < n_used; ++k) {
+            wsum += *(const float *) (wt + k*w->nb[1]);
+        }
+        for (int64_t k = 0; k < n_used; ++k) {
+            const int32_t e  = s[k];
+            const float   wk = *(const float *) (wt + k*w->nb[1]);
+            const bool keep  = wk >= skip*wsum;
+            for (int32_t b = 0; b < t.n_blocks; ++b) {
+                const int64_t r = k*t.n_blocks + b;
+                const int32_t v = e*t.n_blocks + b;
+                const float slot = (e >= 0 && e < t.n_expert) ? t.table_host[v] : -1.0f;
+                f(tok, k, e, r, v, slot, keep, wk);
+            }
+        }
+    }
+}
+
+static void q4e_route_ids(ggml_tensor * dst, int ith, int nth, void * userdata) {
+    GGML_UNUSED(nth);
+    if (ith != 0) {
+        return;
+    }
+    const auto & t = *(const llama_q4e::layer_tensors *) userdata;
+    const ggml_tensor * sel = dst->src[0];
+    const int64_t n_used = sel->ne[0];
+    const int64_t n_rows = dst->ne[0];
+    int32_t * gpu = (int32_t *) dst->data;
+    int32_t * cpu = (int32_t *) ((char *) dst->data + dst->nb[2]);
+    q4e_route_each(sel, dst->src[1], t, [&](int64_t tok, int64_t k, int32_t e, int64_t r, int32_t v, float slot, bool keep, float) {
+        if (r % t.n_blocks == 0) {
+            t.sel_host[tok*n_used + k] = e;
+        }
+        gpu[tok*n_rows + r] = slot >= 0.0f ? (int32_t) slot : t.zero_slot + (int32_t) r;
+        cpu[tok*n_rows + r] = slot >= 0.0f || !keep ? -1 : v;
+    });
+}
+
+static void q4e_route_weights(ggml_tensor * dst, int ith, int nth, void * userdata) {
+    GGML_UNUSED(nth);
+    if (ith != 0) {
+        return;
+    }
+    const auto & t = *(const llama_q4e::layer_tensors *) userdata;
+    const int64_t n_rows = dst->ne[1];
+    float * gpu = (float *) dst->data;
+    float * cpu = (float *) ((char *) dst->data + dst->nb[3]);
+    q4e_route_each(dst->src[0], dst->src[1], t, [&](int64_t tok, int64_t, int32_t, int64_t r, int32_t, float slot, bool keep, float wk) {
+        gpu[tok*n_rows + r] = slot >= 0.0f ? wk : 0.0f;
+        cpu[tok*n_rows + r] = slot < 0.0f && keep ? wk : 0.0f;
+    });
+}
 ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
          ggml_tensor * cur,
          ggml_tensor * selected_experts,
@@ -2675,40 +2746,23 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
     const int64_t n_blocks = t.n_blocks;
     const int64_t n_rows   = n_used*n_blocks; // the blocks of the selected experts
 
-    // the selections of all layers go to one buffer, read once after the ubatch to move blocks between the tiers
-    ggml_build_forward_expand(gf, ggml_cpy(ctx0, selected_experts,
-        ggml_view_2d(ctx0, t.sel_all, n_used, n_tokens, n_used*ggml_element_size(t.sel_all), il*n_used*n_tokens*ggml_element_size(t.sel_all))));
+    // the routing runs on the CPU, one op for the ids and one for the weights of both tiers: on the GPU it took about
+    // 25 small kernels per layer. it reads the host copy of the slot table and writes the selections for the tiers;
+    // cur is an argument so that its copy to the CPU happens here, before the GPU blocks start
     q4e->set_selection(il);
+    llama_q4e::layer_tensors * ut = const_cast<llama_q4e::layer_tensors *>(&t);
+    ggml_tensor * rargs[3] = { selected_experts, weights, cur };
+    ggml_tensor * rids = ggml_custom_4d(ctx0, GGML_TYPE_I32, n_rows, n_tokens, 2, 1, rargs, 3, q4e_route_ids, 1, ut);
+    ggml_tensor * rw   = ggml_custom_4d(ctx0, GGML_TYPE_F32, 1, n_rows, n_tokens, 2, rargs, 2, q4e_route_weights, 1, ut);
+    ggml_set_name(rids, "q4e_route_ids");
+    ggml_set_name(rw,   "q4e_route_w");
+    ggml_backend_sched_set_tensor_backend(sched, rids, backend_cpu);
+    ggml_backend_sched_set_tensor_backend(sched, rw,   backend_cpu);
 
-    // block b of expert e is virtual expert e*n_blocks + b, it gets the router weight of e
-    ggml_tensor * vsel = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
-    ggml_tensor * w    = weights; // [1, n_used, n_tokens]
-    if (n_blocks > 1) {
-        vsel = ggml_scale(ctx0, ggml_reshape_3d(ctx0, vsel, 1, n_used, n_tokens), (float) n_blocks);
-        vsel = ggml_repeat_4d(ctx0, vsel, n_blocks, n_used, n_tokens, 1);
-        vsel = ggml_add(ctx0, vsel, ggml_arange(ctx0, 0.0f, (float) n_blocks, 1.0f));
-        w    = ggml_repeat_4d(ctx0, ggml_reshape_4d(ctx0, weights, 1, 1, n_used, n_tokens), 1, n_blocks, n_used, n_tokens);
-    }
-    vsel = ggml_reshape_2d(ctx0, vsel, n_rows, n_tokens);
-    w    = ggml_reshape_3d(ctx0, w, 1, n_rows, n_tokens);
-
-    // the VRAM slot of each block, -1 if it is not in VRAM
-    ggml_tensor * vsel_i = ggml_cast(ctx0, vsel, GGML_TYPE_I32);
-    ggml_tensor * slot   = ggml_get_rows(ctx0, t.table, ggml_reshape_1d(ctx0, vsel_i, n_rows*n_tokens)); // [1, n_rows*n_tokens]
-    slot = ggml_reshape_2d(ctx0, slot, n_rows, n_tokens);
-
-    ggml_tensor * hit  = ggml_clamp(ctx0, ggml_scale_bias(ctx0, slot, 1.0f, 1.0f), 0.0f, 1.0f); // 1 in VRAM, 0 not
-    ggml_tensor * miss = ggml_scale_bias(ctx0, hit, -1.0f, 1.0f);
-
-    // the GPU reads a zero slot in place of the blocks it does not have, one per row because mul_mat_id needs distinct
-    // ids within a token; the CPU skips the blocks in VRAM (id -1)
-    ggml_tensor * zero_row = ggml_arange(ctx0, (float) (t.zero_slot + 1), (float) (t.zero_slot + 1 + n_rows), 1.0f); // [n_rows]
-    ggml_tensor * ids_gpu  = ggml_cast(ctx0, ggml_add(ctx0, slot, ggml_mul(ctx0, miss, zero_row)), GGML_TYPE_I32);
-    ggml_tensor * ids_cpu = ggml_cast(ctx0, ggml_sub(ctx0, ggml_mul(ctx0, vsel, miss), hit), GGML_TYPE_I32);
-
-    ggml_tensor * w_gpu = ggml_mul(ctx0, w, ggml_reshape_3d(ctx0, hit,  1, n_rows, n_tokens));
-    ggml_tensor * w_cpu = ggml_mul(ctx0, w, ggml_reshape_3d(ctx0, miss, 1, n_rows, n_tokens));
-
+    ggml_tensor * ids_gpu = ggml_view_2d(ctx0, rids, n_rows, n_tokens, rids->nb[1], 0);
+    ggml_tensor * ids_cpu = ggml_view_2d(ctx0, rids, n_rows, n_tokens, rids->nb[1], rids->nb[2]);
+    ggml_tensor * w_gpu   = ggml_view_3d(ctx0, rw, 1, n_rows, n_tokens, rw->nb[1], rw->nb[2], 0);
+    ggml_tensor * w_cpu   = ggml_view_3d(ctx0, rw, 1, n_rows, n_tokens, rw->nb[1], rw->nb[2], rw->nb[3]);
     ggml_tensor * x = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
 
     const float limit = hparams.swiglu_clamp_exp[il];

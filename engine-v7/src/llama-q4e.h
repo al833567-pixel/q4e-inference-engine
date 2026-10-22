@@ -48,6 +48,11 @@ public:
         ggml_tensor * table     = nullptr; // F32 [1, n_expert*n_blocks]: the slot of each block, -1 if not in VRAM
         ggml_tensor * sel_all   = nullptr; // I32: layer il writes its [n_used, n_tokens] selections at il*n_used*n_tokens
 
+        // host side, read by the routing op on the CPU while the ubatch computes; they change only between ubatches
+        int32_t       n_expert   = 0;
+        const float * table_host = nullptr; // [n_expert*n_blocks]: the slot of each block, -1 if not in VRAM
+        int32_t *     sel_host   = nullptr; // [n_used*max_batch]: the routing op writes the selections here
+
         ggml_backend_t backend_gpu = nullptr;
     };
 
