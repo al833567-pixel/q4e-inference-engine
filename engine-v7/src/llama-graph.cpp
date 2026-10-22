@@ -2896,13 +2896,29 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
     // (or the iGPU tier: its copies of the blocks, computed by the iGPU)
     ggml_tensor * y_cpu = experts(t.gate_host, t.up_host, t.down_host, ids_cpu, w_cpu, t.backend_tier2 ? t.backend_tier2 : backend_cpu,
         t.backend_tier2 ? "ffn_moe_q4e_igpu" : "ffn_moe_q4e_cpu");
-    ggml_build_forward_expand(gf, y_cpu);
     if (q4e_tier2_all(t, n_tokens)) {
         // the iGPU tier computed every block (the routing ops gave it all of them)
+        ggml_build_forward_expand(gf, y_cpu);
         cb(y_cpu, "ffn_moe_out", il);
         return y_cpu;
     }
+    // the iGPU tier: its blocks up to the down projection, then the GPU blocks, then its weighted sum. The scheduler
+    // starts a split when the backend changes, so the GPU blocks no longer share a split with the add that waits for
+    // the iGPU: they run while the iGPU computes. The routing ops are added first: their copies from the GPU must
+    // not wait for the GPU blocks
+    const bool interleave = t.backend_tier2 && y_cpu->op == GGML_OP_Q4E_WSUM;
+    if (interleave) {
+        ggml_build_forward_expand(gf, rids);
+        ggml_build_forward_expand(gf, rw);
+        ggml_build_forward_expand(gf, y_cpu->src[0]);
+    } else {
+        ggml_build_forward_expand(gf, y_cpu);
+    }
     ggml_tensor * y_gpu = experts(t.gate_pool, t.up_pool, t.down_pool, ids_gpu, w_gpu, t.backend_gpu, "ffn_moe_q4e_gpu");
+    if (interleave) {
+        ggml_build_forward_expand(gf, y_gpu);
+        ggml_build_forward_expand(gf, y_cpu);
+    }
 
     ggml_tensor * moe_out = ggml_add(ctx0, y_gpu, y_cpu);
     cb(moe_out, "ffn_moe_out", il);

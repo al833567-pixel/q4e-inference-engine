@@ -3667,6 +3667,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         ggml_vk_create_pipeline(device, device->pipeline_lightning_indexer_f32[k_type], name.c_str(), lightning_indexer_f32_len, lightning_indexer_f32_data, "main", 5, sizeof(vk_op_lightning_indexer_push_constants), {1, 1, 1}, {(uint32_t)k_type, fa_block_bytes(k_type)}, 1, true);
     }
 
+    ggml_vk_create_pipeline(device, device->pipeline_q4e_mmvid_rows_q2_0, "q4e_mmvid_rows_q2_0_f32", q4e_mmvid_rows_q2_0_f32_len, q4e_mmvid_rows_q2_0_f32_data, "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {64, 1, 1}, {64, 1}, 1, true);
     ggml_vk_create_pipeline(device, device->pipeline_q4e_wsum_f32, "q4e_wsum_f32", q4e_wsum_f32_len, q4e_wsum_f32_data, "main", 3, sizeof(vk_op_q4e_wsum_push_constants), {256, 1, 1}, {}, 1);
 
     {
@@ -7791,6 +7792,13 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
 
     if (quantize_y) {
         to_q8_1 = ggml_vk_get_quantize_pipeline(ctx, GGML_TYPE_Q8_1);
+    }
+
+    // q4e: a small-K q2_0 (the down projection of MoE expert blocks): one row per thread (GGML_VK_Q4E_ROWS=0 off)
+    static const bool q4e_rows = [] { const char * e = getenv("GGML_VK_Q4E_ROWS"); return e == nullptr || atoi(e) != 0; }();
+    if (q4e_rows && !quantize_y && src0->type == GGML_TYPE_Q2_0 && ne00 % 64 == 0 && ne00 <= 1024 && src1->type == GGML_TYPE_F32 &&
+            !x_non_contig && !y_non_contig && ctx->num_additional_fused_ops == 0 && ctx->device->pipeline_q4e_mmvid_rows_q2_0) {
+        dmmv = ctx->device->pipeline_q4e_mmvid_rows_q2_0;
     }
 
     const bool qx_needs_dequant = x_non_contig;
