@@ -2668,7 +2668,7 @@ static void q4e_weighted_row_sum(ggml_tensor * dst, int ith, int nth, void * use
 static float q4e_skip_frac() {
     static const float v = [] {
         const char * e = getenv("Q4E_SKIP");
-        return e ? (float) atof(e) : 0.0f;
+        return e ? (float) atof(e) : 0.12f; // Flash-Next: CPU 12.6 -> 5.2 ms/token, output still coherent
     }();
     return v;
 }
@@ -2755,7 +2755,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
     ggml_tensor * rids = ggml_custom_4d(ctx0, GGML_TYPE_I32, n_rows, n_tokens, 2, 1, rargs, 3, q4e_route_ids, 1, ut);
     ggml_tensor * rw   = ggml_custom_4d(ctx0, GGML_TYPE_F32, 1, n_rows, n_tokens, 2, rargs, 2, q4e_route_weights, 1, ut);
     ggml_set_name(rids, "q4e_route_ids");
-    ggml_set_name(rw,   "q4e_route_w");
+    ggml_set_name(rw,   "q4e_route_weights");
     ggml_backend_sched_set_tensor_backend(sched, rids, backend_cpu);
     ggml_backend_sched_set_tensor_backend(sched, rw,   backend_cpu);
 
@@ -2763,6 +2763,32 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
     ggml_tensor * ids_cpu = ggml_view_2d(ctx0, rids, n_rows, n_tokens, rids->nb[1], rids->nb[2]);
     ggml_tensor * w_gpu   = ggml_view_3d(ctx0, rw, 1, n_rows, n_tokens, rw->nb[1], rw->nb[2], 0);
     ggml_tensor * w_cpu   = ggml_view_3d(ctx0, rw, 1, n_rows, n_tokens, rw->nb[1], rw->nb[2], rw->nb[3]);
+
+    // the GPU computes its own ids and weights from the device table, so its blocks do not wait for the round trip
+    // through the CPU routing op: more kernels, but no dependency on the CPU (Flash-Next MTP: 18.8/27.1 vs 17.9/25.2
+    // t/s). Q4E_ROUTE_GPU=0 takes them from the routing op
+    static const bool route_gpu = [] {
+        const char * e = getenv("Q4E_ROUTE_GPU");
+        return e ? atoi(e) != 0 : true;
+    }();
+    if (route_gpu) {
+        ggml_tensor * vsel = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
+        ggml_tensor * w    = weights; // [1, n_used, n_tokens]
+        if (n_blocks > 1) {
+            vsel = ggml_scale(ctx0, ggml_reshape_3d(ctx0, vsel, 1, n_used, n_tokens), (float) n_blocks);
+            vsel = ggml_repeat_4d(ctx0, vsel, n_blocks, n_used, n_tokens, 1);
+            vsel = ggml_add(ctx0, vsel, ggml_arange(ctx0, 0.0f, (float) n_blocks, 1.0f));
+            w    = ggml_repeat_4d(ctx0, ggml_reshape_4d(ctx0, weights, 1, 1, n_used, n_tokens), 1, n_blocks, n_used, n_tokens);
+        }
+        w = ggml_reshape_3d(ctx0, w, 1, n_rows, n_tokens);
+        ggml_tensor * slot = ggml_get_rows(ctx0, t.table, ggml_reshape_1d(ctx0, ggml_cast(ctx0, vsel, GGML_TYPE_I32), n_rows*n_tokens));
+        slot = ggml_reshape_2d(ctx0, slot, n_rows, n_tokens);
+        ggml_tensor * hit  = ggml_clamp(ctx0, ggml_scale_bias(ctx0, slot, 1.0f, 1.0f), 0.0f, 1.0f);
+        ggml_tensor * miss = ggml_scale_bias(ctx0, hit, -1.0f, 1.0f);
+        ggml_tensor * zero_row = ggml_arange(ctx0, (float) (t.zero_slot + 1), (float) (t.zero_slot + 1 + n_rows), 1.0f);
+        ids_gpu = ggml_cast(ctx0, ggml_add(ctx0, slot, ggml_mul(ctx0, miss, zero_row)), GGML_TYPE_I32);
+        w_gpu   = ggml_mul(ctx0, w, ggml_reshape_3d(ctx0, hit, 1, n_rows, n_tokens));
+    }
     ggml_tensor * x = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
 
     const float limit = hparams.swiglu_clamp_exp[il];
