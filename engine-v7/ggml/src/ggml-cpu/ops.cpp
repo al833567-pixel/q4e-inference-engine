@@ -11734,12 +11734,18 @@ void ggml_compute_forward_q4e_route(
     const int32_t zero_slot = ggml_get_op_params_i32(dst, 1);
     const bool    weights   = ggml_get_op_params_i32(dst, 2) != 0;
     const bool    neg_miss  = ggml_get_op_params_i32(dst, 3) != 0;
+    const bool    rest      = ggml_get_op_params_i32(dst, 4) != 0; // ggml_q4e_route_rest
+    const float   skip      = ggml_get_op_params_f32(dst, 5);
     const int64_t n_virt    = ggml_nelements(dst->src[2]);
     const int64_t n_used    = sel->ne[0];
     const int64_t n_tokens  = sel->ne[1];
     const int64_t n_rows    = n_used*n_blocks;
 
     for (int64_t t = 0; t < n_tokens; ++t) {
+        float wsum = 0.0f;
+        for (int64_t k = 0; k < n_used; ++k) {
+            wsum += *(const float *) ((const char *) w->data + k*w->nb[1] + t*w->nb[2]);
+        }
         for (int64_t k = 0; k < n_used; ++k) {
             const int32_t e  = *(const int32_t *) ((const char *) sel->data + k*sel->nb[0] + t*sel->nb[1]);
             const float   wk = *(const float *) ((const char *) w->data + k*w->nb[1] + t*w->nb[2]);
@@ -11747,7 +11753,14 @@ void ggml_compute_forward_q4e_route(
                 const int64_t r = k*n_blocks + b;
                 const int64_t v = (int64_t) e*n_blocks + b;
                 const float slot = v >= 0 && v < n_virt ? table[v] : -1.0f;
-                if (weights) {
+                if (rest) {
+                    const bool mine = v >= 0 && v < n_virt && slot < 0.0f && wk >= skip*wsum;
+                    if (weights) {
+                        ((float *) dst->data)[t*n_rows + r] = mine ? wk : 0.0f;
+                    } else {
+                        ((int32_t *) dst->data)[t*n_rows + r] = mine ? (int32_t) v : -1;
+                    }
+                } else if (weights) {
                     ((float *) dst->data)[t*n_rows + r] = slot >= 0.0f ? wk : 0.0f;
                 } else {
                     ((int32_t *) dst->data)[t*n_rows + r] = slot >= 0.0f ? (int32_t) slot : neg_miss ? -1 : zero_slot + (int32_t) r;

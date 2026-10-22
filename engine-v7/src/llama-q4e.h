@@ -69,7 +69,8 @@ public:
     void set_timing_lane(ggml_backend_sched_t sched);
 
     // the current graph copies the selected experts of layer il to sel_all, they are read after each ubatch
-    void set_selection(int32_t il) const;
+    // (on_device: a copy op writes them to sel_all at il*n_used*n_tokens, else the routing op to sel_host)
+    void set_selection(int32_t il, bool on_device = false) const;
 
     // a new graph is about to be built: the selections of the old one are gone
     void new_graph();

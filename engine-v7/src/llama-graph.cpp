@@ -2807,6 +2807,33 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
         ids_gpu = ggml_cast(ctx0, ggml_add(ctx0, slot, ggml_mul(ctx0, miss, zero_row)), GGML_TYPE_I32);
         w_gpu   = ggml_mul(ctx0, w, ggml_reshape_3d(ctx0, hit, 1, n_rows, n_tokens));
     }
+
+    // the iGPU tier up to 8 tokens: its ids and weights from the device table as well, and the selections copied to
+    // the device's sel_all (read after the ubatch), so the layer has no CPU split between the GPU and the iGPU
+    // (Q4E_T2_ROUTE_GPU=0 keeps the routing ops)
+    static const bool t2_route_gpu = [] { const char * e = getenv("Q4E_T2_ROUTE_GPU"); return e == nullptr || atoi(e) != 0; }();
+    bool sel_on_device = false;
+    if (t.backend_tier2 && !q4e_tier2_all(t, n_tokens) && t2_route_gpu && t.sel_all && ids_gpu == fused_ids && fused_ids) {
+        ggml_tensor * rest_ids = ggml_q4e_route_rest(ctx0, selected_experts, weights, t.table, (int) n_blocks, q4e_skip_frac(), false);
+        ggml_tensor * rest_w   = ggml_q4e_route_rest(ctx0, selected_experts, weights, t.table, (int) n_blocks, q4e_skip_frac(), true);
+        if (ggml_backend_supports_op(t.backend_gpu, rest_ids)) {
+            ggml_tensor * sel_dst = ggml_view_2d(ctx0, t.sel_all, n_used, n_tokens, n_used*sizeof(int32_t),
+                (size_t) il*n_used*n_tokens*sizeof(int32_t));
+            ggml_tensor * sel_cpy = ggml_cpy(ctx0, selected_experts, sel_dst);
+            if (ggml_backend_supports_op(t.backend_gpu, sel_cpy)) {
+                ids_cpu = rest_ids;
+                // the weights move to the iGPU with its first split (their copy from the GPU then does not wait for
+                // the GPU blocks, which are queued before the weighted sum)
+                w_cpu   = ggml_cont(ctx0, ggml_view_3d(ctx0, rest_w, 1, n_rows, n_tokens, rest_w->nb[1], rest_w->nb[2], 0));
+                ggml_backend_sched_set_tensor_backend(sched, w_cpu, t.backend_tier2);
+                ggml_build_forward_expand(gf, sel_cpy);
+                ggml_build_forward_expand(gf, rest_ids);
+                ggml_build_forward_expand(gf, w_cpu);
+                sel_on_device = true;
+                q4e->set_selection(il, true);
+            }
+        }
+    }
     ggml_tensor * x = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
 
     const float limit = hparams.swiglu_clamp_exp[il];
@@ -2908,8 +2935,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
     // not wait for the GPU blocks
     const bool interleave = t.backend_tier2 && y_cpu->op == GGML_OP_Q4E_WSUM;
     if (interleave) {
-        ggml_build_forward_expand(gf, rids);
-        ggml_build_forward_expand(gf, rw);
+        if (!sel_on_device) {
+            ggml_build_forward_expand(gf, rids);
+            ggml_build_forward_expand(gf, rw);
+        }
         ggml_build_forward_expand(gf, y_cpu->src[0]);
     } else {
         ggml_build_forward_expand(gf, y_cpu);

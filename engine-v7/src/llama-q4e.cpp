@@ -212,6 +212,7 @@ struct llama_q4e::impl {
         ggml_tensor * t2[N_PARTS] = {}; // the iGPU tier's copies of the blocks
 
         mutable bool has_sel = false; // the current graph copies the selections of this layer to sel_all
+        mutable bool sel_dev = false; // ... on the device (sel_all), else the routing op writes them to sel
     };
 
     struct fill {
@@ -272,6 +273,7 @@ struct llama_q4e::impl {
     std::vector<fill> pending;
     std::vector<ram_move> ram_moves; // done by the worker after the copies, the in_ram flags are set when planned
     std::vector<int32_t> ids;
+    std::vector<int32_t> sel_buf; // the selections read from sel_all
 
     // the copies into VRAM: a worker reads the blocks into the staging buffers and queues them on the second
     // stream while the next ubatch computes
@@ -1409,6 +1411,28 @@ struct llama_q4e::impl {
         const int64_t n_used = model.hparams.n_expert_used_max();
         const int64_t n_sel  = n_used*n_tokens;
 
+        // or the graph copied them to the device's sel_all, layer il at il*n_sel (the iGPU tier): one read per device
+        for (device & d : devices) {
+            if (!d.sel_all || n_tokens > params.max_batch) {
+                continue;
+            }
+            bool any = false;
+            for (const layer & l : layers) {
+                any = any || (l.ig >= 0 && l.has_sel && l.sel_dev && groups[l.ig].dev == (int32_t) (&d - devices.data()));
+            }
+            if (!any) {
+                continue;
+            }
+            sel_buf.resize((size_t) n_sel*layers.size());
+            ggml_backend_tensor_get(d.sel_all, sel_buf.data(), 0, sel_buf.size()*sizeof(int32_t));
+            for (size_t il = 0; il < layers.size(); ++il) {
+                layer & l = layers[il];
+                if (l.ig >= 0 && l.has_sel && l.sel_dev && groups[l.ig].dev == (int32_t) (&d - devices.data())) {
+                    memcpy(l.sel.data(), sel_buf.data() + il*n_sel, n_sel*sizeof(int32_t));
+                }
+            }
+        }
+
         struct cand { float s; int32_t il; int32_t v; };
         std::vector<std::vector<cand>> cands(groups.size());
         std::vector<blk_ref> ram_cands; // blocks read from the SSD
@@ -1652,13 +1676,15 @@ void llama_q4e::set_timing_lane(ggml_backend_sched_t sched) {
     pimpl->timing_lane = sched;
 }
 
-void llama_q4e::set_selection(int32_t il) const {
+void llama_q4e::set_selection(int32_t il, bool on_device) const {
     pimpl->layers[il].has_sel = true;
+    pimpl->layers[il].sel_dev = on_device;
 }
 
 void llama_q4e::new_graph() {
     for (auto & l : pimpl->layers) {
         l.has_sel = false;
+        l.sel_dev = false;
     }
 }
 

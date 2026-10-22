@@ -6612,7 +6612,7 @@ struct ggml_tensor * ggml_q4e_route(
         ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, n_rows, n_tokens) :
         ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_rows, n_tokens);
 
-    const int32_t params[] = { n_blocks, zero_slot, weights ? 1 : 0, neg_miss ? 1 : 0 };
+    const int32_t params[] = { n_blocks, zero_slot, weights ? 1 : 0, neg_miss ? 1 : 0, 0, 0 };
     ggml_set_op_params(result, params, sizeof(params));
 
     result->op     = GGML_OP_Q4E_ROUTE;
@@ -6620,6 +6620,22 @@ struct ggml_tensor * ggml_q4e_route(
     result->src[1] = w;
     result->src[2] = table;
 
+    return result;
+}
+
+// ggml_q4e_route_rest
+
+struct ggml_tensor * ggml_q4e_route_rest(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * sel,
+        struct ggml_tensor  * w,
+        struct ggml_tensor  * table,
+        int                   n_blocks,
+        float                 skip,
+        bool                  weights) {
+    struct ggml_tensor * result = ggml_q4e_route(ctx, sel, w, table, n_blocks, 0, weights, true);
+    ggml_set_op_params_i32(result, 4, 1);
+    ggml_set_op_params_f32(result, 5, skip);
     return result;
 }
 
