@@ -1275,6 +1275,12 @@ struct llama_q4e::impl {
         return lane == 1 ? &lane_t[il] : &layers[il].t;
     }
 
+    // the scheduler of lane 1 for the timing of the next end_ubatch
+    ggml_backend_sched_t timing_lane      = nullptr;
+    ggml_backend_sched_t timing_lane_prev = nullptr;
+    int64_t lane_prev_copy[Q4E_MAX_BACKENDS]    = {};
+    int64_t lane_prev_compute[Q4E_MAX_BACKENDS] = {};
+
     // lane 1 of a pipelined pair: copies of the layer tensors whose selections go after those of lane 0
     int lane = 0;
     int64_t lane_offset = 0;
@@ -1451,6 +1457,28 @@ struct llama_q4e::impl {
                 sched_prev_compute[i] = co;
             }
         }
+        // lane 1 of a pipelined pair: its backends have the same order, their times add up
+        if (timing_lane != nullptr) {
+            if (timing_lane != timing_lane_prev) {
+                timing_lane_prev = timing_lane;
+                for (int i = 0; i < Q4E_MAX_BACKENDS; ++i) {
+                    lane_prev_copy[i]    = 0;
+                    lane_prev_compute[i] = 0;
+                }
+            }
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(timing_lane) && i < Q4E_MAX_BACKENDS; ++i) {
+                int64_t cu = 0;
+                int64_t co = 0;
+                int64_t ns = 0;
+                if (ggml_backend_sched_get_timing(timing_lane, i, &cu, &co, &ns)) {
+                    c.sched_copy_us[i]    += cu - lane_prev_copy[i];
+                    c.sched_compute_us[i] += co - lane_prev_compute[i];
+                    lane_prev_copy[i]    = cu;
+                    lane_prev_compute[i] = co;
+                }
+            }
+            timing_lane = nullptr;
+        }
 
         // the statistics are about generation, prompt ubatches only train the scores
         if (n_tokens <= 4) {
@@ -1532,6 +1560,10 @@ const llama_q4e::layer_tensors * llama_q4e::get(int32_t il, int64_t n_tokens) co
 
 void llama_q4e::set_lane(int lane, int64_t offset) {
     pimpl->set_lane(lane, offset);
+}
+
+void llama_q4e::set_timing_lane(ggml_backend_sched_t sched) {
+    pimpl->timing_lane = sched;
 }
 
 void llama_q4e::set_selection(int32_t il) const {

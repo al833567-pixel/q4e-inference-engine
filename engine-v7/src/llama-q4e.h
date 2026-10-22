@@ -63,6 +63,9 @@ public:
     // its routing ops write the selections after those of lane 0 (lane 0: offset 0)
     void set_lane(int lane, int64_t offset);
 
+    // the next end_ubatch also counts the timing of this scheduler (lane 1 of a pipelined pair)
+    void set_timing_lane(ggml_backend_sched_t sched);
+
     // the current graph copies the selected experts of layer il to sel_all, they are read after each ubatch
     void set_selection(int32_t il) const;
 

@@ -942,7 +942,7 @@ void llama_context::sched_reserve() {
 
     const int64_t t_end_us = ggml_time_us();
 
-    LLAMA_LOG_INFO("%s: reserve took %.2f ms, sched copies = %d [6]\n",
+    LLAMA_LOG_INFO("%s: reserve took %.2f ms, sched copies = %d [38]\n",
             __func__, (t_end_us - t_start_us)/1000.0, ggml_backend_sched_get_n_copies(sched.get()));
 }
 
@@ -2383,6 +2383,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 ubatch_failed(ub1);
                 return status == GGML_STATUS_ABORTED ? 2 : -3;
             }
+            q4e->set_timing_lane(sched_lane.get());
             q4e->end_ubatch(sched.get(), ub0.n_tokens + ub1.n_tokens);
 
             n_outputs = n_out0;
