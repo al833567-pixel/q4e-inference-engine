@@ -63,6 +63,7 @@
 #include "ggml-cuda/gated_delta_net.cuh"
 #include "ggml-cuda/dsv4-hc.cuh"
 #include "ggml-cuda/q4e.cuh"
+#include "ggml-cuda/q4e-fuse.cuh"
 #include "ggml-cuda/set.cuh"
 #include "ggml-cuda/set-rows.cuh"
 #include "ggml-cuda/pad_reflect_1d.cuh"
@@ -3840,11 +3841,569 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
     return false;
 }
 
+static int g_cuda_dump_split = 0; // graph_compute calls, for GGML_CUDA_DUMP
+
+// [GGML_CUDA_DUMP=N] the kernels of graph splits N..N+7 of one decode step
+static bool ggml_cuda_dump_active() {
+    static const int dump_at = [] { const char * e = getenv("GGML_CUDA_DUMP"); return e ? atoi(e) : 0; }();
+    return dump_at > 0 && g_cuda_dump_split >= dump_at && g_cuda_dump_split < dump_at + 8;
+}
+
+// q4e: CUDA-only fusions of the small ops of a qwen4exp decode step (Q4E_CUDA_FUSE=0 turns them off). The graph is
+// unchanged; a fused group may run a few independent nodes that sit between its ops first ("hoisted"), which is only
+// done when their memory does not touch the fused group's.
+
+static bool q4e_fuse_enabled() {
+    static const bool on = [] { const char * e = getenv("Q4E_CUDA_FUSE"); return e == nullptr || atoi(e) != 0; }();
+    return on;
+}
+
+static bool q4e_fuse_debug() {
+    static const bool on = getenv("Q4E_FUSE_DEBUG") != nullptr;
+    return on;
+}
+
+static bool q4e_is_skip(const ggml_tensor * t) {
+    return ggml_cuda_is_view_or_noop(t) || (t->flags & GGML_TENSOR_FLAG_COMPUTE) == 0;
+}
+
+// the next node at or after j that launches work
+static int q4e_next_real(const ggml_cgraph * g, int j) {
+    while (j < g->n_nodes && q4e_is_skip(g->nodes[j])) {
+        j++;
+    }
+    return j;
+}
+
+static bool q4e_overlap(const ggml_tensor * a, const ggml_tensor * b) {
+    if (a == nullptr || b == nullptr) {
+        return false;
+    }
+    const char * a0 = (const char *) a->data;
+    const char * b0 = (const char *) b->data;
+    const char * a1 = a0 + (a->buffer ? ggml_backend_buft_get_alloc_size(a->buffer->buft, a) : ggml_nbytes(a));
+    const char * b1 = b0 + (b->buffer ? ggml_backend_buft_get_alloc_size(b->buffer->buft, b) : ggml_nbytes(b));
+    return a0 < b1 && b0 < a1;
+}
+
+static bool q4e_disjoint(const std::vector<const ggml_tensor *> & as, const std::vector<const ggml_tensor *> & bs) {
+    for (const ggml_tensor * a : as) {
+        for (const ggml_tensor * b : bs) {
+            if (q4e_overlap(a, b)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool q4e_is_view_of(const ggml_tensor * t, const ggml_tensor * base) {
+    return t == base || (t != nullptr && t->view_src == base);
+}
+
+// every intermediate of the fused range [first, last] (and every view of one) is used only by the range's own
+// non-hoisted nodes, and none is a graph output
+static bool q4e_uses_inside(const ggml_cgraph * g, int first, int last, const std::vector<int> & hoisted,
+        const std::vector<const ggml_tensor *> & inter) {
+    auto is_hoisted = [&](int k) { return std::find(hoisted.begin(), hoisted.end(), k) != hoisted.end(); };
+    auto is_inter   = [&](const ggml_tensor * t) {
+        for (const ggml_tensor * x : inter) {
+            if (q4e_is_view_of(t, x)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (int k = first; k <= last; ++k) {
+        const ggml_tensor * n = g->nodes[k];
+        if (is_hoisted(k) || !is_inter(n)) {
+            continue;
+        }
+        if (n->flags & GGML_TENSOR_FLAG_OUTPUT) {
+            return false;
+        }
+        int uses = 0;
+        for (int m = first; m <= last; ++m) {
+            if (is_hoisted(m)) {
+                continue;
+            }
+            for (int s = 0; s < GGML_MAX_SRC; ++s) {
+                uses += g->nodes[m]->src[s] == n;
+            }
+        }
+        if (uses != ggml_node_get_use_count(g, k)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// a node run ahead of a fused group: it reads nothing the group writes, and writes nothing the group reads or wrote
+// before it in the original order
+static bool q4e_can_hoist(const ggml_tensor * h, const std::vector<const ggml_tensor *> & group_in,
+        const std::vector<const ggml_tensor *> & group_out, const std::vector<const ggml_tensor *> & group_out_before) {
+    for (int s = 0; s < GGML_MAX_SRC; ++s) {
+        if (h->src[s] && !q4e_disjoint({ h->src[s] }, group_out)) {
+            return false;
+        }
+    }
+    return q4e_disjoint({ h }, group_in) && q4e_disjoint({ h }, group_out_before);
+}
+
+static void q4e_run_hoisted(ggml_backend_cuda_context * ctx, ggml_cgraph * g, const std::vector<int> & hoisted) {
+    for (int k : hoisted) {
+        ggml_tensor * h = g->nodes[k];
+        const bool ok = ggml_cuda_compute_forward(*ctx, h);
+        GGML_ASSERT(ok);
+        if (ggml_cuda_dump_active()) {
+            fprintf(stderr, "dump s%d %3d: %-14s %-40s [%lld,%lld,%lld] x1 (hoisted)\n", g_cuda_dump_split, k, ggml_op_desc(h), h->name,
+                (long long) h->ne[0], (long long) h->ne[1], (long long) h->ne[2]);
+        }
+    }
+}
+
+// concat(state, x^T) -> (cont(view) -> cpy into the cache) per rollback slot [-> ssm_conv -> silu]
+static int q4e_try_fuse_conv_state(ggml_backend_cuda_context * ctx, ggml_cgraph * g, int i) {
+    ggml_tensor * cat = g->nodes[i];
+    if (cat->op != GGML_OP_CONCAT || ggml_get_op_params_i32(cat, 0) != 0 || cat->type != GGML_TYPE_F32 || !ggml_is_contiguous(cat)) {
+        return 0;
+    }
+    const ggml_tensor * src0 = cat->src[0];
+    const ggml_tensor * src1 = cat->src[1];
+    if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || cat->ne[3] != 1) {
+        return 0;
+    }
+    const int64_t S  = src0->ne[0];
+    const int64_t T  = src1->ne[0];
+    const int64_t C  = cat->ne[1];
+    const int64_t ns = cat->ne[2];
+    if (S < 1 || S + T > 24 || S + 1 > 8 || src0->ne[1] != C || src1->ne[1] != C || src0->ne[2] != ns || src1->ne[2] != ns) {
+        return 0;
+    }
+
+    q4e_conv_state_args args = {};
+    args.concat = cat;
+    args.slot_s_stride = 0;
+
+    std::vector<const ggml_tensor *> inter;
+    std::vector<const ggml_tensor *> outs = { cat };
+    int last = i;
+    int j = q4e_next_real(g, i + 1);
+    while (j < g->n_nodes && args.n_slots < Q4E_FUSE_MAX_SLOTS) {
+        ggml_tensor * cont = g->nodes[j];
+        if (cont->op != GGML_OP_CONT) {
+            break;
+        }
+        const ggml_tensor * v = cont->src[0];
+        if (v->op != GGML_OP_VIEW || v->view_src != cat || v->type != GGML_TYPE_F32 || v->nb[0] != sizeof(float) ||
+                v->nb[1] != cat->nb[1] || v->nb[2] != cat->nb[2] || v->ne[0] != S || v->ne[1] != C || v->ne[2] != ns ||
+                v->ne[3] != 1 || v->view_offs % sizeof(float) != 0 || (int64_t) (v->view_offs/sizeof(float)) + S > S + T) {
+            break;
+        }
+        const int k = q4e_next_real(g, j + 1);
+        if (k >= g->n_nodes) {
+            break;
+        }
+        ggml_tensor * cpy = g->nodes[k];
+        const ggml_tensor * dst = cpy->src[1];
+        if (cpy->op != GGML_OP_CPY || cpy->src[0] != cont || dst->type != GGML_TYPE_F32 || dst->nb[0] != sizeof(float) ||
+                dst->ne[0] != S*C || dst->ne[1] != ns || dst->ne[2] != 1 || dst->ne[3] != 1) {
+            break;
+        }
+        const int64_t s_stride = dst->nb[1]/sizeof(float);
+        if (args.n_slots > 0 && s_stride != args.slot_s_stride) {
+            break;
+        }
+        args.slot_s_stride = s_stride;
+        args.slot_off[args.n_slots] = (int) (v->view_offs/sizeof(float));
+        args.slot_dst[args.n_slots] = (float *) dst->data;
+        args.n_slots++;
+        inter.push_back(cont);
+        outs.push_back(dst);
+        last = k;
+        j = q4e_next_real(g, k + 1);
+    }
+    if (args.n_slots == 0) {
+        return 0;
+    }
+
+    const std::vector<const ggml_tensor *> outs_before = outs;
+    std::vector<const ggml_tensor *> ins = { src0, src1 };
+
+    // ssm_conv + silu of the concat, after a few independent nodes (the gather of the recurrent state)
+    std::vector<int> hoisted;
+    bool defer_hoisted = false;
+    {
+        std::vector<int> hs;
+        int k = j;
+        while (k < g->n_nodes && (int) hs.size() <= 4 && g->nodes[k]->op != GGML_OP_SSM_CONV) {
+            hs.push_back(k);
+            k = q4e_next_real(g, k + 1);
+        }
+        const int ks = k < g->n_nodes ? q4e_next_real(g, k + 1) : g->n_nodes;
+        if (k < g->n_nodes && ks < g->n_nodes) {
+            ggml_tensor * conv = g->nodes[k];
+            ggml_tensor * silu = g->nodes[ks];
+            const ggml_tensor * w = conv->src[1];
+            bool ok = conv->op == GGML_OP_SSM_CONV && conv->src[0] == cat && conv->type == GGML_TYPE_F32 &&
+                w->type == GGML_TYPE_F32 && w->ne[0] == S + 1 && w->ne[1] == C && w->nb[0] == sizeof(float) &&
+                silu->op == GGML_OP_UNARY && ggml_get_unary_op(silu) == GGML_UNARY_OP_SILU && silu->src[0] == conv &&
+                silu->type == GGML_TYPE_F32 && silu->nb[0] == sizeof(float) && silu->ne[0] == C && silu->ne[1] == T && silu->ne[2] == ns;
+            std::vector<const ggml_tensor *> ins_c  = ins;
+            std::vector<const ggml_tensor *> outs_c = outs;
+            ins_c.push_back(w);
+            outs_c.push_back(silu);
+            // the nodes in between run first if they leave the group's memory alone, else after the group if they
+            // leave the silu output alone (the only tensor the group then writes earlier than before)
+            bool hoist = true;
+            bool defer = true;
+            for (int h : hs) {
+                const ggml_tensor * hn = g->nodes[h];
+                hoist = hoist && q4e_can_hoist(hn, ins_c, outs_c, outs_before);
+                defer = defer && q4e_disjoint({ hn }, { silu });
+                for (int s = 0; s < GGML_MAX_SRC; ++s) {
+                    defer = defer && !q4e_overlap(hn->src[s], silu);
+                }
+            }
+            std::vector<const ggml_tensor *> inter_c = inter;
+            inter_c.push_back(conv);
+            if (q4e_fuse_debug()) {
+                GGML_LOG_INFO("q4e fuse conv %s: ops %d hoist %d defer %d uses %d io %d\n", cat->name, ok, hoist, defer,
+                    q4e_uses_inside(g, i, ks, hs, inter_c), q4e_disjoint(outs_c, ins_c));
+            }
+            ok = ok && (hoist || defer) && q4e_uses_inside(g, i, ks, hs, inter_c) && q4e_disjoint(outs_c, ins_c);
+            if (ok) {
+                defer_hoisted = !hoist;
+                hoisted = hs;
+                inter   = inter_c;
+                ins     = ins_c;
+                outs    = outs_c;
+                last    = ks;
+                args.conv_w   = w;
+                args.conv_out = silu;
+            }
+        }
+    }
+
+    if (args.conv_w == nullptr && (!q4e_uses_inside(g, i, last, {}, inter) || !q4e_disjoint(outs, ins))) {
+        return 0;
+    }
+
+    if (defer_hoisted) {
+        ggml_cuda_op_q4e_conv_state(*ctx, args);
+        q4e_run_hoisted(ctx, g, hoisted);
+    } else {
+        q4e_run_hoisted(ctx, g, hoisted);
+        ggml_cuda_op_q4e_conv_state(*ctx, args);
+    }
+    return last - i;
+}
+
+// mul_mat(alpha) -> add(dt) -> softplus -> mul(a) and mul_mat(beta) -> sigmoid of a GDN layer
+static int q4e_try_fuse_gdn_gates(ggml_backend_cuda_context * ctx, ggml_cgraph * g, int i) {
+    ggml_tensor * mm_a = g->nodes[i];
+    if (mm_a->op != GGML_OP_MUL_MAT || mm_a->src[0]->type != GGML_TYPE_BF16) {
+        return 0;
+    }
+    const ggml_tensor * y = mm_a->src[1];
+    const int64_t H = mm_a->ne[0];
+    const int64_t T = mm_a->ne[1];
+    if (mm_a->ne[2] != 1 || mm_a->ne[3] != 1 || !ggml_cuda_q4e_gdn_gates_supported(mm_a->src[0], y)) {
+        return 0;
+    }
+
+    const int k1 = q4e_next_real(g, i + 1);
+    const int k2 = q4e_next_real(g, k1 + 1);
+    const int k3 = q4e_next_real(g, k2 + 1);
+    const int k4 = q4e_next_real(g, k3 + 1);
+    const int k5 = q4e_next_real(g, k4 + 1);
+    if (k5 >= g->n_nodes) {
+        return 0;
+    }
+    ggml_tensor * add  = g->nodes[k1];
+    ggml_tensor * sp   = g->nodes[k2];
+    ggml_tensor * gate = g->nodes[k3];
+    ggml_tensor * mm_b = g->nodes[k4];
+    ggml_tensor * beta = g->nodes[k5];
+
+    if (add->op != GGML_OP_ADD || sp->op != GGML_OP_UNARY || ggml_get_unary_op(sp) != GGML_UNARY_OP_SOFTPLUS || sp->src[0] != add ||
+            gate->op != GGML_OP_MUL || mm_b->op != GGML_OP_MUL_MAT || beta->op != GGML_OP_UNARY ||
+            ggml_get_unary_op(beta) != GGML_UNARY_OP_SIGMOID) {
+        return 0;
+    }
+    if (!q4e_is_view_of(add->src[0], mm_a) && !q4e_is_view_of(add->src[1], mm_a)) {
+        return 0;
+    }
+    const ggml_tensor * dt = q4e_is_view_of(add->src[0], mm_a) ? add->src[1] : add->src[0];
+    if (gate->src[0] != sp && gate->src[1] != sp) {
+        return 0;
+    }
+    const ggml_tensor * a = gate->src[0] == sp ? gate->src[1] : gate->src[0];
+    const ggml_tensor * w_b = mm_b->src[0];
+    if (mm_b->src[1] != y || w_b->type != GGML_TYPE_BF16 || w_b->ne[0] != mm_a->src[0]->ne[0] || w_b->ne[1] != H ||
+            !ggml_cuda_q4e_gdn_gates_supported(w_b, y) || !q4e_is_view_of(beta->src[0], mm_b)) {
+        return 0;
+    }
+    for (const ggml_tensor * t : { dt, a }) {
+        if (t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t) || t->ne[0] != H || ggml_nelements(t) != H) {
+            return 0;
+        }
+    }
+    for (const ggml_tensor * t : { (const ggml_tensor *) add, (const ggml_tensor *) sp, (const ggml_tensor *) gate, (const ggml_tensor *) beta }) {
+        if (t->type != GGML_TYPE_F32 || ggml_nelements(t) != H*T) {
+            return 0;
+        }
+    }
+    // the add broadcasts dt over the tokens only, the outputs are [H, T] in token order
+    if (add->ne[0] != H || gate->ne[0] != H || !ggml_is_contiguous(gate) || !ggml_is_contiguous(beta) ||
+            !(beta->ne[0] == H || (beta->ne[0] == 1 && beta->ne[1] == H))) {
+        return 0;
+    }
+    if (!q4e_uses_inside(g, i, k5, {}, { mm_a, add, sp, mm_b }) ||
+            !q4e_disjoint({ gate, beta }, { mm_a->src[0], w_b, y, dt, a })) {
+        return 0;
+    }
+
+    ggml_cuda_op_q4e_gdn_gates(*ctx, mm_a->src[0], w_b, y, dt, a, gate, beta);
+    return k5 - i;
+}
+
+// scale -> sigmoid -> scale -> dsv4_hc_post, then rms_norm -> mul of the new residual (the next hc mixer)
+static int q4e_try_fuse_hc_post_norm(ggml_backend_cuda_context * ctx, ggml_cgraph * g, int i) {
+    if (g->nodes[i]->op != GGML_OP_SCALE ||
+            !ggml_cuda_can_fuse(g, i, { GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_SCALE, GGML_OP_DSV4_HC_POST }, { GGML_UNARY_OP_SIGMOID })) {
+        return 0;
+    }
+    ggml_tensor * post = g->nodes[i + 3];
+    const int kr = q4e_next_real(g, i + 4);
+    const int km = kr < g->n_nodes ? q4e_next_real(g, kr + 1) : g->n_nodes;
+    if (km >= g->n_nodes) {
+        return 0;
+    }
+    ggml_tensor * rms = g->nodes[kr];
+    ggml_tensor * mul = g->nodes[km];
+    if (rms->op != GGML_OP_RMS_NORM || rms->src[0] != post || mul->op != GGML_OP_MUL || (mul->src[0] != rms && mul->src[1] != rms)) {
+        if (q4e_fuse_debug()) {
+            GGML_LOG_INFO("q4e fuse hc_post_norm %s: pattern %s(%s) %s\n", post->name, ggml_op_desc(rms), rms->src[0] ? rms->src[0]->name : "-", ggml_op_desc(mul));
+        }
+        return 0;
+    }
+    const ggml_tensor * w        = mul->src[0] == rms ? mul->src[1] : mul->src[0];
+    const ggml_tensor * x        = post->src[0];
+    const ggml_tensor * residual = post->src[1];
+    const ggml_tensor * raw      = g->nodes[i]->src[0];
+    if (post->src[3] != nullptr || post->type != GGML_TYPE_F32 || post->ne[3] != 1 || post->nb[0] != sizeof(float) ||
+            x->nb[0] != sizeof(float) || residual->nb[0] != sizeof(float) || x->ne[0] != post->ne[0] ||
+            mul->type != GGML_TYPE_F32 || !ggml_is_contiguous(mul) || !ggml_are_same_shape(mul, post) ||
+            w->type != GGML_TYPE_F32 || w->ne[3] != 1 || !ggml_is_contiguous_rows(w) ||
+            !ggml_cuda_q4e_rms_vec_ok(post, w, mul)) {
+        if (q4e_fuse_debug()) {
+            GGML_LOG_INFO("q4e fuse hc_post_norm %s: shape/type check failed (vec %d)\n", post->name, ggml_cuda_q4e_rms_vec_ok(post, w, mul));
+        }
+        return 0;
+    }
+    // the hc_post output may replace its residual in place, element for element
+    const bool residual_inplace = residual->data == post->data && ggml_are_same_layout(residual, post);
+    if (q4e_fuse_debug()) {
+        GGML_LOG_INFO("q4e fuse hc_post_norm %s: uses %d mul-x %d mul-res %d mul-raw %d mul-w %d post-in %d res %d/%d\n", post->name,
+            q4e_uses_inside(g, i, km, {}, { rms }), q4e_disjoint({ mul }, { x }), q4e_disjoint({ mul }, { residual }),
+            q4e_disjoint({ mul }, { raw }), q4e_disjoint({ mul }, { w }), q4e_disjoint({ post }, { x, raw, w }),
+            residual_inplace, q4e_disjoint({ post }, { residual }));
+    }
+    if (!q4e_uses_inside(g, i, km, {}, { rms }) ||
+            !q4e_disjoint({ mul }, { x, residual, raw, w, post }) ||
+            !q4e_disjoint({ post }, { x, raw, w }) ||
+            (!residual_inplace && !q4e_disjoint({ post }, { residual }))) {
+        return 0;
+    }
+
+    ggml_cuda_op_q4e_hc_post_norm(*ctx, post, g->nodes[i], g->nodes[i + 2], rms, mul);
+    return km - i;
+}
+
+// rms_norm -> mul(w) [-> an independent node, the z projection] -> sigmoid(z) -> mul: the gated norm of a GDN layer
+static int q4e_try_fuse_norm_gate(ggml_backend_cuda_context * ctx, ggml_cgraph * g, int i) {
+    ggml_tensor * rms = g->nodes[i];
+    if (rms->op != GGML_OP_RMS_NORM || rms->type != GGML_TYPE_F32) {
+        return 0;
+    }
+    const int k1 = q4e_next_real(g, i + 1);
+    if (k1 >= g->n_nodes) {
+        return 0;
+    }
+    ggml_tensor * mul1 = g->nodes[k1];
+    if (mul1->op != GGML_OP_MUL || (mul1->src[0] != rms && mul1->src[1] != rms)) {
+        return 0;
+    }
+    std::vector<int> hoisted;
+    int ks = q4e_next_real(g, k1 + 1);
+    if (ks < g->n_nodes && !(g->nodes[ks]->op == GGML_OP_UNARY && ggml_get_unary_op(g->nodes[ks]) == GGML_UNARY_OP_SIGMOID)) {
+        hoisted.push_back(ks);
+        ks = q4e_next_real(g, ks + 1);
+    }
+    const int km = ks < g->n_nodes ? q4e_next_real(g, ks + 1) : g->n_nodes;
+    if (km >= g->n_nodes) {
+        return 0;
+    }
+    ggml_tensor * sig  = g->nodes[ks];
+    ggml_tensor * mul2 = g->nodes[km];
+    if (sig->op != GGML_OP_UNARY || ggml_get_unary_op(sig) != GGML_UNARY_OP_SIGMOID || mul2->op != GGML_OP_MUL ||
+            !((mul2->src[0] == mul1 && mul2->src[1] == sig) || (mul2->src[0] == sig && mul2->src[1] == mul1))) {
+        return 0;
+    }
+    const ggml_tensor * x = rms->src[0];
+    const ggml_tensor * w = mul1->src[0] == rms ? mul1->src[1] : mul1->src[0];
+    const ggml_tensor * z = sig->src[0];
+    if (x->type != GGML_TYPE_F32 || w->type != GGML_TYPE_F32 || z->type != GGML_TYPE_F32 || mul1->type != GGML_TYPE_F32 ||
+            sig->type != GGML_TYPE_F32 || mul2->type != GGML_TYPE_F32 ||
+            !ggml_are_same_shape(mul1, x) || !ggml_are_same_shape(sig, x) || !ggml_are_same_shape(mul2, x) || !ggml_are_same_shape(z, x) ||
+            !ggml_is_contiguous(z) || !ggml_is_contiguous(mul2) || !ggml_is_contiguous_rows(w) ||
+            !ggml_cuda_q4e_rms_vec_ok(x, w, mul1) || !ggml_cuda_is_aligned(z, 16) || ((uintptr_t) mul2->data & 15) != 0 ||
+            x->ne[1] > 65535 || x->ne[2] > 65535 || x->ne[3] > 65535) {
+        return 0;
+    }
+    const bool z_inplace = z->data == mul2->data;
+    if (!q4e_uses_inside(g, i, km, hoisted, { rms, mul1, sig }) ||
+            !q4e_disjoint({ mul2 }, { x, w }) || (!z_inplace && !q4e_disjoint({ mul2 }, { z }))) {
+        return 0;
+    }
+    for (int h : hoisted) {
+        if (!q4e_can_hoist(g->nodes[h], { x, w }, { mul2 }, {})) {
+            return 0;
+        }
+    }
+
+    q4e_run_hoisted(ctx, g, hoisted);
+    ggml_cuda_op_q4e_norm_gate(*ctx, rms, mul1, sig, mul2);
+    return km - i;
+}
+
+// two independent rms_norm -> scale pairs (the q and k l2 norms) in one launch
+static int q4e_try_fuse_rms_scale2(ggml_backend_cuda_context * ctx, ggml_cgraph * g, int i) {
+    if (g->nodes[i]->op != GGML_OP_RMS_NORM || !ggml_cuda_can_fuse(g, i, { GGML_OP_RMS_NORM, GGML_OP_SCALE }, {})) {
+        return 0;
+    }
+    const int j = q4e_next_real(g, i + 2);
+    if (j + 1 >= g->n_nodes || g->nodes[j]->op != GGML_OP_RMS_NORM || !ggml_cuda_can_fuse(g, j, { GGML_OP_RMS_NORM, GGML_OP_SCALE }, {})) {
+        return 0;
+    }
+    ggml_tensor * rms0 = g->nodes[i];
+    ggml_tensor * sc0  = g->nodes[i + 1];
+    ggml_tensor * rms1 = g->nodes[j];
+    ggml_tensor * sc1  = g->nodes[j + 1];
+    const ggml_tensor * x0 = rms0->src[0];
+    const ggml_tensor * x1 = rms1->src[0];
+    if (x0->ne[0] != x1->ne[0] || q4e_is_view_of(x1, sc0) || q4e_is_view_of(x1, rms0) ||
+            !ggml_cuda_q4e_rms_vec_ok(x0, nullptr, sc0) || !ggml_cuda_q4e_rms_vec_ok(x1, nullptr, sc1) ||
+            !q4e_disjoint({ sc0 }, { x1 }) || !q4e_disjoint({ sc1 }, { x0 })) {
+        return 0;
+    }
+    ggml_cuda_op_q4e_rms_scale2(*ctx, rms0, sc0, rms1, sc1);
+    return j + 1 - i;
+}
+
+static int ggml_cuda_q4e_try_fuse_impl(ggml_backend_cuda_context * ctx, ggml_cgraph * g, int i) {
+    switch (g->nodes[i]->op) {
+        case GGML_OP_CONCAT:   return q4e_try_fuse_conv_state(ctx, g, i);
+        case GGML_OP_MUL_MAT:  return q4e_try_fuse_gdn_gates(ctx, g, i);
+        case GGML_OP_SCALE:    return q4e_try_fuse_hc_post_norm(ctx, g, i);
+        case GGML_OP_RMS_NORM: {
+            const int n = q4e_try_fuse_norm_gate(ctx, g, i);
+            return n > 0 ? n : q4e_try_fuse_rms_scale2(ctx, g, i);
+        }
+        default: return 0;
+    }
+}
+
+// [Q4E_FUSE_CHECK=1, with GGML_CUDA_DISABLE_GRAPHS=1] after each fused group, run its original nodes again one by one
+// and compare every non-view tensor the group produced byte for byte
+static void q4e_fuse_check(ggml_backend_cuda_context * ctx, ggml_cgraph * g, int i, int n) {
+    static int64_t n_groups = 0, n_bad = 0;
+    std::vector<ggml_tensor *> outs;
+    for (int k = i; k <= i + n; ++k) {
+        ggml_tensor * t = g->nodes[k];
+        if (q4e_is_skip(t)) {
+            continue;
+        }
+        // the written tensor: a cpy writes its destination view
+        ggml_tensor * w = t->op == GGML_OP_CPY ? t->src[1] : t;
+        // intermediates only used inside the group are not written by the fused kernels
+        if (t->op != GGML_OP_CPY && ggml_node_get_use_count(g, k) > 0) {
+            bool inside = true;
+            int uses = 0;
+            for (int m = i; m <= i + n; ++m) {
+                for (int s = 0; s < GGML_MAX_SRC; ++s) {
+                    uses += g->nodes[m]->src[s] == t;
+                }
+            }
+            // views of t in the group count as uses too; treat any node used outside the group as an output
+            for (int m = i; m <= i + n && inside; ++m) {
+                if (g->nodes[m]->view_src == t && ggml_node_get_use_count(g, m) > 0) {
+                    inside = false;
+                }
+            }
+            if (inside && uses == ggml_node_get_use_count(g, k) && !(t->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+                continue;
+            }
+        }
+        outs.push_back(w);
+    }
+    cudaStream_t stream = ctx->stream();
+    std::vector<std::vector<uint8_t>> fused(outs.size());
+    for (size_t o = 0; o < outs.size(); ++o) {
+        fused[o].resize(ggml_nbytes(outs[o]));
+        CUDA_CHECK(cudaMemcpyAsync(fused[o].data(), outs[o]->data, fused[o].size(), cudaMemcpyDeviceToHost, stream));
+    }
+    for (int k = i; k <= i + n; ++k) {
+        if (!q4e_is_skip(g->nodes[k])) {
+            GGML_ASSERT(ggml_cuda_compute_forward(*ctx, g->nodes[k]));
+        }
+    }
+    bool bad = false;
+    for (size_t o = 0; o < outs.size(); ++o) {
+        std::vector<uint8_t> ref(fused[o].size());
+        CUDA_CHECK(cudaMemcpyAsync(ref.data(), outs[o]->data, ref.size(), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        if (memcmp(ref.data(), fused[o].data(), ref.size()) != 0) {
+            const float * a = (const float *) fused[o].data();
+            const float * b = (const float *) ref.data();
+            double max_diff = 0.0;
+            for (size_t e = 0; e < ref.size()/sizeof(float); ++e) {
+                max_diff = std::max(max_diff, (double) fabsf(a[e] - b[e]));
+            }
+            GGML_LOG_WARN("q4e fuse check: %s (%s) differs from the unfused ops, max abs diff %g\n",
+                outs[o]->name, ggml_op_desc(g->nodes[i]), max_diff);
+            bad = true;
+        }
+    }
+    n_groups++;
+    n_bad += bad;
+    if (n_groups % 2000 == 0) {
+        GGML_LOG_INFO("q4e fuse check: %lld fused groups checked, %lld differ\n", (long long) n_groups, (long long) n_bad);
+    }
+}
+
+static int ggml_cuda_q4e_try_fuse(ggml_backend_cuda_context * ctx, ggml_cgraph * g, int i) {
+    if (!q4e_fuse_enabled() || !ctx->stream_context().concurrent_events.empty()) {
+        return 0;
+    }
+    const int n = ggml_cuda_q4e_try_fuse_impl(ctx, g, i);
+    static const bool check = getenv("Q4E_FUSE_CHECK") != nullptr;
+    if (n > 0 && check) {
+        q4e_fuse_check(ctx, g, i, n);
+    }
+    return n;
+}
+
 // try and fuse nodes and return the number of nodes to skip
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
     if (ggml_cuda_fusion_disabled()) {
         return 0;
+    }
+
+    if (const int n = ggml_cuda_q4e_try_fuse(cuda_ctx, cgraph, i)) {
+        return n;
     }
 
     ggml_tensor * node = cgraph->nodes[i];
@@ -4750,8 +5309,6 @@ struct ggml_cuda_op_profile {
     }
 };
 static ggml_cuda_op_profile g_cuda_op_profile;
-
-static int g_cuda_dump_split = 0; // graph_compute calls, for GGML_CUDA_DUMP
 
 static __global__ void ggml_cuda_spin_kernel(const long long cycles) {
     const long long t0 = clock64();
