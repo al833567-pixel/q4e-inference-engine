@@ -282,6 +282,19 @@ static ggml_cuda_device_info ggml_cuda_init() {
 
     GGML_ASSERT(info.physical_device_count <= GGML_CUDA_MAX_DEVICES);
 
+    // GGML_CUDA_SPIN=1: the host spins in place of yielding while it waits for a device, a shorter wake-up at each
+    // synchronize (one per expert layer with the experts split between the GPU and the CPU)
+    if (const char * spin = getenv("GGML_CUDA_SPIN"); spin != nullptr && atoi(spin) != 0) {
+        for (int id = 0; id < info.physical_device_count; ++id) {
+            if (cudaSetDevice(id) == cudaSuccess) {
+                const cudaError_t e = cudaSetDeviceFlags(cudaDeviceScheduleSpin);
+                if (e != cudaSuccess) {
+                    GGML_LOG_WARN("%s: cudaSetDeviceFlags(spin) on device %d: %s\n", __func__, id, cudaGetErrorString(e));
+                    (void) cudaGetLastError();
+                }
+            }
+        }
+    }
     // by default expose exactly the physical devices; GGML_CUDA_DEVICES can request a different
     // number of (virtual) devices to emulate multi-GPU systems on a machine with fewer GPUs
     info.device_count = info.physical_device_count;
