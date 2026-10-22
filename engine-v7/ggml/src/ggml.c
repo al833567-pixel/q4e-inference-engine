@@ -6677,7 +6677,8 @@ struct ggml_tensor * ggml_q4e_experts(
         struct ggml_tensor  * down,
         struct ggml_tensor  * x,
         struct ggml_tensor  * ids,
-        struct ggml_tensor  * w) {
+        struct ggml_tensor  * w,
+        float                 limit) {
     GGML_ASSERT(x->type == GGML_TYPE_F32 && ids->type == GGML_TYPE_I32 && w->type == GGML_TYPE_F32);
     GGML_ASSERT(ggml_is_contiguous(x));
     GGML_ASSERT(ggml_are_same_shape(gate, up));
@@ -6687,6 +6688,8 @@ struct ggml_tensor * ggml_q4e_experts(
     GGML_ASSERT(ids->ne[1] == n_tokens && w->ne[0] == 1 && w->ne[1] == ids->ne[0] && w->ne[2] == n_tokens);
 
     struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, x->ne[0], n_tokens);
+
+    ggml_set_op_params_f32(result, 0, limit);
 
     result->op     = GGML_OP_Q4E_EXPERTS;
     result->src[0] = gate;

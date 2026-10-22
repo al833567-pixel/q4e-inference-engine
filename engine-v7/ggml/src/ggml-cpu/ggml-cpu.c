@@ -1902,6 +1902,7 @@ static void ggml_compute_forward_q4e_experts(
     const struct ggml_tensor * x    = dst->src[3];
     const struct ggml_tensor * ids  = dst->src[4];
     const struct ggml_tensor * w    = dst->src[5];
+    const float                limit = ggml_get_op_params_f32(dst, 0);
 
     const int ith = params->ith;
     const int nth = params->nth;
@@ -2012,7 +2013,18 @@ static void ggml_compute_forward_q4e_experts(
                 }
             }
             for (int c = 0; c < gr->n; ++c) {
-                ggml_vec_swiglu_f32(Q4E_X_FF, h, g + c*Q4E_X_FF, u + c*Q4E_X_FF);
+                if (limit > 0.0f) {
+                    // the steps of ggml_compute_forward_swiglu_clamp_f32
+                    const float * gc = g + c*Q4E_X_FF;
+                    const float * uc = u + c*Q4E_X_FF;
+                    for (int64_t k = 0; k < Q4E_X_FF; ++k) {
+                        const float gate_k = MIN(gc[k], limit);
+                        const float up_k   = MAX(-limit, MIN(uc[k], limit));
+                        h[k] = gate_k / (1.f + expf(-gate_k)) * up_k;
+                    }
+                } else {
+                    ggml_vec_swiglu_f32(Q4E_X_FF, h, g + c*Q4E_X_FF, u + c*Q4E_X_FF);
+                }
                 char * hb = h_q + gr->ent[c]*rs_h + (i0/Q4E_X_FF)*rs_hb;
                 from_float(h, hb, Q4E_X_FF);
                 if (fast_d) {

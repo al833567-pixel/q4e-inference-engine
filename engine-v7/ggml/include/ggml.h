@@ -2770,7 +2770,7 @@ extern "C" {
 
     // q4e: the whole expert path of a tier in one op (CPU): for every token t and row r with ids[r, t] >= 0
     //   y[r, t] = down[ids[r, t]] * swiglu(gate[ids[r, t]] * x[t], up[ids[r, t]] * x[t]),  dst[t] = sum_r w[r, t] * y[r, t]
-    // the same values as mul_mat_id gate, mul_mat_id up, swiglu_split, mul_mat_id down and q4e_wsum
+    // the same values as mul_mat_id gate, mul_mat_id up, swiglu_split (swiglu_clamp with limit > 0), mul_mat_id down and q4e_wsum
     GGML_API struct ggml_tensor * ggml_q4e_experts(
             struct ggml_context * ctx,
             struct ggml_tensor  * gate,   // [n_embd, n_ff, n_as]
@@ -2778,7 +2778,8 @@ extern "C" {
             struct ggml_tensor  * down,   // [n_ff, n_embd, n_as]
             struct ggml_tensor  * x,      // F32 [n_embd, 1, n_tokens], contiguous
             struct ggml_tensor  * ids,    // I32 [n_rows, n_tokens], < 0: no expert
-            struct ggml_tensor  * w);     // F32 [1, n_rows, n_tokens]
+            struct ggml_tensor  * w,      // F32 [1, n_rows, n_tokens]
+            float                 limit); // > 0: swiglu_clamp(gate, up, limit)
 
     // custom operators
 

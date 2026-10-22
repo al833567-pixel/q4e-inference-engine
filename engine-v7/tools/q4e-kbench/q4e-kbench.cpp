@@ -202,7 +202,7 @@ static void bench_fused(ggml_type type_gu, ggml_type type_d, int n_tokens, int n
     ggml_cgraph * gf1 = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf1, o1);
     // fused
-    ggml_tensor * o2 = ggml_q4e_experts(ctx, gate, up, down, x, ids, wt);
+    ggml_tensor * o2 = ggml_q4e_experts(ctx, gate, up, down, x, ids, wt, 0.0f);
     ggml_cgraph * gf2 = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf2, o2);
 

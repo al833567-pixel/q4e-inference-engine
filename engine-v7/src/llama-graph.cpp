@@ -2828,8 +2828,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
         const auto no_prec = [&](const ggml_tensor * w) {
             return !prec_policy || (!prec_policy->prec_acc.count(w) && !prec_policy->prec_src1.count(w));
         };
-        if (cpu_fused && backend == backend_cpu && limit <= 1e-6f && no_prec(gate_w) && no_prec(up_w) && no_prec(down_w)) {
-            fx = ggml_q4e_experts(ctx0, gate_w, up_w, down_w, x, ids, wt);
+        if (cpu_fused && backend == backend_cpu && (limit <= 1e-6f || clamp_fused) && no_prec(gate_w) && no_prec(up_w) && no_prec(down_w)) {
+            fx = ggml_q4e_experts(ctx0, gate_w, up_w, down_w, x, ids, wt, limit > 1e-6f ? limit : 0.0f);
             if (!ggml_backend_supports_op(backend, fx)) {
                 fx = nullptr;
             }
