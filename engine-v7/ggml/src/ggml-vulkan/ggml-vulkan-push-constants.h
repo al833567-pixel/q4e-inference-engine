@@ -671,6 +671,19 @@ struct vk_op_gated_linear_attn_push_constants {
     float scale;
 };
 
+struct vk_op_q4e_wsum_push_constants {
+    uint32_t ne0;
+    uint32_t n_rows;
+    uint32_t y_nb1;
+    uint32_t y_nb2;
+    uint32_t w_nb1;
+    uint32_t w_nb2;
+    uint32_t d_nb1;
+    uint32_t y_off;
+    uint32_t w_off;
+    uint32_t d_off;
+};
+
 struct vk_op_lightning_indexer_push_constants {
     uint32_t n_kv;
     uint32_t n_heads;

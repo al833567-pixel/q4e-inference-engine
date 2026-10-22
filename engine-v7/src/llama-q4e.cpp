@@ -209,6 +209,7 @@ struct llama_q4e::impl {
         std::vector<uint32_t> uses;   // per expert, uses since the start: the working set
         std::vector<int32_t>  sel;    // the selections of the last ubatch, written by the routing op
         bool dirty = false;
+        ggml_tensor * t2[N_PARTS] = {}; // the iGPU tier's copies of the blocks
 
         mutable bool has_sel = false; // the current graph copies the selections of this layer to sel_all
     };
@@ -263,6 +264,11 @@ struct llama_q4e::impl {
     q4e_locker locker;
     size_t ram_budget = 0;
 
+    // the iGPU tier (see the constructor): its copies of the blocks
+    ggml_backend_t          tier2 = nullptr;
+    ggml_context_ptr        ctx_t2;
+    ggml_backend_buffer_ptr buf_t2;
+
     std::vector<fill> pending;
     std::vector<ram_move> ram_moves; // done by the worker after the copies, the in_ram flags are set when planned
     std::vector<int32_t> ids;
@@ -306,9 +312,20 @@ struct llama_q4e::impl {
             Q4E_SWAP_BYTES = (size_t) atoi(e)*1048576;
         }
 
+        // iGPU + dGPU: an integrated GPU among the backends computes the blocks that are not in VRAM in place of the
+        // CPU, from its own copy of every block (uploaded at load, no RAM tier). Q4E_TIER2=0 keeps the CPU
+        const char * tier2_env = getenv("Q4E_TIER2");
+        if (!tier2_env || atoi(tier2_env) != 0) {
+            for (ggml_backend_t b : backends) {
+                if (ggml_backend_dev_type(ggml_backend_get_device(b)) == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                    tier2 = b;
+                    break;
+                }
+            }
+        }
         for (ggml_backend_t b : backends) {
             const auto type = ggml_backend_dev_type(ggml_backend_get_device(b));
-            if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            if (b != tier2 && (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU)) {
                 auto & d = devices.emplace_back();
                 d.backend = b;
                 d.buft    = ggml_backend_get_default_buffer_type(b);
@@ -382,6 +399,9 @@ struct llama_q4e::impl {
         }
 
         const bool need_pack = std::any_of(groups.begin(), groups.end(), [](const group & g) { return g.n_blocks > 1; });
+        if (tier2) {
+            alloc_tier2();
+        }
         if (need_pack) {
             load_pack();
         }
@@ -390,7 +410,11 @@ struct llama_q4e::impl {
         init_side();
         worker = std::thread([this]() { work(); });
         load_profile();
-        init_ram_tier();
+        if (tier2) {
+            init_tier2();
+        } else {
+            init_ram_tier();
+        }
 
         for (const group & g : groups) {
             LLAMA_LOG_INFO("q4e: %2zu layers %s/%s/%s, %d blocks of %lld rows per expert, block %.3f MiB: VRAM %d blocks (%.2f GiB, %.1f%%)\n",
@@ -485,7 +509,8 @@ struct llama_q4e::impl {
         }
         const uint64_t total = offset;
 
-        const std::string path = params.pack_path;
+        // the iGPU mode keeps other layers on the dGPU (-ot): its own file, so that switching modes does not rewrite it
+        const std::string path = tier2 ? params.pack_path + ".igpu" : params.pack_path;
         bool valid = false;
         {
             FILE * fp = ggml_fopen(path.c_str(), "rb");
@@ -853,7 +878,7 @@ struct llama_q4e::impl {
     void ram_lock_later(int32_t il, int32_t v) {
         layer & l = layers[il];
         const group & g = groups[l.ig];
-        if (l.in_ram[v] || ram_used + g.slot_bytes > ram_budget) {
+        if (tier2 || l.in_ram[v] || ram_used + g.slot_bytes > ram_budget) {
             return;
         }
         l.in_ram[v] = 1;
@@ -863,7 +888,7 @@ struct llama_q4e::impl {
 
     void ram_unlock_later(int32_t il, int32_t v) {
         layer & l = layers[il];
-        if (!l.in_ram[v]) {
+        if (tier2 || !l.in_ram[v]) {
             return;
         }
         l.in_ram[v] = 0;
@@ -1184,6 +1209,67 @@ struct llama_q4e::impl {
             fwrite(s.data(), sizeof(float), n, fp);
         }
         fclose(fp);
+    }
+
+    // the iGPU tier: a copy of every block in the iGPU's memory, the graphs compute the blocks not in VRAM there.
+    // allocated first: once the pack and the profile have touched gigabytes of mapped pages, the system grants the
+    // iGPU less memory
+    void alloc_tier2() {
+        size_t n_tensors = 0;
+        for (const group & g : groups) {
+            n_tensors += g.layers.size()*N_PARTS;
+        }
+        ggml_init_params ip = { n_tensors*ggml_tensor_overhead(), nullptr, true };
+        ctx_t2.reset(ggml_init(ip));
+        for (const group & g : groups) {
+            const int64_t ne[N_PARTS][2] = { { g.n_embd, g.f }, { g.n_embd, g.f }, { g.f, g.n_embd } };
+            for (int32_t il : g.layers) {
+                layer & l = layers[il];
+                for (int p = 0; p < N_PARTS; ++p) {
+                    l.t2[p] = ggml_new_tensor_3d(ctx_t2.get(), g.type[p], ne[p][0], ne[p][1], l.n_virt);
+                    ggml_format_name(l.t2[p], "q4e.t2.%d.%d", il, p);
+                }
+            }
+        }
+        size_t free = 0, total = 0, need = 0;
+        ggml_backend_dev_memory(ggml_backend_get_device(tier2), &free, &total);
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx_t2.get()); t; t = ggml_get_next_tensor(ctx_t2.get(), t)) {
+            need += ggml_nbytes(t);
+        }
+        LLAMA_LOG_INFO("q4e: %s: %.2f GiB free of %.2f GiB, the iGPU tier needs %.2f GiB\n", ggml_backend_name(tier2),
+            free/1073741824.0, total/1073741824.0, need/1073741824.0);
+        buf_t2.reset(ggml_backend_alloc_ctx_tensors_from_buft(ctx_t2.get(), ggml_backend_get_default_buffer_type(tier2)));
+        if (!buf_t2) {
+            throw std::runtime_error("q4e: cannot allocate the iGPU tier (put some expert layers on the dGPU with -ot)");
+        }
+        ggml_backend_buffer_set_usage(buf_t2.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    }
+
+    // the copies, from the host views (gate/up rows of the model, down from the pack); the graphs read them
+    void init_tier2() {
+        const auto t0 = q4e_clock::now();
+        size_t total = 0;
+        for (const group & g : groups) {
+            for (int32_t il : g.layers) {
+                layer & l = layers[il];
+                for (int p = 0; p < N_PARTS; ++p) {
+                    GGML_ASSERT(ggml_nbytes(l.t2[p]) == g.blk_bytes[p]*l.n_virt);
+                    ggml_backend_tensor_set(l.t2[p], l.host[p], 0, ggml_nbytes(l.t2[p]));
+                    total += ggml_nbytes(l.t2[p]);
+                }
+                l.t.gate_host     = l.t2[P_GATE];
+                l.t.up_host       = l.t2[P_UP];
+                l.t.down_host     = l.t2[P_DOWN];
+                l.t.backend_tier2 = tier2;
+                std::fill(l.in_ram.begin(), l.in_ram.end(), (uint8_t) 1);
+            }
+        }
+        size_t vram = 0;
+        for (const group & g : groups) {
+            vram += (size_t) g.n_slots*g.slot_bytes;
+        }
+        LLAMA_LOG_INFO("q4e: experts %.2f GiB: VRAM %.2f GiB | %s %.2f GiB (a copy of every block, uploaded in %.1f s), no CPU tier\n",
+            total/1073741824.0, vram/1073741824.0, ggml_backend_name(tier2), total/1073741824.0, q4e_ms(t0, q4e_clock::now())/1000.0);
     }
 
     // the RAM tier: the blocks that are not in VRAM, best scored first, locked up to the budget

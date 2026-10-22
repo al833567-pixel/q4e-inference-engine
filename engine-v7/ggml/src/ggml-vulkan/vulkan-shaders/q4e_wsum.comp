@@ -1,0 +1,40 @@
+#version 450
+
+// q4e: the weighted sum of the expert rows of a token, dst[e, t] = sum_r w[r, t] * y[e, r, t], rows with w == 0 skipped
+// (GGML_OP_Q4E_WSUM, the same steps as the CPU op). One thread per output value.
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer Y {float data_y[];};
+layout (binding = 1) readonly buffer W {float data_w[];};
+layout (binding = 2) writeonly buffer D {float data_d[];};
+
+layout (push_constant) uniform parameter {
+    uint ne0;
+    uint n_rows;
+    uint y_nb1;
+    uint y_nb2;
+    uint w_nb1;
+    uint w_nb2;
+    uint d_nb1;
+    uint y_off;
+    uint w_off;
+    uint d_off;
+} p;
+
+void main() {
+    const uint e = gl_GlobalInvocationID.x;
+    const uint t = gl_WorkGroupID.y;
+    if (e >= p.ne0) {
+        return;
+    }
+    float acc = 0.0;
+    for (uint r = 0; r < p.n_rows; ++r) {
+        const float w = data_w[p.w_off + r*p.w_nb1 + t*p.w_nb2];
+        if (w == 0.0) {
+            continue;
+        }
+        acc += w*data_y[p.y_off + e + r*p.y_nb1 + t*p.y_nb2];
+    }
+    data_d[p.d_off + e + t*p.d_nb1] = acc;
+}

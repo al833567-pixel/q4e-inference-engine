@@ -371,7 +371,9 @@ static void bench_gpu_mm(ggml_backend_t be, ggml_type type, int64_t ne0, int64_t
 int main(int argc, char ** argv) {
     if (argc > 1 && strcmp(argv[1], "gpu") == 0) {
         ggml_backend_load_all();
-        ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+        // KBENCH_DEV=<name> picks a device by name (e.g. Vulkan1), else the first GPU
+        const char * dev_name = getenv("KBENCH_DEV");
+        ggml_backend_dev_t dev = dev_name ? ggml_backend_dev_by_name(dev_name) : ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
         if (!dev) {
             printf("no GPU\n");
             return 1;

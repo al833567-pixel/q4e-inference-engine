@@ -54,6 +54,8 @@ public:
         int32_t *     sel_host   = nullptr; // [n_used*max_batch]: the routing op writes the selections here
 
         ggml_backend_t backend_gpu = nullptr;
+        // the iGPU that computes the *_host blocks (their copies in its memory), nullptr: the CPU
+        ggml_backend_t backend_tier2 = nullptr;
     };
 
     // the tensors of layer il if the tiers compute it for ubatches of n_tokens, nullptr otherwise
