@@ -141,7 +141,7 @@ constexpr uint32_t Q4E_PROF_MAGIC   = 0x46503451u;           // "Q4PF"
 constexpr size_t   Q4E_PACK_ALIGN   = 65536;
 static float       Q4E_DECAY        = 0.995f; // per token, half-life ~140 tokens (env Q4E_DECAY)
 static float       Q4E_HYSTERESIS   = 1.1f;   // a block replaces a VRAM block only if it scores this much higher (env Q4E_HYST)
-static size_t      Q4E_SWAP_BYTES   = 8u*1048576; // copies per ubatch once the pool is full (env Q4E_SWAP_MB); more
+static size_t      Q4E_SWAP_BYTES   = 32u*1048576; // copies per ubatch once the pool is full (env Q4E_SWAP_MB); more
                                                 // competes with the per-layer copies for PCIe: 128 MiB was 21.9/22.7 t/s, 8 MiB 23.2/24.0
 static size_t      Q4E_RAM_SWAP_BYTES = 0; // blocks read from the SSD into the RAM tier per ubatch (env Q4E_RAM_SWAP_MB), off:
                                                  // on GLM-5.3-Flash with 47 GB of RAM it competed with the CPU blocks for the SSD
@@ -543,7 +543,7 @@ struct llama_q4e::impl {
                     out.write_raw(zero.data(), zero.size());
                 }
             }
-            LLAMA_LOG_INFO("q4e: wrote the down blocks in %.1f s\n", q4e_ms(t0, q4e_clock::now())/1000.0);
+            LLAMA_LOG_INFO("q4e: wrote the down blocks in %.1f s.\n", q4e_ms(t0, q4e_clock::now())/1000.0);
         }
 
         pack_file = std::make_unique<llama_file>(path.c_str(), "rb");
@@ -846,6 +846,31 @@ struct llama_q4e::impl {
         return true;
     }
 
+    // the same, done by the worker with the next copies: the system calls left the decode thread. ram_used counts
+    // the planned RAM tier, locker.locked follows when the worker gets to it
+    size_t ram_used = 0;
+
+    void ram_lock_later(int32_t il, int32_t v) {
+        layer & l = layers[il];
+        const group & g = groups[l.ig];
+        if (l.in_ram[v] || ram_used + g.slot_bytes > ram_budget) {
+            return;
+        }
+        l.in_ram[v] = 1;
+        ram_used += g.slot_bytes;
+        ram_moves.push_back({ il, v, true });
+    }
+
+    void ram_unlock_later(int32_t il, int32_t v) {
+        layer & l = layers[il];
+        if (!l.in_ram[v]) {
+            return;
+        }
+        l.in_ram[v] = 0;
+        ram_used -= std::min(ram_used, groups[l.ig].slot_bytes);
+        ram_moves.push_back({ il, v, false });
+    }
+
     void ram_unlock(layer & l, const group & g, int32_t v) {
         if (!l.in_ram[v]) {
             return;
@@ -872,6 +897,14 @@ struct llama_q4e::impl {
 
     // worker: read the planned blocks into the staging buffers and queue the copies on the second stream
     void copy_fills() {
+        // the copies go out in chunks, each one done before the next is queued: a long queue on the copy engine
+        // delayed every other transfer of the device behind it, the logits after each ubatch included (on a PCIe 3.0
+        // x4 link 128 MiB took 40 ms). Q4E_DMA_CHUNK_KB, 0 = queue everything at once
+        static const size_t chunk = [] {
+            const char * e = getenv("Q4E_DMA_CHUNK_KB");
+            return (size_t) (e ? atoi(e) : 256)*1024;
+        }();
+        std::vector<size_t> queued(devices.size(), 0);
         for (const fill & f : pending) {
             const layer & l = layers[f.il];
             const group & g = groups[l.ig];
@@ -879,10 +912,16 @@ struct llama_q4e::impl {
             const uint8_t * ptr[N_PARTS];
             block_ptrs(l, g, f.v, ptr);
             size_t off = f.off;
+            size_t & q = queued[g.dev];
             for (int p = 0; p < N_PARTS; ++p) {
                 memcpy(d.staging + off, ptr[p], g.blk_bytes[p]);
                 ggml_backend_tensor_set_async(d.side, g.bank[p], d.staging + off, (size_t) f.slot*g.blk_bytes[p], g.blk_bytes[p]);
                 off += g.blk_bytes[p];
+                q += g.blk_bytes[p];
+                if (chunk > 0 && q >= chunk) {
+                    ggml_backend_synchronize(d.side);
+                    q = 0;
+                }
             }
         }
     }
@@ -1031,7 +1070,7 @@ struct llama_q4e::impl {
             l.table[f.v] = (float) f.slot;
             l.dirty = true;
             // exclusive tiers: a block in VRAM leaves the RAM tier
-            ram_unlock(l, groups[l.ig], f.v);
+            ram_unlock_later(f.il, f.v);
         }
         pending.clear();
     }
@@ -1049,7 +1088,7 @@ struct llama_q4e::impl {
         l.dirty      = true;
         g.owner[slot] = -1;
         // back to the RAM tier if it fits, else it is read from the SSD when needed
-        ram_lock(l, g, v);
+        ram_lock_later(il, v);
     }
 
     // the starting state: the pool gets the best scored blocks of the profile, if any
@@ -1215,6 +1254,12 @@ struct llama_q4e::impl {
         size_t vram = 0;
         for (const group & g : groups) {
             vram += (size_t) g.n_slots*g.slot_bytes;
+        }
+        ram_used = 0;
+        for (const layer & l : layers) {
+            if (l.ig >= 0) {
+                ram_used += (size_t) std::count(l.in_ram.begin(), l.in_ram.end(), (uint8_t) 1)*groups[l.ig].slot_bytes;
+            }
         }
         const size_t ssd = total - std::min(total, vram + locker.locked);
         LLAMA_LOG_INFO("q4e: experts %.2f GiB: VRAM %.2f GiB | RAM %.2f GiB (locked in %.1f s, budget %.2f GiB, %.2f GiB free) | SSD %.2f GiB%s\n",

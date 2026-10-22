@@ -6595,7 +6595,8 @@ struct ggml_tensor * ggml_q4e_route(
         struct ggml_tensor  * table,
         int                   n_blocks,
         int                   zero_slot,
-        bool                  weights) {
+        bool                  weights,
+        bool                  neg_miss) {
     GGML_ASSERT(sel->type == GGML_TYPE_I32 && w->type == GGML_TYPE_F32 && table->type == GGML_TYPE_F32);
     GGML_ASSERT(w->ne[0] == 1 && w->ne[1] == sel->ne[0] && w->ne[2] == sel->ne[1]);
     GGML_ASSERT(ggml_is_contiguous(table) && n_blocks > 0);
@@ -6607,7 +6608,7 @@ struct ggml_tensor * ggml_q4e_route(
         ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, n_rows, n_tokens) :
         ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_rows, n_tokens);
 
-    const int32_t params[] = { n_blocks, zero_slot, weights ? 1 : 0 };
+    const int32_t params[] = { n_blocks, zero_slot, weights ? 1 : 0, neg_miss ? 1 : 0 };
     ggml_set_op_params(result, params, sizeof(params));
 
     result->op     = GGML_OP_Q4E_ROUTE;

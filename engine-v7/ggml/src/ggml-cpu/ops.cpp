@@ -11733,6 +11733,7 @@ void ggml_compute_forward_q4e_route(
     const int32_t n_blocks  = ggml_get_op_params_i32(dst, 0);
     const int32_t zero_slot = ggml_get_op_params_i32(dst, 1);
     const bool    weights   = ggml_get_op_params_i32(dst, 2) != 0;
+    const bool    neg_miss  = ggml_get_op_params_i32(dst, 3) != 0;
     const int64_t n_virt    = ggml_nelements(dst->src[2]);
     const int64_t n_used    = sel->ne[0];
     const int64_t n_tokens  = sel->ne[1];
@@ -11749,7 +11750,7 @@ void ggml_compute_forward_q4e_route(
                 if (weights) {
                     ((float *) dst->data)[t*n_rows + r] = slot >= 0.0f ? wk : 0.0f;
                 } else {
-                    ((int32_t *) dst->data)[t*n_rows + r] = slot >= 0.0f ? (int32_t) slot : zero_slot + (int32_t) r;
+                    ((int32_t *) dst->data)[t*n_rows + r] = slot >= 0.0f ? (int32_t) slot : neg_miss ? -1 : zero_slot + (int32_t) r;
                 }
             }
         }

@@ -2755,7 +2755,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
     ggml_tensor * rids = ggml_custom_4d(ctx0, GGML_TYPE_I32, n_rows, n_tokens, 2, 1, rargs, 3, q4e_route_ids, 1, ut);
     ggml_tensor * rw   = ggml_custom_4d(ctx0, GGML_TYPE_F32, 1, n_rows, n_tokens, 2, rargs, 2, q4e_route_weights, 1, ut);
     ggml_set_name(rids, "q4e_route_ids");
-    ggml_set_name(rw,   "q4e_route_weights");
+    ggml_set_name(rw,   "q4e_route_w");
     ggml_backend_sched_set_tensor_backend(sched, rids, backend_cpu);
     ggml_backend_sched_set_tensor_backend(sched, rw,   backend_cpu);
 
@@ -2771,11 +2771,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
         const char * e = getenv("Q4E_ROUTE_GPU");
         return e ? atoi(e) != 0 : true;
     }();
-    ggml_tensor * fused_ids = route_gpu ? ggml_q4e_route(ctx0, selected_experts, weights, t.table, (int) n_blocks, t.zero_slot, false) : nullptr;
+    // up to 4 tokens CUDA computes mul_mat_id with its vector kernel, which skips a negative id: the blocks not in
+    // VRAM read no zero slot (Q4E_NEG_MISS=0 keeps the zero slots)
+    static const bool neg_ok = [] { const char * e = getenv("Q4E_NEG_MISS"); return e == nullptr || atoi(e) != 0; }();
+    const bool neg_miss = neg_ok && n_tokens <= 4;
+    ggml_tensor * fused_ids = route_gpu ? ggml_q4e_route(ctx0, selected_experts, weights, t.table, (int) n_blocks, t.zero_slot, false, neg_miss) : nullptr;
     if (fused_ids && ggml_backend_supports_op(t.backend_gpu, fused_ids)) {
         // one kernel each where the backend has the op
         ids_gpu = fused_ids;
-        w_gpu   = ggml_q4e_route(ctx0, selected_experts, weights, t.table, (int) n_blocks, t.zero_slot, true);
+        w_gpu   = ggml_q4e_route(ctx0, selected_experts, weights, t.table, (int) n_blocks, t.zero_slot, true, false);
     } else if (route_gpu) {
         ggml_tensor * vsel = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
         ggml_tensor * w    = weights; // [1, n_used, n_tokens]

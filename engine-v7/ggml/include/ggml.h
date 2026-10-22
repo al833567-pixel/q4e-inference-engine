@@ -2745,7 +2745,8 @@ extern "C" {
             struct ggml_tensor  * table,  // F32 [1, n_expert*n_blocks]
             int                   n_blocks,
             int                   zero_slot,
-            bool                  weights);
+            bool                  weights,
+            bool                  neg_miss);      // ids: -1 in place of zero_slot + r (backends that skip negative ids)
 
     // out[e, t] = sum_r y[e, r, t] * w[r, t]
     GGML_API struct ggml_tensor * ggml_q4e_wsum(

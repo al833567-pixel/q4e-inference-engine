@@ -4628,6 +4628,29 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         return 3;
     }
 
+    // q4e: silu(scale(x)) between the hc down and up projections
+    if (node->op == GGML_OP_SCALE && i + 1 < cgraph->n_nodes && ggml_can_fuse(cgraph, i, { GGML_OP_SCALE, GGML_OP_UNARY })) {
+        ggml_tensor * silu = cgraph->nodes[i + 1];
+        if (ggml_get_unary_op(silu) == GGML_UNARY_OP_SILU && silu->src[0] == node && node->type == GGML_TYPE_F32 && silu->type == GGML_TYPE_F32 &&
+            ggml_is_contiguous(node->src[0]) && ggml_is_contiguous(silu) && ggml_are_same_shape(node->src[0], silu)) {
+            ggml_cuda_op_scale_silu(*cuda_ctx, node, silu);
+            return 1;
+        }
+    }
+
+    // q4e: a*sigmoid(g) with one gate value per token (shared expert gate)
+    if (node->op == GGML_OP_UNARY && ggml_get_unary_op(node) == GGML_UNARY_OP_SIGMOID && i + 1 < cgraph->n_nodes &&
+        cgraph->nodes[i + 1]->op == GGML_OP_MUL && ggml_node_has_n_uses(cgraph, i, 1) && (cgraph->nodes[i + 1]->flags & GGML_TENSOR_FLAG_COMPUTE)) {
+        ggml_tensor * mul = cgraph->nodes[i + 1];
+        const ggml_tensor * g = node->src[0];
+        const ggml_tensor * a = mul->src[0] == node ? mul->src[1] : mul->src[0];
+        if ((mul->src[0] == node || mul->src[1] == node) && g->ne[0] == 1 && a->ne[0] == mul->ne[0] && g->ne[1] == mul->ne[1] &&
+            mul->ne[2] == 1 && mul->ne[3] == 1 && g->type == GGML_TYPE_F32 && a->type == GGML_TYPE_F32 && mul->type == GGML_TYPE_F32 &&
+            ggml_is_contiguous(a) && ggml_is_contiguous(mul)) {
+            ggml_cuda_op_mul_sigmoid_bcast(*cuda_ctx, node, mul);
+            return 1;
+        }
+    }
     if (ggml_cuda_can_fuse(cgraph, i, { GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_SCALE }, { GGML_UNARY_OP_TANH })) {
         ggml_cuda_op_softcap(*cuda_ctx, cgraph->nodes[i + 2], node);
         return 2;
@@ -4724,6 +4747,8 @@ struct ggml_cuda_op_profile {
     }
 };
 static ggml_cuda_op_profile g_cuda_op_profile;
+
+static int g_cuda_dump_split = 0; // graph_compute calls, for GGML_CUDA_DUMP
 
 static __global__ void ggml_cuda_spin_kernel(const long long cycles) {
     const long long t0 = clock64();
@@ -4896,6 +4921,19 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
 
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
+                // [GGML_CUDA_DUMP=N] the kernels of the N-th graph split of one token (fused groups as one line)
+                {
+                    static const int dump_at = [] { const char * e = getenv("GGML_CUDA_DUMP"); return e ? atoi(e) : 0; }();
+                    if (dump_at > 0 && g_cuda_dump_split >= dump_at && g_cuda_dump_split < dump_at + 8) {
+                        const ggml_tensor * last = cgraph->nodes[i + nodes_to_skip];
+                        fprintf(stderr, "dump s%d %3d: %-14s %-40s [%lld,%lld,%lld] x%d%s%s\n", g_cuda_dump_split, i, ggml_op_desc(node), node->name,
+                            (long long) node->ne[0], (long long) node->ne[1], (long long) node->ne[2], nodes_to_skip + 1,
+                            node->src[0] && (node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID) ? " " : "",
+                            node->src[0] && (node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID) ? ggml_type_name(node->src[0]->type) : "");
+                        GGML_UNUSED(last);
+                    }
+                }
+
                 if (nodes_to_skip != 0) {
 #ifdef GGML_CUDA_DEBUG
                     const int last_fused = i + nodes_to_skip;
@@ -5034,7 +5072,10 @@ struct ggml_cuda_busy_timer {
 };
 static ggml_cuda_busy_timer g_cuda_busy;
 
+
+
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+    g_cuda_dump_split++;
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
     ggml_cuda_set_device(cuda_ctx->device);
