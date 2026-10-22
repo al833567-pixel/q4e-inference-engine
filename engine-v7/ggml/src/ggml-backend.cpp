@@ -990,6 +990,8 @@ struct ggml_backend_sched {
 
     // a GPU split that follows a CPU split starts the nodes that do not read the copied inputs before the CPU split computes
     bool overlap;
+    ggml_backend_event_t * pair_events; // ggml_backend_sched_graph_compute_pair: one per split of graph 0 (calloc'd struct)
+    int n_pair_events;
     bool fast_join; // async copies between host and device splits (env GGML_SCHED_FAST_JOIN, default on)
 
     // [GGML_SCHED_TIMING] wall time of the input copies and of the compute of each backend, the splits are synchronized
@@ -1906,20 +1908,30 @@ static int ggml_backend_sched_independent_prefix(ggml_backend_sched_t sched, con
     return split->graph.n_nodes;
 }
 
-static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
-    GGML_ASSERT(sched);
-    struct ggml_backend_sched_split * splits = sched->splits;
-
+// the state of the split loop, so that the splits of two graphs can be interleaved (ggml_backend_sched_graph_compute_pair)
+struct ggml_sched_exec_state {
+    int split_id        = 0;
     int prev_backend_id = -1;
-
     // the split whose first early_nodes nodes are already running
-    int early_split = -1;
-    int early_nodes = 0;
+    int early_split     = -1;
+    int early_nodes     = 0;
+};
 
-    for (int split_id = 0; split_id < sched->n_splits; split_id++) {
+// runs split st.split_id and advances; wait, if set, is waited for on the split's backend before its inputs are copied
+static enum ggml_status ggml_backend_sched_exec_split(ggml_backend_sched_t sched, ggml_sched_exec_state & st, ggml_backend_event_t wait) {
+    struct ggml_backend_sched_split * splits = sched->splits;
+    int & prev_backend_id = st.prev_backend_id;
+    int & early_split     = st.early_split;
+    int & early_nodes     = st.early_nodes;
+    const int split_id    = st.split_id++;
+    {
         struct ggml_backend_sched_split * split = &splits[split_id];
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
+
+        if (wait != NULL) {
+            ggml_backend_event_wait(split_backend, wait);
+        }
 
         // ensure the previous split's async work has completed before we start
         // this split, the allocator may have reused buffer regions across splits
@@ -2074,6 +2086,133 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     return GGML_STATUS_SUCCESS;
 }
 
+static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
+    GGML_ASSERT(sched);
+    ggml_sched_exec_state st;
+    while (st.split_id < sched->n_splits) {
+        const enum ggml_status ec = ggml_backend_sched_exec_split(sched, st, NULL);
+        if (ec != GGML_STATUS_SUCCESS) {
+            return ec;
+        }
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+static bool ggml_backend_sched_split_is_cpu(ggml_backend_sched_t sched, int split_id) {
+    ggml_backend_t b = sched->backends[sched->splits[split_id].backend_id];
+    return ggml_backend_dev_type(ggml_backend_get_device(b)) == GGML_BACKEND_DEVICE_TYPE_CPU;
+}
+
+// two graphs of consecutive tokens of the same sequences, one per scheduler, built from the same model so that their
+// splits match: split j of graph 1 runs after split j of graph 0 (a device split waits for an event of graph 0's split
+// j, without blocking the host), so graph 1 can read what graph 0 wrote in split j (KV cache, recurrent states). The
+// host splits of the two graphs alternate, and the device always has the other graph's splits queued while the host
+// computes. The schedulers must have distinct device backends (streams) and may share the host backend.
+enum ggml_status ggml_backend_sched_graph_compute_pair(
+        ggml_backend_sched_t sched0, struct ggml_cgraph * graph0,
+        ggml_backend_sched_t sched1, struct ggml_cgraph * graph1) {
+    for (ggml_backend_sched_t s : { sched0, sched1 }) {
+        ggml_cgraph * g = s == sched0 ? graph0 : graph1;
+        if (!s->is_reset && !s->is_alloc) {
+            ggml_backend_sched_reset(s);
+        }
+        if (!s->is_alloc && !ggml_backend_sched_alloc_graph(s, g)) {
+            return GGML_STATUS_ALLOC_FAILED;
+        }
+    }
+
+    // the same splits on the same kinds of devices, else one graph after the other
+    bool same = sched0->n_splits == sched1->n_splits && sched0->n_backends == sched1->n_backends &&
+        !sched0->callback_eval && !sched1->callback_eval;
+    for (int j = 0; same && j < sched0->n_splits; ++j) {
+        same = sched0->splits[j].backend_id == sched1->splits[j].backend_id;
+    }
+    if (!same) {
+        enum ggml_status ec = ggml_backend_sched_compute_splits(sched0);
+        if (ec != GGML_STATUS_SUCCESS) {
+            return ec;
+        }
+        ggml_backend_sched_synchronize(sched0);
+        return ggml_backend_sched_compute_splits(sched1);
+    }
+
+    // one event per split of graph 0 that runs on a device, created on first use
+    const int n = sched0->n_splits;
+    if (sched0->n_pair_events < n) {
+        sched0->pair_events = (ggml_backend_event_t *) realloc(sched0->pair_events, n*sizeof(ggml_backend_event_t));
+        for (int j = sched0->n_pair_events; j < n; ++j) {
+            sched0->pair_events[j] = NULL;
+        }
+        sched0->n_pair_events = n;
+    }
+
+    // the early start of device nodes is for one graph alone, here the other graph fills the device
+    const bool overlap0 = sched0->overlap;
+    const bool overlap1 = sched1->overlap;
+    sched0->overlap = false;
+    sched1->overlap = false;
+
+    ggml_sched_exec_state s0;
+    ggml_sched_exec_state s1;
+    bool host_turn_0 = true;
+    enum ggml_status ec = GGML_STATUS_SUCCESS;
+    while (ec == GGML_STATUS_SUCCESS && (s0.split_id < n || s1.split_id < n)) {
+        // queue the device splits that can run
+        while (s0.split_id < n && !ggml_backend_sched_split_is_cpu(sched0, s0.split_id)) {
+            const int j = s0.split_id;
+            ec = ggml_backend_sched_exec_split(sched0, s0, NULL);
+            if (ec != GGML_STATUS_SUCCESS) {
+                break;
+            }
+            ggml_backend_t b = sched0->backends[sched0->splits[j].backend_id];
+            if (sched0->pair_events[j] == NULL) {
+                sched0->pair_events[j] = ggml_backend_event_new(ggml_backend_get_device(b));
+            }
+            if (sched0->pair_events[j] != NULL) {
+                ggml_backend_event_record(sched0->pair_events[j], b);
+            }
+        }
+        while (ec == GGML_STATUS_SUCCESS && s1.split_id < s0.split_id && !ggml_backend_sched_split_is_cpu(sched1, s1.split_id)) {
+            const int j = s1.split_id;
+            ggml_backend_event_t wait = sched0->pair_events[j];
+            if (wait == NULL) {
+                // no events on this device: graph 0 must be done with split j
+                ggml_backend_synchronize(sched0->backends[sched0->splits[j].backend_id]);
+            }
+            ec = ggml_backend_sched_exec_split(sched1, s1, wait);
+        }
+        if (ec != GGML_STATUS_SUCCESS) {
+            break;
+        }
+
+        if (s0.split_id >= n && s1.split_id >= n) {
+            break;
+        }
+
+        // one host split, the graphs in turn
+        const bool can0 = s0.split_id < n && ggml_backend_sched_split_is_cpu(sched0, s0.split_id);
+        const bool can1 = s1.split_id < n && s1.split_id < s0.split_id && ggml_backend_sched_split_is_cpu(sched1, s1.split_id);
+        if (can0 && (host_turn_0 || !can1)) {
+            ec = ggml_backend_sched_exec_split(sched0, s0, NULL);
+            host_turn_0 = false;
+        } else if (can1) {
+            ec = ggml_backend_sched_exec_split(sched1, s1, NULL);
+            host_turn_0 = true;
+        } else if (s0.split_id >= n && s1.split_id < n) {
+            continue; // graph 1 catches up
+        } else if (!can0 && !can1 && s0.split_id < n) {
+            continue;
+        } else {
+            GGML_ABORT("ggml_backend_sched_graph_compute_pair: no split can run (s0 %d s1 %d n %d, cpu0 %d cpu1 %d)", s0.split_id, s1.split_id, n,
+                s0.split_id < n ? (int) ggml_backend_sched_split_is_cpu(sched0, s0.split_id) : -1, s1.split_id < n ? (int) ggml_backend_sched_split_is_cpu(sched1, s1.split_id) : -1);
+        }
+    }
+
+    sched0->overlap = overlap0;
+    sched1->overlap = overlap1;
+    return ec;
+}
+
 ggml_backend_sched_t ggml_backend_sched_new(
         ggml_backend_t * backends,
         ggml_backend_buffer_type_t * bufts,
@@ -2157,6 +2296,12 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     if (sched == NULL) {
         return;
     }
+    for (int j = 0; j < sched->n_pair_events; j++) {
+        if (sched->pair_events[j] != NULL) {
+            ggml_backend_event_free(sched->pair_events[j]);
+        }
+    }
+    free(sched->pair_events);
     for (int b = 0; b < sched->n_backends; b++) {
         for (int c = 0; c < sched->n_copies; c++) {
             ggml_backend_event_free(sched->events[b][c]);

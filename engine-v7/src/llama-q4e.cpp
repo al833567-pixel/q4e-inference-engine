@@ -1269,10 +1269,34 @@ struct llama_q4e::impl {
     }
 
     const layer_tensors * get(int32_t il, int64_t n_tokens) const {
-        if (il < 0 || il >= (int32_t) layers.size() || layers[il].ig < 0 || n_tokens > params.max_batch) {
+        if (il < 0 || il >= (int32_t) layers.size() || layers[il].ig < 0 || lane_offset + n_tokens > params.max_batch) {
             return nullptr;
         }
-        return &layers[il].t;
+        return lane == 1 ? &lane_t[il] : &layers[il].t;
+    }
+
+    // lane 1 of a pipelined pair: copies of the layer tensors whose selections go after those of lane 0
+    int lane = 0;
+    int64_t lane_offset = 0;
+    std::vector<layer_tensors> lane_t;
+
+    void set_lane(int l, int64_t offset) {
+        lane        = l;
+        lane_offset = l == 1 ? offset : 0;
+        if (l != 1) {
+            return;
+        }
+        if (lane_t.empty()) {
+            lane_t.resize(layers.size());
+        }
+        const int64_t n_used = model.hparams.n_expert_used_max();
+        for (size_t il = 0; il < layers.size(); ++il) {
+            if (layers[il].ig < 0) {
+                continue;
+            }
+            lane_t[il] = layers[il].t;
+            lane_t[il].sel_host = layers[il].sel.data() + offset*n_used;
+        }
     }
 
     void end_ubatch(ggml_backend_sched_t sched, int64_t n_tokens) {
@@ -1504,6 +1528,10 @@ llama_q4e::~llama_q4e() = default;
 
 const llama_q4e::layer_tensors * llama_q4e::get(int32_t il, int64_t n_tokens) const {
     return pimpl->get(il, n_tokens);
+}
+
+void llama_q4e::set_lane(int lane, int64_t offset) {
+    pimpl->set_lane(lane, offset);
 }
 
 void llama_q4e::set_selection(int32_t il) const {

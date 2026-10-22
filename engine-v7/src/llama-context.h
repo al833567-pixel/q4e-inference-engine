@@ -266,6 +266,9 @@ public:
 private:
     llm_graph_result * get_gf_res_prev();
 
+    // apply the memory context of the ubatch, build or reuse its graph on the scheduler of the lane, set the inputs
+    llm_graph_result * prepare_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, int lane, ggml_status & ret);
+
     llm_graph_params graph_params(
                         llm_graph_result * res,
                       const llama_ubatch & ubatch,
@@ -421,6 +424,20 @@ private:
     llm_graph_result_ptr gf_res_reserve;
 
     llm_graph_result * gf_res_prev_active = nullptr;
+
+    // pipelined pairs of small ubatches (q4e, LLAMA_PIPE): lane 1 has its own scheduler and device backends (CUDA
+    // streams), the CPU backend is shared and the host splits of the two lanes alternate, see decode()
+    bool                                pipe_on = false;
+    std::vector<ggml_backend_ptr>       backends_lane;
+    std::vector<ggml_backend_t>         backend_ptrs_lane;
+    ggml_backend_sched_ptr              sched_lane;
+    std::array<llm_graph_result_ptr, 2> gf_res_lane;
+    llm_graph_result *                  gf_res_lane_active = nullptr;
+    int                                 building_lane = 0; // graph_params and the graph callback use this lane
+    int32_t                             pipe_rs_before = 0; // tokens of the batch before / after the ubatch being built
+    int32_t                             pipe_rs_after  = 0;
+
+    ggml_backend_sched_t lane_sched(int lane) const { return lane == 1 ? sched_lane.get() : sched.get(); }
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;

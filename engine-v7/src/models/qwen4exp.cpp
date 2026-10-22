@@ -1352,8 +1352,24 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
 
     const int64_t n_slots = (int64_t) cparams.n_rs_seq + 1;
 
+    // a pipelined pair (rs_after/rs_before, see llama_context::decode): each ubatch writes the slots of its own
+    // tokens, counted from the end of the whole batch, and the first ubatch its final state at slot 0 for the second
+    const int64_t n_tok = conv_input->ne[0] - state_cols;
     for (int64_t slot = 0; slot < n_slots; ++slot) {
-        const int64_t s_idx = std::max<int64_t>(0, conv_input->ne[0] - state_cols - slot);
+        int64_t s_idx;
+        if (slot < rs_after) {
+            if (slot != 0) {
+                continue;
+            }
+            s_idx = n_tok;
+        } else if (slot - rs_after < n_tok) {
+            s_idx = n_tok - (slot - rs_after);
+        } else {
+            if (rs_before > 0) {
+                continue;
+            }
+            s_idx = 0;
+        }
 
         ggml_tensor * tail = ggml_view_3d(ctx0, conv_input,
                 state_cols, channels, n_seqs,

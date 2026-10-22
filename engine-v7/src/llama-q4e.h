@@ -59,6 +59,10 @@ public:
     // the tensors of layer il if the tiers compute it for ubatches of n_tokens, nullptr otherwise
     const layer_tensors * get(int32_t il, int64_t n_tokens) const;
 
+    // the graphs built next are for lane 1 of a pipelined pair, whose tokens follow the offset tokens of lane 0:
+    // its routing ops write the selections after those of lane 0 (lane 0: offset 0)
+    void set_lane(int lane, int64_t offset);
+
     // the current graph copies the selected experts of layer il to sel_all, they are read after each ubatch
     void set_selection(int32_t il) const;
 

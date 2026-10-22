@@ -498,9 +498,26 @@ ggml_tensor * llm_build_delta_net_base::build_conv_state(
 
         const int64_t K = (int64_t) cparams.n_rs_seq + 1;
 
+        // slot d holds the state d tokens before the end of the batch; in a pipelined pair (rs_after/rs_before) this
+        // ubatch writes the slots of its own tokens, and the first ubatch its final state at slot 0 for the second
+        const int64_t n_tok = conv_input->ne[0] - conv_states->ne[0];
         for (int64_t t = 1; t <= K; ++t) {
-            const int64_t s_idx  = std::max<int64_t>(0, conv_input->ne[0] - conv_states->ne[0] - K + t);
-            const int64_t s_slot = K - t;
+            const int64_t d = K - t;
+            int64_t s_idx;
+            if (d < rs_after) {
+                if (d != 0) {
+                    continue;
+                }
+                s_idx = n_tok;
+            } else if (d - rs_after < n_tok) {
+                s_idx = n_tok - (d - rs_after);
+            } else {
+                if (rs_before > 0) {
+                    continue; // a token of the previous ubatch
+                }
+                s_idx = 0;
+            }
+            const int64_t s_slot = d;
 
             ggml_tensor * conv_state_last =
                 ggml_view_3d(ctx0, conv_input,
@@ -582,22 +599,45 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     const size_t row_size = hparams.n_embd_s() * ggml_element_size(ssm_states_all);
 
     // op writes the last min(n_seq_tokens, K) snapshots; trailing slots are left unwritten
-    const int64_t n_written = std::min<int64_t>(n_seq_tokens, K);
+    // a pipelined first ubatch (rs_after tokens follow): its snapshots go rs_after slots further, and its final state
+    // also to slot 0, where the second ubatch reads it
+    const int64_t n_written = std::max<int64_t>(0, std::min<int64_t>(n_seq_tokens, K - rs_after));
 
     // write the produced snapshots into the recurrent cache (snapshot slot i -> rollback group i)
-    ggml_tensor * src = ggml_view_3d(ctx0, gdn_out,
-        D, n_seqs, n_written,
-        ggml_row_size(gdn_out->type, D),
-        ggml_row_size(gdn_out->type, state_size_per_snap),
-        ggml_row_size(gdn_out->type, attn_score_elems));
+    ggml_tensor * written = nullptr;
+    if (n_written > 0) {
+        ggml_tensor * src = ggml_view_3d(ctx0, gdn_out,
+            D, n_seqs, n_written,
+            ggml_row_size(gdn_out->type, D),
+            ggml_row_size(gdn_out->type, state_size_per_snap),
+            ggml_row_size(gdn_out->type, attn_score_elems));
 
-    ggml_tensor * dst = ggml_view_3d(ctx0, ssm_states_all,
-        D, n_seqs, n_written,
-        ssm_states_all->nb[1],
-        (size_t) mem_size * row_size,
-        (size_t) kv_head * row_size);
+        ggml_tensor * dst = ggml_view_3d(ctx0, ssm_states_all,
+            D, n_seqs, n_written,
+            ssm_states_all->nb[1],
+            (size_t) mem_size * row_size,
+            ((size_t) rs_after * mem_size + kv_head) * row_size);
 
-    ggml_build_forward_expand(gf, ggml_cpy(ctx0, src, dst));
+        written = ggml_cpy(ctx0, src, dst);
+        ggml_build_forward_expand(gf, written);
+    }
+    if (rs_after > 0) {
+        // the newest snapshot, read back from the cache when it went there: the CUDA backend fuses the copy above
+        // into the op, which then leaves its own snapshot tail unwritten
+        ggml_tensor * src = written != nullptr ?
+            ggml_view_2d(ctx0, written, D, n_seqs, written->nb[1], 0) :
+            ggml_view_2d(ctx0, gdn_out,
+                D, n_seqs,
+                ggml_row_size(gdn_out->type, D),
+                ggml_row_size(gdn_out->type, attn_score_elems));
+
+        ggml_tensor * dst = ggml_view_2d(ctx0, ssm_states_all,
+            D, n_seqs,
+            ssm_states_all->nb[1],
+            (size_t) kv_head * row_size);
+
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, src, dst));
+    }
 
     return output;
 }

@@ -368,6 +368,8 @@ extern "C" {
     GGML_API bool                 ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph); // returns success
     GGML_API enum ggml_status     ggml_backend_sched_graph_compute(ggml_backend_sched_t sched, struct ggml_cgraph * graph);
     GGML_API enum ggml_status     ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sched, struct ggml_cgraph * graph);
+    // two graphs of consecutive tokens, interleaved split by split (see ggml-backend.cpp); the schedulers need distinct device backends
+    GGML_API enum ggml_status     ggml_backend_sched_graph_compute_pair(ggml_backend_sched_t sched0, struct ggml_cgraph * graph0, ggml_backend_sched_t sched1, struct ggml_cgraph * graph1);
     GGML_API void                 ggml_backend_sched_synchronize(ggml_backend_sched_t sched);
 
     // Reset all assignments and allocators - must be called before changing the node backends or allocating a new graph.

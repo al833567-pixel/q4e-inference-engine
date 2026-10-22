@@ -185,6 +185,10 @@ public:
     // n_keep_tail = minimum trailing tokens of a seq that must land in the same ubatch
     llama_ubatch split_equal(uint32_t n_ubatch, bool sequential, uint32_t n_keep_tail);
 
+    // a pipelined pair (llama_context::decode): the trailing tokens may be split, the graphs of the two ubatches write
+    // the rollback snapshots at the slots of the whole batch
+    bool pipe_split = false;
+
     // sequence-set-wise split - each ubatch contains a single sequence-set
     // TODO: extend to support multiple _full_ sequences in the ubatch
     llama_ubatch split_seq(uint32_t n_ubatch);

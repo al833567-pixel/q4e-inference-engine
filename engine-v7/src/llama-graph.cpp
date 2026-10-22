@@ -1573,6 +1573,8 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     cross            (params.cross),
     moe_cache        (params.moe_cache),
     q4e              (params.q4e),
+    rs_before        (params.rs_before),
+    rs_after         (params.rs_after),
     prec_policy      (params.prec_policy),
     hdmd             (params.hdmd),
     samplers         (params.samplers),
@@ -2755,7 +2757,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
     ggml_tensor * rids = ggml_custom_4d(ctx0, GGML_TYPE_I32, n_rows, n_tokens, 2, 1, rargs, 3, q4e_route_ids, 1, ut);
     ggml_tensor * rw   = ggml_custom_4d(ctx0, GGML_TYPE_F32, 1, n_rows, n_tokens, 2, rargs, 2, q4e_route_weights, 1, ut);
     ggml_set_name(rids, "q4e_route_ids");
-    ggml_set_name(rw,   "q4e_route_w");
+    ggml_set_name(rw,   "q4e_route_wts");
     ggml_backend_sched_set_tensor_backend(sched, rids, backend_cpu);
     ggml_backend_sched_set_tensor_backend(sched, rw,   backend_cpu);
 
@@ -2846,8 +2848,21 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
             y = keep(ggml_sum_rows(ctx0, y));                               // [1, n_embd, n_tokens]
             y = ggml_reshape_2d(ctx0, y, n_embd, n_tokens);
         }
+        // the backend of this scheduler on the device of the tier: a second scheduler (pipelined ubatches) has its
+        // own backends for the same devices
+        ggml_backend_t sb = backend;
+        for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            ggml_backend_t bi = ggml_backend_sched_get_backend(sched, i);
+            if (bi == backend) {
+                sb = bi;
+                break;
+            }
+            if (ggml_backend_get_device(bi) == ggml_backend_get_device(backend)) {
+                sb = bi;
+            }
+        }
         for (ggml_tensor * n : nodes) {
-            ggml_backend_sched_set_tensor_backend(sched, n, backend);
+            ggml_backend_sched_set_tensor_backend(sched, n, sb);
         }
         cb(y, name, il);
         return y;

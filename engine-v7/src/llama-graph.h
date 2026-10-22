@@ -835,6 +835,11 @@ struct llm_graph_params {
 
     llm_graph_result * res;
 
+    // tokens of the same sequence before and after this ubatch in the batch (pipelined pairs, see llama_context::decode):
+    // the recurrent layers write their rollback snapshots at the slots of the whole batch
+    int32_t rs_before = 0;
+    int32_t rs_after  = 0;
+
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
     bool allow_reuse(const llm_graph_params & other) const {
@@ -872,6 +877,10 @@ struct llm_graph_params {
         }
 
         if (n_outputs != other.n_outputs) {
+            return false;
+        }
+
+        if (rs_before != other.rs_before || rs_after != other.rs_after) {
             return false;
         }
 
@@ -1066,6 +1075,8 @@ struct llm_graph_context {
     const llama_cross            * cross;
     const llama_moe_cache        * moe_cache;
     const llama_q4e              * q4e;
+    const int32_t                  rs_before;
+    const int32_t                  rs_after;
 
     const llama_prec_policy * prec_policy;
 
