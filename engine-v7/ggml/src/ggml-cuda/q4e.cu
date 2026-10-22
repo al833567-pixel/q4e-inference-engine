@@ -115,3 +115,142 @@ void ggml_cuda_op_mul_sigmoid_bcast(ggml_backend_cuda_context & ctx, ggml_tensor
     q4e_mul_sigmoid_bcast_kernel<<<(n + 255)/256, 256, 0, ctx.stream()>>>((const float *) a->data, (const float *) g->data, (float *) mul->data,
         (int) mul->ne[0], g->nb[1]/sizeof(float), n);
 }
+// qwen4exp hyper-connection mix (ggml_q4e_hc_mix) for up to Q4E_HC_MAX_T tokens with Q8_0 weights, in two kernels:
+//   down: one warp per row of the down projection, the activations of a K tile in shared memory, silu(scale*dot)
+//   up:   one warp per output element e, the hc rows c*n_embd + e of the up projection, sigmoid gate and the mean
+#define Q4E_HC_MAX_T  4
+#define Q4E_HC_TILE   2048
+#define Q4E_HC_WARPS  8
+
+template <int n_t>
+static __global__ void q4e_hc_down_kernel(const float * xn, const block_q8_0 * w, const int64_t w_stride_blocks,
+        float * lo, const int n_hc, const int n_lr, const float scale) {
+    __shared__ float xs[n_t][Q4E_HC_TILE];
+    const int lane = threadIdx.x;
+    const int warp = threadIdx.y;
+    const int r    = blockIdx.x*Q4E_HC_WARPS + warp;
+    float acc[n_t] = { 0.0f };
+    for (int k0 = 0; k0 < n_hc; k0 += Q4E_HC_TILE) {
+        const int nk = min(Q4E_HC_TILE, n_hc - k0);
+        __syncthreads();
+        for (int i = warp*32 + lane; i < nk; i += 32*Q4E_HC_WARPS) {
+#pragma unroll
+            for (int t = 0; t < n_t; ++t) {
+                xs[t][i] = xn[(int64_t) t*n_hc + k0 + i];
+            }
+        }
+        __syncthreads();
+        if (r < n_lr) {
+            const block_q8_0 * row = w + r*w_stride_blocks + k0/QK8_0;
+            for (int b = lane; b < nk/QK8_0; b += 32) {
+                const float d = __half2float(row[b].d);
+                const int8_t * q = row[b].qs;
+                float s[n_t] = { 0.0f };
+#pragma unroll
+                for (int j = 0; j < QK8_0; ++j) {
+                    const float qj = (float) q[j];
+#pragma unroll
+                    for (int t = 0; t < n_t; ++t) {
+                        s[t] += qj*xs[t][b*QK8_0 + j];
+                    }
+                }
+#pragma unroll
+                for (int t = 0; t < n_t; ++t) {
+                    acc[t] += d*s[t];
+                }
+            }
+        }
+    }
+    if (r >= n_lr) {
+        return;
+    }
+#pragma unroll
+    for (int t = 0; t < n_t; ++t) {
+        const float v = scale*warp_reduce_sum<32>(acc[t]);
+        if (lane == 0) {
+            lo[t*n_lr + r] = v/(1.0f + expf(-v));
+        }
+    }
+}
+
+template <int n_t>
+static __global__ void q4e_hc_up_kernel(const float * xn, const float * lo, const block_q8_0 * w, const int64_t w_stride_blocks,
+        float * dst, const int n_embd, const int hc, const int n_lr, const float scale) {
+    extern __shared__ float los[]; // [n_t][n_lr]
+    const int lane = threadIdx.x;
+    const int warp = threadIdx.y;
+    for (int i = warp*32 + lane; i < n_t*n_lr; i += 32*Q4E_HC_WARPS) {
+        los[i] = lo[i];
+    }
+    __syncthreads();
+    const int e = blockIdx.x*Q4E_HC_WARPS + warp;
+    if (e >= n_embd) {
+        return;
+    }
+    const int n_hc = n_embd*hc;
+    const int nb   = n_lr/QK8_0;
+    float out[n_t] = { 0.0f };
+    for (int c = 0; c < hc; ++c) {
+        const int r = c*n_embd + e;
+        const block_q8_0 * row = w + r*w_stride_blocks;
+        float s[n_t] = { 0.0f };
+        for (int b = 0; b < nb; ++b) {
+            const float v = __half2float(row[b].d)*(float) row[b].qs[lane];
+#pragma unroll
+            for (int t = 0; t < n_t; ++t) {
+                s[t] += v*los[t*n_lr + b*QK8_0 + lane];
+            }
+        }
+#pragma unroll
+        for (int t = 0; t < n_t; ++t) {
+            const float g = warp_reduce_sum<32>(s[t]);
+            out[t] += xn[(int64_t) t*n_hc + r]/(1.0f + expf(-g));
+        }
+    }
+    if (lane == 0) {
+#pragma unroll
+        for (int t = 0; t < n_t; ++t) {
+            dst[(int64_t) t*n_embd + e] = scale*out[t];
+        }
+    }
+}
+
+bool ggml_cuda_q4e_hc_mix_supported(const ggml_tensor * op) {
+    const ggml_tensor * xn = op->src[0];
+    const ggml_tensor * down = op->src[1];
+    const ggml_tensor * up = op->src[2];
+    return xn->type == GGML_TYPE_F32 && ggml_is_contiguous(xn) && xn->ne[1] <= Q4E_HC_MAX_T &&
+        down->type == GGML_TYPE_Q8_0 && up->type == GGML_TYPE_Q8_0 &&
+        down->nb[0] == sizeof(block_q8_0) && up->nb[0] == sizeof(block_q8_0) &&
+        xn->ne[0] % QK8_0 == 0 && up->ne[0] % QK8_0 == 0 && op->type == GGML_TYPE_F32 && ggml_is_contiguous(op);
+}
+
+template <int n_t>
+static void q4e_hc_mix_launch(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * xn = dst->src[0];
+    const ggml_tensor * down = dst->src[1];
+    const ggml_tensor * up = dst->src[2];
+    const int   hc     = ggml_get_op_params_i32(dst, 0);
+    const float scale  = ggml_get_op_params_f32(dst, 1);
+    const int   n_hc   = (int) xn->ne[0];
+    const int   n_embd = n_hc/hc;
+    const int   n_lr   = (int) down->ne[1];
+    cudaStream_t stream = ctx.stream();
+    ggml_cuda_pool_alloc<float> lo(ctx.pool(), (size_t) n_t*n_lr);
+    const dim3 block(32, Q4E_HC_WARPS);
+    q4e_hc_down_kernel<n_t><<<(n_lr + Q4E_HC_WARPS - 1)/Q4E_HC_WARPS, block, 0, stream>>>(
+        (const float *) xn->data, (const block_q8_0 *) down->data, down->nb[1]/sizeof(block_q8_0), lo.get(), n_hc, n_lr, scale);
+    q4e_hc_up_kernel<n_t><<<(n_embd + Q4E_HC_WARPS - 1)/Q4E_HC_WARPS, block, (size_t) n_t*n_lr*sizeof(float), stream>>>(
+        (const float *) xn->data, lo.get(), (const block_q8_0 *) up->data, up->nb[1]/sizeof(block_q8_0), (float *) dst->data,
+        n_embd, hc, n_lr, scale);
+}
+
+void ggml_cuda_op_q4e_hc_mix(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    switch (dst->src[0]->ne[1]) {
+        case 1: q4e_hc_mix_launch<1>(ctx, dst); break;
+        case 2: q4e_hc_mix_launch<2>(ctx, dst); break;
+        case 3: q4e_hc_mix_launch<3>(ctx, dst); break;
+        case 4: q4e_hc_mix_launch<4>(ctx, dst); break;
+        default: GGML_ABORT("q4e_hc_mix: up to %d tokens", Q4E_HC_MAX_T);
+    }
+}

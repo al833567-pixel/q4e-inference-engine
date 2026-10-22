@@ -328,6 +328,23 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
     xn = ggml_reshape_2d(ctx0, xn, hc_dim, nt);
     cb(xn, "hc_norm", il);
 
+    // decode-sized batches on a device with the op: down, silu, up, sigmoid gate and the mean in one op
+    // opt-in (Q4E_HC_FUSE=1): on a Tesla T10 the kernels take 74 us per mix against ~57 us for the separate
+    // ops, whose mul_mat_vec_q kernels read the Q8_0 rows faster
+    static const bool hc_fuse = [] { const char * e = getenv("Q4E_HC_FUSE"); return e != nullptr && atoi(e) != 0; }();
+    if (hc_fuse && il >= 0 && nt <= 4 && (loras == nullptr || loras->empty()) && w_down->buffer && !ggml_backend_buffer_is_host(w_down->buffer)) {
+        ggml_tensor * fused = ggml_q4e_hc_mix(ctx0, xn, w_down, w_up, (int) hc, 1.0f / (float) hc);
+        ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(w_down->buffer));
+        if (dev && ggml_backend_dev_supports_op(dev, fused)) {
+            cb(fused, "hc_mixed", il);
+            if (inject) {
+                *inject = build_lora_mm(w_inject, xn);
+                cb(*inject, "hc_inject", il);
+            }
+            return fused;
+        }
+    }
+
     ggml_tensor * lo = build_lora_mm(w_down, xn);
     lo = ggml_silu(ctx0, ggml_scale(ctx0, lo, 1.0f / (float) hc));
     ggml_tensor * gate = build_lora_mm(w_up, lo);

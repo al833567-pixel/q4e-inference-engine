@@ -587,6 +587,7 @@ extern "C" {
         GGML_OP_DSV4_HC_POST,
         GGML_OP_Q4E_ROUTE,
         GGML_OP_Q4E_WSUM,
+        GGML_OP_Q4E_HC_MIX,
 
         GGML_OP_UNARY,
 
@@ -2747,6 +2748,18 @@ extern "C" {
             int                   zero_slot,
             bool                  weights,
             bool                  neg_miss);      // ids: -1 in place of zero_slot + r (backends that skip negative ids)
+
+    // qwen4exp hyper-connection mix after the grouped norm, in one op:
+    //   lo    = silu(scale * down x xn)                          [n_lr, T]
+    //   gate  = up x lo                                          [hc*n_embd, T]
+    //   out   = scale * sum_s xn[s] * sigmoid(gate[s])           [n_embd, T]
+    GGML_API struct ggml_tensor * ggml_q4e_hc_mix(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * xn,     // F32 [hc*n_embd, T]
+            struct ggml_tensor  * down,   // [hc*n_embd, n_lr]
+            struct ggml_tensor  * up,     // [n_lr, hc*n_embd]
+            int                   hc,
+            float                 scale);
 
     // out[e, t] = sum_r y[e, r, t] * w[r, t]
     GGML_API struct ggml_tensor * ggml_q4e_wsum(

@@ -2574,6 +2574,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_Q4E_WSUM:
             ggml_cuda_op_q4e_wsum(ctx, dst);
             break;
+        case GGML_OP_Q4E_HC_MIX:
+            ggml_cuda_op_q4e_hc_mix(ctx, dst);
+            break;
         case GGML_OP_DSV4_HC_POST:
             ggml_cuda_op_dsv4_hc_post(ctx, dst);
             break;
@@ -6273,6 +6276,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 op->type == GGML_TYPE_F32;
         case GGML_OP_Q4E_ROUTE:
             return op->src[0]->type == GGML_TYPE_I32 && op->src[1]->type == GGML_TYPE_F32 && op->src[2]->type == GGML_TYPE_F32;
+        case GGML_OP_Q4E_HC_MIX:
+            return ggml_cuda_q4e_hc_mix_supported(op);
         case GGML_OP_Q4E_WSUM:
             return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 && op->src[0]->nb[0] == sizeof(float);
         case GGML_OP_DSV4_HC_POST:

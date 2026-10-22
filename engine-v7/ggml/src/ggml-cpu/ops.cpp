@@ -11757,6 +11757,73 @@ void ggml_compute_forward_q4e_route(
     }
 }
 
+// ggml_compute_forward_q4e_hc_mix: the reference for the CUDA kernels (one thread, the graph uses the op only where
+// the hyper-connection weights are on a GPU that has it)
+
+void ggml_compute_forward_q4e_hc_mix(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    if (params->ith != 0) {
+        return;
+    }
+    const ggml_tensor * xn   = dst->src[0];
+    const ggml_tensor * down = dst->src[1];
+    const ggml_tensor * up   = dst->src[2];
+    const int     hc     = ggml_get_op_params_i32(dst, 0);
+    const float   scale  = ggml_get_op_params_f32(dst, 1);
+    const int64_t n_hc   = xn->ne[0];
+    const int64_t n_embd = n_hc/hc;
+    const int64_t n_lr   = down->ne[1];
+    const int64_t n_t    = xn->ne[1];
+    const auto * tf_down = ggml_get_type_traits(down->type);
+    const auto * tf_up   = ggml_get_type_traits(up->type);
+
+    std::vector<float> row(std::max(n_hc, n_lr));
+    std::vector<float> lo(n_lr*n_t);
+    std::vector<float> gate(n_hc);
+    for (int64_t r = 0; r < n_lr; ++r) {
+        const void * w = (const char *) down->data + r*down->nb[1];
+        if (down->type == GGML_TYPE_F32) {
+            memcpy(row.data(), w, n_hc*sizeof(float));
+        } else {
+            tf_down->to_float(w, row.data(), n_hc);
+        }
+        for (int64_t t = 0; t < n_t; ++t) {
+            const float * x = (const float *) ((const char *) xn->data + t*xn->nb[1]);
+            float s = 0.0f;
+            for (int64_t k = 0; k < n_hc; ++k) {
+                s += row[k]*x[k];
+            }
+            const float v = s*scale;
+            lo[t*n_lr + r] = v/(1.0f + expf(-v));
+        }
+    }
+    for (int64_t t = 0; t < n_t; ++t) {
+        const float * x = (const float *) ((const char *) xn->data + t*xn->nb[1]);
+        for (int64_t r = 0; r < n_hc; ++r) {
+            const void * w = (const char *) up->data + r*up->nb[1];
+            if (up->type == GGML_TYPE_F32) {
+                memcpy(row.data(), w, n_lr*sizeof(float));
+            } else {
+                tf_up->to_float(w, row.data(), n_lr);
+            }
+            float s = 0.0f;
+            for (int64_t k = 0; k < n_lr; ++k) {
+                s += row[k]*lo[t*n_lr + k];
+            }
+            gate[r] = s;
+        }
+        float * out = (float *) ((char *) dst->data + t*dst->nb[1]);
+        for (int64_t e = 0; e < n_embd; ++e) {
+            float s = 0.0f;
+            for (int c = 0; c < hc; ++c) {
+                s += x[c*n_embd + e]/(1.0f + expf(-gate[c*n_embd + e]));
+            }
+            out[e] = s*scale;
+        }
+    }
+}
+
 // ggml_compute_forward_q4e_wsum
 
 void ggml_compute_forward_q4e_wsum(

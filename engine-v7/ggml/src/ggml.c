@@ -1097,6 +1097,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "DSV4_HC_POST",
     "Q4E_ROUTE",
     "Q4E_WSUM",
+    "Q4E_HC_MIX",
 
     "UNARY",
 
@@ -1114,7 +1115,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1214,6 +1215,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "dsv4_hc_post(x, residual, post, comb)",
     "q4e_route(sel, w, table)",
     "q4e_wsum(y, w)",
+    "q4e_hc_mix(xn, down, up)",
 
     "unary(x)",
 
@@ -1231,7 +1233,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6615,6 +6617,33 @@ struct ggml_tensor * ggml_q4e_route(
     result->src[0] = sel;
     result->src[1] = w;
     result->src[2] = table;
+
+    return result;
+}
+
+// ggml_q4e_hc_mix
+
+struct ggml_tensor * ggml_q4e_hc_mix(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * xn,
+        struct ggml_tensor  * down,
+        struct ggml_tensor  * up,
+        int                   hc,
+        float                 scale) {
+    GGML_ASSERT(xn->type == GGML_TYPE_F32 && ggml_is_contiguous(xn) && hc > 0);
+    GGML_ASSERT(down->ne[0] == xn->ne[0] && up->ne[0] == down->ne[1] && up->ne[1] == xn->ne[0]);
+    GGML_ASSERT(xn->ne[0] % hc == 0);
+
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, xn->ne[0]/hc, xn->ne[1]);
+
+    int32_t params[2] = { hc, 0 };
+    memcpy(&params[1], &scale, sizeof(float));
+    ggml_set_op_params(result, params, sizeof(params));
+
+    result->op     = GGML_OP_Q4E_HC_MIX;
+    result->src[0] = xn;
+    result->src[1] = down;
+    result->src[2] = up;
 
     return result;
 }
