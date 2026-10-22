@@ -1140,6 +1140,17 @@ static bool llama_bf16_as_f16(ggml_backend_buffer_type_t buft) {
     return fn && fn(buft);
 }
 
+// the BF16 hyper-connection weights (blk.N.hc_*) of a GPU buffer are stored as Q8_0 (LLAMA_HC_Q8=0 keeps BF16): they
+// are read twice per mix, ~1.3 GB per token on Qwen3.8-Flash-Next, and BF16 has no fast path before Ampere
+static bool llama_bf16_as_q8(ggml_backend_buffer_type_t buft, const char * name, const ggml_tensor * t) {
+    static const bool enabled = [] {
+        const char * e = getenv("LLAMA_HC_Q8");
+        return e == nullptr || atoi(e) != 0;
+    }();
+    return enabled && !ggml_backend_buft_is_host(buft) && strstr(name, ".hc_") != nullptr &&
+        t->ne[0] % ggml_blck_size(GGML_TYPE_Q8_0) == 0 && ggml_n_dims(t) == 2;
+}
+
 // the data of a BF16 weight stored as F16 (see llama_bf16_as_f16): values below F16's normal range become subnormal
 static std::vector<ggml_fp16_t> llama_bf16_to_f16(const void * data, int64_t n) {
     std::vector<float> f32(n);
@@ -1402,7 +1413,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     }
 
     // BF16 weights on a GPU without BF16 hardware are stored as F16 (load_all_data converts them)
-    if (t_meta.type == GGML_TYPE_BF16 && llama_bf16_as_f16(buft)) {
+    if (t_meta.type == GGML_TYPE_BF16 && llama_bf16_as_q8(buft, tn.str().c_str(), &t_meta)) {
+        t_meta.type = GGML_TYPE_Q8_0;
+        t_meta.nb[0] = ggml_type_size(GGML_TYPE_Q8_0);
+        t_meta.nb[1] = ggml_row_size(GGML_TYPE_Q8_0, t_meta.ne[0]);
+        for (int dim = 2; dim < GGML_MAX_DIMS; dim++) {
+            t_meta.nb[dim] = t_meta.nb[dim - 1]*t_meta.ne[dim - 1];
+        }
+    } else if (t_meta.type == GGML_TYPE_BF16 && llama_bf16_as_f16(buft)) {
         t_meta.type = GGML_TYPE_F16;
     }
 
@@ -1737,6 +1755,29 @@ bool llama_model_loader::load_all_data(
         size_t n_size = ggml_nbytes(cur);
 
         const bool from_mapping = use_mmap || lazy.has(cur);
+
+        // a BF16 weight stored as Q8_0: read, quantize, upload
+        if (cur->type == GGML_TYPE_Q8_0 && weight->tensor->type == GGML_TYPE_BF16) {
+            const size_t n_src = ggml_nbytes(weight->tensor);
+            std::vector<no_init<uint8_t>> raw;
+            const void * src = nullptr;
+            if (from_mapping) {
+                src = (const uint8_t *) mappings.at(weight->idx)->addr() + weight->offs;
+            } else {
+                raw.resize(n_src);
+                const auto & file = files.at(weight->idx);
+                file->seek(weight->offs, SEEK_SET);
+                file->read_raw(raw.data(), n_src);
+                src = raw.data();
+            }
+            std::vector<float> f32(ggml_nelements(cur));
+            ggml_bf16_to_fp32_row((const ggml_bf16_t *) src, f32.data(), ggml_nelements(cur));
+            std::vector<uint8_t> q(n_size);
+            ggml_quantize_chunk(GGML_TYPE_Q8_0, f32.data(), q.data(), 0, ggml_nrows(cur), cur->ne[0], nullptr);
+            ggml_backend_tensor_set(cur, q.data(), 0, n_size);
+            size_done += n_size;
+            continue;
+        }
 
         // a BF16 weight stored as F16: read, convert, upload
         if (cur->type == GGML_TYPE_F16 && weight->tensor->type == GGML_TYPE_BF16) {

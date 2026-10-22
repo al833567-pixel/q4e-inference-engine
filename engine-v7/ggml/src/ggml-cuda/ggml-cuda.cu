@@ -4665,12 +4665,18 @@ struct ggml_cuda_op_profile {
             total += e.second.first;
         }
         fprintf(stderr, "CUDA op profile: %.1f ms total\n", total);
-        for (size_t i = 0; i < v.size() && i < 40; ++i) {
+        for (size_t i = 0; i < v.size() && i < 70; ++i) {
             fprintf(stderr, "  %9.1f ms %5.1f%% %8lld  %s\n", v[i].second.first, 100.0*v[i].second.first/total, (long long) v[i].second.second, v[i].first.c_str());
         }
     }
 };
 static ggml_cuda_op_profile g_cuda_op_profile;
+
+static __global__ void ggml_cuda_spin_kernel(const long long cycles) {
+    const long long t0 = clock64();
+    while (clock64() - t0 < cycles) {
+    }
+}
 
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     bool graph_evaluated_or_captured = false;
@@ -4768,6 +4774,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 }
             } else {
                 stream_ctx.concurrent_events.clear();
+            }
+
+            // profile: hold the stream while the host queues the split, so the events time the kernels and not the launches
+            if (ggml_cuda_op_profile::enabled() && !use_cuda_graph) {
+                ggml_cuda_spin_kernel<<<1, 1, 0, cuda_ctx->stream()>>>((long long) cgraph->n_nodes*40000);
             }
 
             for (int i = 0; i < cgraph->n_nodes; i++) {
@@ -4928,6 +4939,48 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
 }
 #endif // USE_CUDA_GRAPH
 
+// [GGML_CUDA_BUSY] GPU time of each graph split measured with events (CUDA graphs stay on), printed every 10 s with
+// the wall time, so the share of time the GPU is idle between splits shows
+struct ggml_cuda_busy_timer {
+    struct pair { cudaEvent_t a, b; };
+    std::vector<pair> pend;
+    double  ms = 0.0;
+    int64_t n  = 0;
+    std::chrono::steady_clock::time_point t0{}, t_print{};
+
+    static bool enabled() {
+        static const bool on = getenv("GGML_CUDA_BUSY") != nullptr;
+        return on;
+    }
+
+    void harvest() {
+        size_t i = 0;
+        for (; i < pend.size(); ++i) {
+            if (cudaEventQuery(pend[i].b) != cudaSuccess) {
+                break;
+            }
+            float t = 0.0f;
+            CUDA_CHECK(cudaEventElapsedTime(&t, pend[i].a, pend[i].b));
+            ms += t;
+            n++;
+            CUDA_CHECK(cudaEventDestroy(pend[i].a));
+            CUDA_CHECK(cudaEventDestroy(pend[i].b));
+        }
+        pend.erase(pend.begin(), pend.begin() + i);
+        const auto now = std::chrono::steady_clock::now();
+        if (t0.time_since_epoch().count() == 0) {
+            t0 = t_print = now;
+        } else if (now - t_print > std::chrono::seconds(10)) {
+            const double wall = std::chrono::duration<double, std::milli>(now - t_print).count();
+            fprintf(stderr, "CUDA busy: %.1f ms of %.1f ms wall (%.0f%%), %lld splits\n", ms, wall, 100.0*ms/wall, (long long) n);
+            ms = 0.0;
+            n  = 0;
+            t_print = now;
+        }
+    }
+};
+static ggml_cuda_busy_timer g_cuda_busy;
+
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
@@ -4986,7 +5039,21 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
         CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
     }
 
+    const bool busy = ggml_cuda_busy_timer::enabled() && !(use_cuda_graph && cuda_graph_update_required);
+    cudaEvent_t ev_busy[2] = {};
+    if (busy) {
+        g_cuda_busy.harvest();
+        CUDA_CHECK(cudaEventCreate(&ev_busy[0]));
+        CUDA_CHECK(cudaEventCreate(&ev_busy[1]));
+        CUDA_CHECK(cudaEventRecord(ev_busy[0], cuda_ctx->stream()));
+    }
+
     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+
+    if (busy) {
+        CUDA_CHECK(cudaEventRecord(ev_busy[1], cuda_ctx->stream()));
+        g_cuda_busy.pend.push_back({ ev_busy[0], ev_busy[1] });
+    }
 
     return GGML_STATUS_SUCCESS;
 }

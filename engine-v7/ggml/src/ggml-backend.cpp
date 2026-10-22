@@ -994,6 +994,7 @@ struct ggml_backend_sched {
 
     // [GGML_SCHED_TIMING] wall time of the input copies and of the compute of each backend, the splits are synchronized
     bool timing;
+    bool timing_host; // GGML_SCHED_TIMING=2: host time only, no synchronize (the device time is not in it)
     int64_t timing_copy_us[GGML_SCHED_MAX_BACKENDS];
     int64_t timing_compute_us[GGML_SCHED_MAX_BACKENDS];
     int64_t timing_n_splits[GGML_SCHED_MAX_BACKENDS];
@@ -1983,7 +1984,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
         int64_t t_compute_us = 0;
         if (sched->timing) {
-            ggml_backend_synchronize(split_backend);
+            if (!sched->timing_host) {
+                ggml_backend_synchronize(split_backend);
+            }
             t_compute_us = ggml_time_us();
             sched->timing_copy_us[split_backend_id] += t_compute_us - t_split_us;
         }
@@ -2053,7 +2056,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
 
         if (sched->timing) {
-            ggml_backend_synchronize(split_backend);
+            if (!sched->timing_host) {
+                ggml_backend_synchronize(split_backend);
+            }
             sched->timing_compute_us[split_backend_id] += ggml_time_us() - t_compute_us;
             sched->timing_n_splits[split_backend_id]++;
         }
@@ -2094,6 +2099,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
 
     const char * GGML_SCHED_TIMING = getenv("GGML_SCHED_TIMING");
     sched->timing = GGML_SCHED_TIMING ? atoi(GGML_SCHED_TIMING) != 0 : false;
+    sched->timing_host = GGML_SCHED_TIMING ? atoi(GGML_SCHED_TIMING) == 2 : false;
 
     const char * GGML_SCHED_FAST_JOIN = getenv("GGML_SCHED_FAST_JOIN");
     sched->fast_join = GGML_SCHED_FAST_JOIN ? atoi(GGML_SCHED_FAST_JOIN) != 0 : true;

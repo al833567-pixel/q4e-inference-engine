@@ -141,7 +141,8 @@ constexpr uint32_t Q4E_PROF_MAGIC   = 0x46503451u;           // "Q4PF"
 constexpr size_t   Q4E_PACK_ALIGN   = 65536;
 static float       Q4E_DECAY        = 0.995f; // per token, half-life ~140 tokens (env Q4E_DECAY)
 static float       Q4E_HYSTERESIS   = 1.1f;   // a block replaces a VRAM block only if it scores this much higher (env Q4E_HYST)
-static size_t      Q4E_SWAP_BYTES   = 128u*1048576; // copies per ubatch once the pool is full (env Q4E_SWAP_MB)
+static size_t      Q4E_SWAP_BYTES   = 8u*1048576; // copies per ubatch once the pool is full (env Q4E_SWAP_MB); more
+                                                // competes with the per-layer copies for PCIe: 128 MiB was 21.9/22.7 t/s, 8 MiB 23.2/24.0
 static size_t      Q4E_RAM_SWAP_BYTES = 0; // blocks read from the SSD into the RAM tier per ubatch (env Q4E_RAM_SWAP_MB), off:
                                                  // on GLM-5.3-Flash with 47 GB of RAM it competed with the CPU blocks for the SSD
 constexpr int      Q4E_MAX_BACKENDS = 16;
@@ -185,6 +186,11 @@ struct llama_q4e::impl {
         size_t staging_used = 0;
 
         ggml_tensor * sel_all = nullptr; // I32 [n_used*max_batch*n_layer]: the selections of all layers, read at once
+
+        // the slot tables of all layers of the device in one tensor, uploaded in one copy after each ubatch
+        ggml_tensor *      tables = nullptr;
+        std::vector<float> tables_host;
+        int64_t            n_table = 0;
     };
 
     struct layer {
@@ -195,6 +201,7 @@ struct llama_q4e::impl {
         int64_t n_virt = 0;
 
         std::vector<float>   table;   // device copy: slot or -1
+        int64_t table_off = 0;        // of the layer in the device's tables
         std::vector<int32_t> slot_of; // slot, also while the copy is in flight, -1 if not in VRAM
         std::vector<uint8_t> in_ram;  // the block is locked in the RAM tier
         std::vector<float>    score;  // per expert, decayed use count
@@ -633,17 +640,24 @@ struct llama_q4e::impl {
             int64_t n = share > tables ? (int64_t) ((share - tables)/(g.slot_bytes + 3*512)) - g.n_zero - 1 : 0;
             g.n_slots = (int32_t) std::max<int64_t>(0, std::min(n, max_slots));
             n_tensors[g.dev] += N_PARTS + g.layers.size();
+            for (int32_t il : g.layers) {
+                layers[il].table_off = devices[g.dev].n_table;
+                devices[g.dev].n_table += layers[il].n_virt;
+            }
         }
 
         for (size_t id = 0; id < devices.size(); ++id) {
             if (n_tensors[id] == 0) {
                 continue;
             }
-            ggml_init_params ip = { (n_tensors[id] + 1)*ggml_tensor_overhead(), nullptr, true };
+            ggml_init_params ip = { (n_tensors[id] + 2)*ggml_tensor_overhead(), nullptr, true };
             devices[id].ctx.reset(ggml_init(ip));
             devices[id].sel_all = ggml_new_tensor_1d(devices[id].ctx.get(), GGML_TYPE_I32,
                 (int64_t) model.hparams.n_expert_used_max()*params.max_batch*layers.size());
             ggml_set_name(devices[id].sel_all, "q4e.selections");
+            devices[id].tables = ggml_new_tensor_1d(devices[id].ctx.get(), GGML_TYPE_F32, devices[id].n_table);
+            ggml_set_name(devices[id].tables, "q4e.tables");
+            devices[id].tables_host.assign(devices[id].n_table, -1.0f);
         }
 
         for (size_t ig = 0; ig < groups.size(); ++ig) {
@@ -662,7 +676,7 @@ struct llama_q4e::impl {
             }
             for (int32_t il : g.layers) {
                 layer & l = layers[il];
-                l.t.table = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, l.n_virt);
+                l.t.table = ggml_view_2d(ctx, devices[g.dev].tables, 1, l.n_virt, sizeof(float), l.table_off*sizeof(float));
                 ggml_format_name(l.t.table, "q4e.table-%d", il);
                 l.t.gate_pool   = g.bank[P_GATE];
                 l.t.up_pool     = g.bank[P_UP];
@@ -726,6 +740,28 @@ struct llama_q4e::impl {
             }
             d.staging_buf.reset(sb);
             d.staging = (uint8_t *) ggml_backend_buffer_get_base(sb);
+        }
+    }
+
+    // the dirty tables of each device: one copy of the range that holds them
+    void upload_tables() {
+        std::vector<int64_t> lo(devices.size(), INT64_MAX);
+        std::vector<int64_t> hi(devices.size(), 0);
+        for (layer & l : layers) {
+            if (l.ig < 0 || !l.dirty) {
+                continue;
+            }
+            const size_t id = (size_t) groups[l.ig].dev;
+            device & d = devices[id];
+            memcpy(d.tables_host.data() + l.table_off, l.table.data(), l.n_virt*sizeof(float));
+            lo[id] = std::min(lo[id], l.table_off);
+            hi[id] = std::max(hi[id], l.table_off + l.n_virt);
+            l.dirty = false;
+        }
+        for (size_t id = 0; id < devices.size(); ++id) {
+            if (lo[id] < hi[id]) {
+                ggml_backend_tensor_set(devices[id].tables, devices[id].tables_host.data() + lo[id], lo[id]*sizeof(float), (hi[id] - lo[id])*sizeof(float));
+            }
         }
     }
 
@@ -1314,11 +1350,7 @@ struct llama_q4e::impl {
             plan_ram(ram_cands);
         }
 
-        for (layer & l : layers) {
-            if (l.ig >= 0 && l.dirty) {
-                upload_table(l);
-            }
-        }
+        upload_tables();
 
         // the worker reads the blocks and queues the copies while the next ubatch computes
         if (ready) {
