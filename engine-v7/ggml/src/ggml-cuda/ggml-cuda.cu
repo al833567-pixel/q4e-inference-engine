@@ -2628,12 +2628,49 @@ static void ggml_backend_cuda_free(ggml_backend_t backend) {
     delete backend;
 }
 
+// small copies between pinned host memory and the device as a kernel that reads or writes the host memory over the
+// bus: they do not queue behind large copies on the copy engine (the expert blocks moving into VRAM on a second
+// stream). Opt-in (GGML_CUDA_ZERO_COPY=1): on a Tesla T10 behind PCIe 3.0 x4 it changed nothing (28.2/40.4 vs 28.1/40.4 t/s)
+static __global__ void ggml_cuda_zero_copy_kernel(uint32_t * dst, const uint32_t * src, const size_t n) {
+    for (size_t i = (size_t) blockIdx.x*blockDim.x + threadIdx.x; i < n; i += (size_t) gridDim.x*blockDim.x) {
+        dst[i] = src[i];
+    }
+}
+
+static bool ggml_cuda_zero_copy(void * dst, const void * src, size_t size, const void * host, cudaStream_t stream) {
+    static const bool enabled = [] {
+        const char * e = getenv("GGML_CUDA_ZERO_COPY");
+        return e != nullptr && atoi(e) != 0;
+    }();
+    if (!enabled || size == 0 || size > 1024*1024 || size % 4 != 0 || ((uintptr_t) dst | (uintptr_t) src) % 4 != 0) {
+        return false;
+    }
+    cudaPointerAttributes attr;
+    if (cudaPointerGetAttributes(&attr, host) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    if (attr.type != cudaMemoryTypeHost || attr.devicePointer == nullptr || attr.hostPointer != host) {
+        return false;
+    }
+    const void * d_src = src == host ? attr.devicePointer : src;
+    void *       d_dst = dst == host ? attr.devicePointer : dst;
+    const size_t n = size/4;
+    const int block = 256;
+    const int grid  = (int) std::min<size_t>((n + block - 1)/block, 256);
+    ggml_cuda_zero_copy_kernel<<<grid, block, 0, stream>>>((uint32_t *) d_dst, (const uint32_t *) d_src, n);
+    return cudaGetLastError() == cudaSuccess;
+}
+
 static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
+    if (ggml_cuda_zero_copy((char *) tensor->data + offset, data, size, data, cuda_ctx->stream())) {
+        return;
+    }
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
 }
 
@@ -2643,6 +2680,9 @@ static void ggml_backend_cuda_get_tensor_async(ggml_backend_t backend, const ggm
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
+    if (ggml_cuda_zero_copy(data, (const char *) tensor->data + offset, size, data, cuda_ctx->stream())) {
+        return;
+    }
     CUDA_CHECK(cudaMemcpyAsync(data, (const char *) tensor->data + offset, size, cudaMemcpyDeviceToHost, cuda_ctx->stream()));
 }
 
