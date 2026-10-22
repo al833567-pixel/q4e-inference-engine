@@ -588,6 +588,7 @@ extern "C" {
         GGML_OP_Q4E_ROUTE,
         GGML_OP_Q4E_WSUM,
         GGML_OP_Q4E_HC_MIX,
+        GGML_OP_Q4E_EXPERTS,
 
         GGML_OP_UNARY,
 
@@ -2765,6 +2766,18 @@ extern "C" {
     GGML_API struct ggml_tensor * ggml_q4e_wsum(
             struct ggml_context * ctx,
             struct ggml_tensor  * y,      // F32 [n_embd, n_rows, n_tokens]
+            struct ggml_tensor  * w);     // F32 [1, n_rows, n_tokens]
+
+    // q4e: the whole expert path of a tier in one op (CPU): for every token t and row r with ids[r, t] >= 0
+    //   y[r, t] = down[ids[r, t]] * swiglu(gate[ids[r, t]] * x[t], up[ids[r, t]] * x[t]),  dst[t] = sum_r w[r, t] * y[r, t]
+    // the same values as mul_mat_id gate, mul_mat_id up, swiglu_split, mul_mat_id down and q4e_wsum
+    GGML_API struct ggml_tensor * ggml_q4e_experts(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * gate,   // [n_embd, n_ff, n_as]
+            struct ggml_tensor  * up,     // [n_embd, n_ff, n_as]
+            struct ggml_tensor  * down,   // [n_ff, n_embd, n_as]
+            struct ggml_tensor  * x,      // F32 [n_embd, 1, n_tokens], contiguous
+            struct ggml_tensor  * ids,    // I32 [n_rows, n_tokens], < 0: no expert
             struct ggml_tensor  * w);     // F32 [1, n_rows, n_tokens]
 
     // custom operators

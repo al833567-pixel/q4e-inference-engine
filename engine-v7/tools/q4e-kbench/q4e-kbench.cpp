@@ -6,8 +6,10 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,9 +17,113 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+// cycles this thread ran: robust to a busy machine (other processes preempting the bench)
+static uint64_t thread_cycles() { ULONG64 c = 0; QueryThreadCycleTime(GetCurrentThread(), &c); return c; }
+#else
+static uint64_t thread_cycles() { return 0; }
+#endif
+
 extern "C" {
 void ggml_vec_dot_iq2_s_q8_K_avx512_nc(int n, float * s, const void * vx, const void * const * vy, int nc);
 void ggml_vec_dot_q2_0_q8_0_avx512_nc(int n, float * s, const void * vx, const void * const * vy, int nc);
+void ggml_vec_dot_iq2_s_q8_K_avx512_nc_ref(int n, float * s, const void * vx, const void * const * vy, int nc);
+void ggml_vec_dot_iq2_xxs_q8_K_avx512_nc(int n, float * s, const void * vx, const void * const * vy, int nc);
+void ggml_vec_dot_iq2_xxs_q8_K_avx512_nc_ref(int n, float * s, const void * vx, const void * const * vy, int nc);
+}
+
+typedef void (*nc_kernel_t)(int n, float * s, const void * vx, const void * const * vy, int nc);
+
+// thread cycles of a dependent chain of 1-cycle adds: the ratio of the cycle counter to core clocks
+static void calibrate() {
+    volatile uint64_t seed = 1;
+    uint64_t x = seed;
+    const uint64_t n = 200000000;
+    const uint64_t c0 = thread_cycles();
+    for (uint64_t i = 0; i < n; ++i) {
+        x += i;
+        __asm__ volatile("" : "+r"(x));
+    }
+    const uint64_t c1 = thread_cycles();
+    seed = x;
+    printf("calibration: %.2f counter cycles per core cycle (dependent adds)\n", (double) (c1 - c0)/n);
+}
+
+// two multi-row kernels of the same type: the results must be bit-identical, the throughput is measured
+// interleaved (the machine may be busy) over n_mib of random weight rows
+static void bench_cmp(const char * name, ggml_type type, int ne, nc_kernel_t a, nc_kernel_t b, size_t n_mib, int n_threads) {
+    const size_t row_bytes = ggml_row_size(type, ne);
+    const size_t n_rows = n_mib*1048576/row_bytes;
+    std::vector<uint8_t> w(n_rows*row_bytes);
+    std::mt19937 rng(11);
+    for (size_t i = 0; i < w.size(); i += 4) {
+        const uint32_t v = rng();
+        memcpy(&w[i], &v, std::min<size_t>(4, w.size() - i));
+    }
+    for (size_t i = 0; i < w.size(); i += ggml_type_size(type)) {
+        const uint16_t one = 0x3c00;
+        memcpy(&w[i], &one, 2);
+    }
+    const ggml_type vt = ggml_get_type_traits_cpu(type)->vec_dot_type;
+    std::vector<std::vector<uint8_t>> act(4, std::vector<uint8_t>(ggml_row_size(vt, ne)));
+    std::vector<float> x(ne);
+    for (auto & v : act) {
+        for (auto & f : x) {
+            f = (float) (rng() % 2000) / 1000.0f - 1.0f;
+        }
+        ggml_get_type_traits_cpu(vt)->from_float(x.data(), v.data(), ne);
+    }
+    const void * y[4] = { act[0].data(), act[1].data(), act[2].data(), act[3].data() };
+    // exactness on the first rows
+    size_t n_diff = 0;
+    for (int nc = 1; nc <= 4; ++nc) {
+        for (size_t r = 0; r < std::min<size_t>(n_rows, 4096); ++r) {
+            float sa[4], sb[4];
+            a(ne, sa, w.data() + r*row_bytes, y, nc);
+            b(ne, sb, w.data() + r*row_bytes, y, nc);
+            n_diff += memcmp(sa, sb, nc*sizeof(float)) != 0;
+        }
+    }
+    printf("%s: %zu rows of %d, %s\n", name, n_rows, ne, n_diff ? "RESULTS DIFFER" : "bit-identical");
+    for (int nc : { 1, 2, 4 }) {
+        double best[2] = { 0, 0 };
+        double cyc[2] = { 1e30, 1e30 };
+        const size_t inner = std::max<size_t>(1, 64/n_mib);
+        for (int rep = 0; rep < 5; ++rep) {
+            for (int k = 0; k < 2; ++k) {
+                nc_kernel_t f = k == 0 ? a : b;
+                std::vector<std::thread> th;
+                std::atomic<uint64_t> cycles{0};
+                const auto t0 = std::chrono::steady_clock::now();
+                for (int t = 0; t < n_threads; ++t) {
+                    th.emplace_back([&, t]() {
+                        float s[4];
+                        float sink = 0;
+                        const uint64_t c0 = thread_cycles();
+                        for (size_t it = 0; it < inner; ++it) {
+                            for (size_t r = n_rows*t/n_threads; r < n_rows*(t + 1)/n_threads; ++r) {
+                                f(ne, s, w.data() + r*row_bytes, y, nc);
+                                sink += s[0];
+                            }
+                        }
+                        cycles += thread_cycles() - c0;
+                        if (sink == 12345.678f) {
+                            printf("x");
+                        }
+                    });
+                }
+                for (auto & x : th) {
+                    x.join();
+                }
+                cyc[k] = std::min(cyc[k], (double) cycles/(inner*n_rows*(ne/256.0)));
+                const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                best[k] = std::max(best[k], inner*n_rows*row_bytes/sec/1e9);
+            }
+        }
+        printf("  %d threads, %d activation rows: old %6.1f GB/s %6.1f cyc/256 | new %6.1f GB/s %6.1f cyc/256 (best of 5)\n", n_threads, nc, best[0], cyc[0], best[1], cyc[1]);
+    }
 }
 
 static double run(int n_threads, size_t n_rows, size_t row_bytes, const uint8_t * w, int ne, const std::vector<std::vector<uint8_t>> & act,
@@ -58,6 +164,111 @@ static double run(int n_threads, size_t n_rows, size_t row_bytes, const uint8_t 
     }
     const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return n_rows*row_bytes/sec/1e9;
+}
+
+// the CPU tier of a q4e layer: mul_mat_id gate/up + swiglu + mul_mat_id down + q4e_wsum against GGML_OP_Q4E_EXPERTS,
+// n_tokens tokens of 10 experts x 2 blocks of [2560 x 320], about n_miss of their rows on the CPU (the rest -1, as if
+// in VRAM), new random blocks each repetition (cold in the caches). Checks that both give the same bits.
+static void bench_fused(ggml_type type_gu, ggml_type type_d, int n_tokens, int n_miss, int n_threads, int reps) {
+    const int64_t n_embd = 2560, n_ff = 320, n_as = 1024, n_rows = 20;
+    ggml_init_params ip = { (size_t) 256*1024*1024 + 2*ggml_row_size(type_gu, n_embd)*n_ff*n_as + ggml_row_size(type_d, n_ff)*n_embd*n_as, nullptr, false };
+    ggml_context * ctx = ggml_init(ip);
+    ggml_tensor * gate = ggml_new_tensor_3d(ctx, type_gu, n_embd, n_ff, n_as);
+    ggml_tensor * up   = ggml_new_tensor_3d(ctx, type_gu, n_embd, n_ff, n_as);
+    ggml_tensor * down = ggml_new_tensor_3d(ctx, type_d, n_ff, n_embd, n_as);
+    ggml_tensor * x    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, 1, n_tokens);
+    ggml_tensor * ids  = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_rows, n_tokens);
+    ggml_tensor * wt   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, n_rows, n_tokens);
+    std::mt19937 rng(5);
+    for (ggml_tensor * t : { gate, up, down }) {
+        uint8_t * d = (uint8_t *) t->data;
+        for (size_t i = 0; i < ggml_nbytes(t); i += 4) {
+            const uint32_t v = rng();
+            memcpy(d + i, &v, std::min<size_t>(4, ggml_nbytes(t) - i));
+        }
+        const uint16_t scale = 0x2000; // ~0.0078
+        for (size_t i = 0; i < ggml_nbytes(t); i += ggml_type_size(t->type)) {
+            memcpy(d + i, &scale, 2);
+        }
+    }
+    for (int64_t i = 0; i < ggml_nelements(x); ++i) {
+        ((float *) x->data)[i] = (float) (rng() % 2000) / 1000.0f - 1.0f;
+    }
+
+    // separate ops
+    ggml_tensor * g  = ggml_mul_mat_id(ctx, gate, x, ids);
+    ggml_tensor * u  = ggml_mul_mat_id(ctx, up,   x, ids);
+    ggml_tensor * h  = ggml_swiglu_split(ctx, g, u);
+    ggml_tensor * y  = ggml_mul_mat_id(ctx, down, h, ids);
+    ggml_tensor * o1 = ggml_q4e_wsum(ctx, y, wt);
+    ggml_cgraph * gf1 = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf1, o1);
+    // fused
+    ggml_tensor * o2 = ggml_q4e_experts(ctx, gate, up, down, x, ids, wt);
+    ggml_cgraph * gf2 = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf2, o2);
+
+    ggml_threadpool_params tpp = ggml_threadpool_params_default(n_threads);
+    ggml_threadpool * tp = ggml_threadpool_new(&tpp);
+    ggml_cplan p1 = ggml_graph_plan(gf1, n_threads, tp);
+    ggml_cplan p2 = ggml_graph_plan(gf2, n_threads, tp);
+    std::vector<uint8_t> w1(p1.work_size), w2(p2.work_size);
+    p1.work_data = w1.data();
+    p2.work_data = w2.data();
+
+    std::vector<double> t1, t2;
+    size_t n_diff = 0, n_blocks = 0, bytes = 0;
+    for (int r = 0; r < reps; ++r) {
+        // n_miss rows of the n_tokens*n_rows on the CPU: tokens share some experts (as in a verify batch)
+        int32_t * id = (int32_t *) ids->data;
+        float * wv = (float *) wt->data;
+        std::vector<int32_t> pool;
+        for (int i = 0; i < n_miss; ++i) {
+            pool.push_back((int32_t) (rng() % n_as));
+        }
+        std::vector<char> used(n_as, 0);
+        for (int64_t i = 0; i < n_rows*n_tokens; ++i) {
+            id[i] = -1;
+            wv[i] = 0.0f;
+        }
+        for (int i = 0; i < n_miss; ++i) {
+            const int64_t t = rng() % n_tokens, k = rng() % n_rows;
+            id[t*n_rows + k] = pool[rng() % pool.size()];
+            wv[t*n_rows + k] = (float) (rng() % 1000 + 1) / 4000.0f;
+        }
+        for (int64_t i = 0; i < n_rows*n_tokens; ++i) {
+            if (id[i] >= 0 && !used[id[i]]) {
+                used[id[i]] = 1;
+                ++n_blocks;
+                bytes += 2*ggml_row_size(type_gu, n_embd)*n_ff + ggml_row_size(type_d, n_ff)*n_embd;
+            }
+        }
+        for (int k = 0; k < 2; ++k) {
+            const bool fused = (r + k) % 2 == 1;
+            const auto t0 = std::chrono::steady_clock::now();
+            ggml_graph_compute(fused ? gf2 : gf1, fused ? &p2 : &p1);
+            const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+            (fused ? t2 : t1).push_back(us);
+        }
+        // random IQ1_M blocks may carry inf/nan scales: a nan is equal to a nan here
+        for (int64_t i = 0; i < ggml_nelements(o1); ++i) {
+            const float a = ((const float *) o1->data)[i], b = ((const float *) o2->data)[i];
+            if (memcmp(&a, &b, 4) != 0 && !(std::isnan(a) && std::isnan(b))) {
+                if (n_diff++ == 0) {
+                    printf("    first difference at %lld: %.9g vs %.9g\n", (long long) i, a, b);
+                }
+                break;
+            }
+        }
+    }
+    std::sort(t1.begin(), t1.end());
+    std::sort(t2.begin(), t2.end());
+    const double mb = (double) bytes/reps;
+    printf("  %s/%s %d tokens, %.1f blocks/layer, %d threads: separate %7.1f us (min %7.1f, %5.1f GB/s) | fused %7.1f us (min %7.1f, %5.1f GB/s) | %s\n",
+        ggml_type_name(type_gu), ggml_type_name(type_d), n_tokens, (double) n_blocks/reps, n_threads,
+        t1[t1.size()/2], t1[0], mb/t1[0]/1e3, t2[t2.size()/2], t2[0], mb/t2[0]/1e3, n_diff ? "OUTPUTS DIFFER" : "bit-identical");
+    ggml_threadpool_free(tp);
+    ggml_free(ctx);
 }
 
 // one mul_mat_id of a MoE layer (512 experts of [ne0, ne1], 10 used, 1-4 tokens) through ggml_graph_compute,
@@ -178,6 +389,27 @@ int main(int argc, char ** argv) {
             bench_gpu_mm(be, s.t, s.a, s.b, nt);
         }
         ggml_backend_free(be);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "fused") == 0) {
+        // q4e-kbench fused [threads] [reps]
+        ggml_cpu_init();
+        const int nt   = argc > 2 ? atoi(argv[2]) : 8;
+        const int reps = argc > 3 ? atoi(argv[3]) : 200;
+        bench_fused(GGML_TYPE_IQ2_S,   GGML_TYPE_Q2_0, 4, 20, nt, reps);
+        bench_fused(GGML_TYPE_IQ2_S,   GGML_TYPE_Q2_0, 1, 6,  nt, reps);
+        bench_fused(GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_0, 4, 20, nt, reps);
+        bench_fused(GGML_TYPE_IQ1_M,   GGML_TYPE_Q2_0, 4, 20, nt, reps);
+        bench_fused(GGML_TYPE_IQ2_S,   GGML_TYPE_Q2_0, 3, 1,  nt, reps);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "cmp") == 0) {
+        ggml_cpu_init();
+        const int nt = argc > 2 ? atoi(argv[2]) : 8;
+        const size_t cmp_mib = argc > 3 ? (size_t) atoi(argv[3]) : 256;
+        calibrate();
+        bench_cmp("iq2_s",   GGML_TYPE_IQ2_S,   2560, ggml_vec_dot_iq2_s_q8_K_avx512_nc_ref,   ggml_vec_dot_iq2_s_q8_K_avx512_nc,   cmp_mib, nt);
+        bench_cmp("iq2_xxs", GGML_TYPE_IQ2_XXS, 2560, ggml_vec_dot_iq2_xxs_q8_K_avx512_nc_ref, ggml_vec_dot_iq2_xxs_q8_K_avx512_nc, cmp_mib, nt);
         return 0;
     }
     const size_t mib = argc > 1 ? (size_t) atoi(argv[1]) : 1024;

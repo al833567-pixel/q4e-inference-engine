@@ -2821,10 +2821,22 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
             ggml_format_name(r, "%s_%s-%d", name, part, il);
             return keep(r);
         };
-        ggml_tensor * g = mm(gate_w, x, "gate");
-        ggml_tensor * u = mm(up_w,   x, "up");
+        // the CPU tier in one op where the CPU backend has it: one wake-up of the thread pool instead of five ops, h
+        // stays in the caches (Q4E_CPU_FUSED=0 keeps the separate ops)
+        static const bool cpu_fused = [] { const char * e = getenv("Q4E_CPU_FUSED"); return e == nullptr || atoi(e) != 0; }();
+        ggml_tensor * fx = nullptr;
+        if (cpu_fused && backend == backend_cpu && limit <= 1e-6f && !prec_policy) {
+            fx = ggml_q4e_experts(ctx0, gate_w, up_w, down_w, x, ids, wt);
+            if (!ggml_backend_supports_op(backend, fx)) {
+                fx = nullptr;
+            }
+        }
+        ggml_tensor * g = fx ? nullptr : mm(gate_w, x, "gate");
+        ggml_tensor * u = fx ? nullptr : mm(up_w,   x, "up");
         ggml_tensor * h = nullptr;
-        if (limit > 1e-6f) {
+        if (fx) {
+            // h is inside the fused op
+        } else if (limit > 1e-6f) {
             if (clamp_fused) {
                 h = keep(ggml_swiglu_clamp(ctx0, g, u, limit));
             } else {
@@ -2834,9 +2846,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
         } else {
             h = keep(ggml_swiglu_split(ctx0, g, u));
         }
-        ggml_tensor * y = mm(down_w, h, "down");                            // [n_embd, n_rows, n_tokens]
-        ggml_tensor * ws = ggml_q4e_wsum(ctx0, y, wt);
-        if (ggml_backend_supports_op(backend, ws)) {
+        ggml_tensor * y  = fx ? nullptr : mm(down_w, h, "down");            // [n_embd, n_rows, n_tokens]
+        ggml_tensor * ws = fx ? nullptr : ggml_q4e_wsum(ctx0, y, wt);
+        if (fx) {
+            y = keep(fx);
+        } else if (ggml_backend_supports_op(backend, ws)) {
             y = keep(ws);
         } else if (backend == backend_cpu) {
             GGML_ASSERT(ggml_is_contiguous(wt));

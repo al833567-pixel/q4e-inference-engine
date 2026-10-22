@@ -1098,6 +1098,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "Q4E_ROUTE",
     "Q4E_WSUM",
     "Q4E_HC_MIX",
+    "Q4E_EXPERTS",
 
     "UNARY",
 
@@ -1115,7 +1116,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1216,6 +1217,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "q4e_route(sel, w, table)",
     "q4e_wsum(y, w)",
     "q4e_hc_mix(xn, down, up)",
+    "q4e_experts(gate, up, down, x, ids, w)",
 
     "unary(x)",
 
@@ -1233,7 +1235,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6662,6 +6664,37 @@ struct ggml_tensor * ggml_q4e_wsum(
     result->op     = GGML_OP_Q4E_WSUM;
     result->src[0] = y;
     result->src[1] = w;
+
+    return result;
+}
+
+// ggml_q4e_experts
+
+struct ggml_tensor * ggml_q4e_experts(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * gate,
+        struct ggml_tensor  * up,
+        struct ggml_tensor  * down,
+        struct ggml_tensor  * x,
+        struct ggml_tensor  * ids,
+        struct ggml_tensor  * w) {
+    GGML_ASSERT(x->type == GGML_TYPE_F32 && ids->type == GGML_TYPE_I32 && w->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous(x));
+    GGML_ASSERT(ggml_are_same_shape(gate, up));
+    GGML_ASSERT(gate->ne[0] == x->ne[0] && down->ne[0] == gate->ne[1] && down->ne[1] == x->ne[0]);
+    GGML_ASSERT(gate->ne[2] == down->ne[2]);
+    const int64_t n_tokens = ggml_nrows(x);
+    GGML_ASSERT(ids->ne[1] == n_tokens && w->ne[0] == 1 && w->ne[1] == ids->ne[0] && w->ne[2] == n_tokens);
+
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, x->ne[0], n_tokens);
+
+    result->op     = GGML_OP_Q4E_EXPERTS;
+    result->src[0] = gate;
+    result->src[1] = up;
+    result->src[2] = down;
+    result->src[3] = x;
+    result->src[4] = ids;
+    result->src[5] = w;
 
     return result;
 }
