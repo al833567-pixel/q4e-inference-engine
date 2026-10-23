@@ -10,7 +10,8 @@
 | Qwen3.8-Flash-Next IQ2_XS | q4e + MTP n=3，32k | **37.3** | **49.7** | llama.cpp b11796（experts 在 CPU）：15.5 / 16.4 |
 | Qwen3.8-Flash-Next IQ2_XS | q4e + MTP n=3，128k | 33.5 | 46.3 | |
 | Qwen3.8-Flash-Next IQ2_XS | q4e，不用 MTP | 26.6 | 27.6 | |
-| GLM-5.3-Flash | q4e，每專家 1 block，-t 12，暖 profile | 11.5 | 10.9 | 冷 profile 4.3–5.3 |
+| GLM-5.3-Flash | q4e，每專家 1 block，-t 12，8k，暖 profile | 11.5 | 10.9 | 冷 profile 4.3–5.3 |
+| GLM-5.3-Flash | q4e，每專家 1 block，-t 12，128k，暖 profile | 10.5 | 9.7 | 3 次平均（8.5–11.9 / 8.0–11.1）；KV 2.4 GiB，VRAM tier 7.8 → 5.5 GiB |
 
 Flash-Next 的輸出（temperature 0）在所有無損最佳化前後逐字相同；`Q4E_SKIP=0.12`（略過權重很小的未命中專家）是唯一的有損預設，設 0 即完全精確。
 

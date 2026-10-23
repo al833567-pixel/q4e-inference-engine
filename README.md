@@ -22,6 +22,7 @@ Tested models: **Qwen3.8-Flash-Next** IQ2_XS (arch `qwen4exp`, with its MTP draf
 | Qwen3.8-Flash-Next IQ2_XS | q4e + MTP n=3, 128k ctx | 33.5 | 46 |
 | Qwen3.8-Flash-Next IQ2_XS | llama.cpp b11796 (experts on CPU) | 15.5 | 16.4 |
 | GLM-5.3-Flash (80 GiB experts) | q4e, 1 block per expert, -t 12, 8k ctx, warm profile | 11.5 | 10.9 |
+| GLM-5.3-Flash (80 GiB experts) | q4e, 1 block per expert, -t 12, 128k ctx, warm profile | 10.5 | 9.7 |
 
 ## Build (Windows, CUDA)
 
@@ -38,7 +39,7 @@ usual llama.cpp CMake build of `engine-v7/`.
 
 ## Run
 
-`run-flash-next.bat` starts with a 128k context (`-c 131072`), `run-glm-5.3-flash.bat` with 8k; `scripts/bench.ps1` measures at 32k unless `-Extra @('-c', ...)` is given.
+`run-flash-next.bat` and `run-glm-5.3-flash.bat` start with a 128k context (`-c 131072`); `scripts/bench.ps1` measures at 32k unless `-Extra @('-c', ...)` is given.
 
 ```bat
 scripts\run-flash-next.bat <folder with the Flash-Next GGUF + MTP GGUF>
