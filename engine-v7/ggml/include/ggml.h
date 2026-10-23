@@ -2750,18 +2750,6 @@ extern "C" {
             bool                  weights,
             bool                  neg_miss);      // ids: -1 in place of zero_slot + r (backends that skip negative ids)
 
-    // the other tier: the blocks that are not in the table, without the experts below skip of the token's weight sum
-    //   ids     = I32 [n_rows, n_tokens]: v if table[v] < 0 and w[k] >= skip*sum(w), else -1
-    //   weights = F32 [1, n_rows, n_tokens]: w[k] for the same rows, else 0
-    GGML_API struct ggml_tensor * ggml_q4e_route_rest(
-            struct ggml_context * ctx,
-            struct ggml_tensor  * sel,
-            struct ggml_tensor  * w,
-            struct ggml_tensor  * table,
-            int                   n_blocks,
-            float                 skip,
-            bool                  weights);
-
     // qwen4exp hyper-connection mix after the grouped norm, in one op:
     //   lo    = silu(scale * down x xn)                          [n_lr, T]
     //   gate  = up x lo                                          [hc*n_embd, T]

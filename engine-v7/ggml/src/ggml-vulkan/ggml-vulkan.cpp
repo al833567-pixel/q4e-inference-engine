@@ -2888,16 +2888,6 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         return is_rdna3_or_4 ? 4u : rows;
     };
     uint32_t rm_iq = 2 * rm_kq;
-    // q4e: an integrated RDNA3/4 (Radeon 780M) runs the small MoE mat-vecs (expert blocks of 320 rows, K = 320 for down)
-    // faster with more rows per workgroup: Flash-Next on 780M + T10 13.0/16.6 -> 15.1/19.2 t/s
-    if (is_rdna3_or_4 && device->uma) {
-        rm_stdq = 4;
-        rm_iq   = 16;
-    }
-    // tuning knobs (rows per workgroup of the dequant mat-vec shaders), GGML_VK_RM_STDQ / _KQ / _IQ
-    if (const char * e = getenv("GGML_VK_RM_STDQ")) { rm_stdq = (uint32_t) atoi(e); }
-    if (const char * e = getenv("GGML_VK_RM_KQ"))   { rm_kq   = (uint32_t) atoi(e); }
-    if (const char * e = getenv("GGML_VK_RM_IQ"))   { rm_iq   = (uint32_t) atoi(e); }
 
     const bool use_subgroups = device->subgroup_arithmetic;
     // The Imagination proprietary compiler rejects the subgroup-only dequant mul_mat_vec
@@ -3666,9 +3656,6 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         const std::string name = "lightning_indexer_" + std::string(ggml_type_name(k_type)) + "_k_f32";
         ggml_vk_create_pipeline(device, device->pipeline_lightning_indexer_f32[k_type], name.c_str(), lightning_indexer_f32_len, lightning_indexer_f32_data, "main", 5, sizeof(vk_op_lightning_indexer_push_constants), {1, 1, 1}, {(uint32_t)k_type, fa_block_bytes(k_type)}, 1, true);
     }
-
-    ggml_vk_create_pipeline(device, device->pipeline_q4e_mmvid_rows_q2_0, "q4e_mmvid_rows_q2_0_f32", q4e_mmvid_rows_q2_0_f32_len, q4e_mmvid_rows_q2_0_f32_data, "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {64, 1, 1}, {64, 1}, 1, true);
-    ggml_vk_create_pipeline(device, device->pipeline_q4e_wsum_f32, "q4e_wsum_f32", q4e_wsum_f32_len, q4e_wsum_f32_data, "main", 3, sizeof(vk_op_q4e_wsum_push_constants), {256, 1, 1}, {}, 1);
 
     {
         const uint32_t gdn_sizes[] = {16, 32, 64, 128};
@@ -4940,11 +4927,6 @@ vk_device ggml_vk_get_device(size_t idx) {
             device->mmvq_mode = -1;
         } else if (getenv("GGML_VK_FORCE_MMVQ")) {
             device->mmvq_mode = 1;
-        } else if (device->uma && device->vendor_id == VK_VENDOR_ID_AMD &&
-                   (device->architecture == AMD_RDNA3 || device->architecture == AMD_RDNA4)) {
-            // q4e: the float dequant mat-vecs run the MoE experts of a Radeon 780M faster than the integer dot ones
-            // (Flash-Next on 780M + T10: 20.0/22.4 -> 21.1/24.9 t/s)
-            device->mmvq_mode = -1;
         }
 
         // publish the device only when it is fully built
@@ -7794,13 +7776,6 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
         to_q8_1 = ggml_vk_get_quantize_pipeline(ctx, GGML_TYPE_Q8_1);
     }
 
-    // q4e: a small-K q2_0 (the down projection of MoE expert blocks): one row per thread (GGML_VK_Q4E_ROWS=0 off)
-    static const bool q4e_rows = [] { const char * e = getenv("GGML_VK_Q4E_ROWS"); return e == nullptr || atoi(e) != 0; }();
-    if (q4e_rows && !quantize_y && src0->type == GGML_TYPE_Q2_0 && ne00 % 64 == 0 && ne00 <= 1024 && src1->type == GGML_TYPE_F32 &&
-            !x_non_contig && !y_non_contig && ctx->num_additional_fused_ops == 0 && ctx->device->pipeline_q4e_mmvid_rows_q2_0) {
-        dmmv = ctx->device->pipeline_q4e_mmvid_rows_q2_0;
-    }
-
     const bool qx_needs_dequant = x_non_contig;
     const bool qy_needs_dequant = !quantize_y && ((src1->type != GGML_TYPE_F16 && !f16_f32_kernel) || y_non_contig);
 
@@ -10320,29 +10295,6 @@ void ggml_vk_lightning_indexer(ggml_backend_vk_context * ctx, vk_context& subctx
         pc, {n_tiles_kv, n_tiles_t, n_streams});
 }
 
-// q4e: dst[e, t] = sum_r w[r, t] * y[e, r, t] (GGML_OP_Q4E_WSUM), see q4e_wsum.comp
-void ggml_vk_q4e_wsum(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_tensor * dst) {
-    const ggml_tensor * y = dst->src[0];
-    const ggml_tensor * w = dst->src[1];
-
-    vk_pipeline pipeline = ctx->device->pipeline_q4e_wsum_f32;
-    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
-
-    const vk_op_q4e_wsum_push_constants pc = {
-        (uint32_t) y->ne[0], (uint32_t) y->ne[1],
-        (uint32_t) (y->nb[1]/sizeof(float)), (uint32_t) (y->nb[2]/sizeof(float)),
-        (uint32_t) (w->nb[1]/sizeof(float)), (uint32_t) (w->nb[2]/sizeof(float)),
-        (uint32_t) (dst->nb[1]/sizeof(float)),
-        get_misalign_bytes(ctx, y)/(uint32_t) sizeof(float),
-        get_misalign_bytes(ctx, w)/(uint32_t) sizeof(float),
-        get_misalign_bytes(ctx, dst)/(uint32_t) sizeof(float),
-    };
-
-    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-        {ggml_vk_tensor_subbuffer(ctx, y, true), ggml_vk_tensor_subbuffer(ctx, w, true), ggml_vk_tensor_subbuffer(ctx, dst, true)},
-        pc, {(uint32_t) y->ne[0], (uint32_t) y->ne[2], 1});
-}
-
 void ggml_vk_gated_delta_net(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_tensor * dst) {
     const ggml_tensor * src_q     = dst->src[0];
     const ggml_tensor * src_v     = dst->src[2];
@@ -12852,11 +12804,6 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
 
     case GGML_OP_GATED_DELTA_NET:
         ggml_vk_gated_delta_net(ctx, compute_ctx, node);
-
-        break;
-
-    case GGML_OP_Q4E_WSUM:
-        ggml_vk_q4e_wsum(ctx, compute_ctx, node);
 
         break;
 
@@ -16052,9 +15999,6 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 }
                 return true;
             }
-        case GGML_OP_Q4E_WSUM:
-            return op->type == GGML_TYPE_F32 && op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 &&
-                   op->src[0]->nb[0] == sizeof(float) && op->src[0]->ne[3] == 1;
         case GGML_OP_GATED_DELTA_NET:
             {
                 const uint32_t S_v = op->src[2]->ne[0];

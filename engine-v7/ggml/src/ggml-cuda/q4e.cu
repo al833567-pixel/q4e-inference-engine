@@ -7,7 +7,7 @@ static __global__ void q4e_route_kernel(
         const char * sel, const char * w, const float * table, void * dst,
         const int64_t sel_nb0, const int64_t sel_nb1, const int64_t w_nb1, const int64_t w_nb2,
         const int n_used, const int n_blocks, const int zero_slot, const int64_t n_virt, const int n_rows, const int n_tokens,
-        const bool neg_miss, const bool rest, const float skip) {
+        const bool neg_miss) {
     const int i = blockIdx.x*blockDim.x + threadIdx.x;
     if (i >= n_rows*n_tokens) {
         return;
@@ -19,21 +19,6 @@ static __global__ void q4e_route_kernel(
     const int32_t e = *(const int32_t *) (sel + k*sel_nb0 + t*sel_nb1);
     const int64_t v = (int64_t) e*n_blocks + b;
     const float slot = v >= 0 && v < n_virt ? table[v] : -1.0f;
-    if (rest) {
-        // the blocks of the other tier (ggml_q4e_route_rest), in the order of the CPU reference
-        float wsum = 0.0f;
-        for (int kk = 0; kk < n_used; ++kk) {
-            wsum += *(const float *) (w + kk*w_nb1 + t*w_nb2);
-        }
-        const float wk = *(const float *) (w + k*w_nb1 + t*w_nb2);
-        const bool mine = v >= 0 && v < n_virt && slot < 0.0f && wk >= skip*wsum;
-        if (weights) {
-            ((float *) dst)[i] = mine ? wk : 0.0f;
-        } else {
-            ((int32_t *) dst)[i] = mine ? (int32_t) v : -1;
-        }
-        return;
-    }
     if (weights) {
         const float wk = *(const float *) (w + k*w_nb1 + t*w_nb2);
         ((float *) dst)[i] = slot >= 0.0f ? wk : 0.0f;
@@ -50,8 +35,6 @@ void ggml_cuda_op_q4e_route(ggml_backend_cuda_context & ctx, ggml_tensor * dst) 
     const int zero_slot = ggml_get_op_params_i32(dst, 1);
     const bool weights  = ggml_get_op_params_i32(dst, 2) != 0;
     const bool neg_miss = ggml_get_op_params_i32(dst, 3) != 0;
-    const bool rest     = ggml_get_op_params_i32(dst, 4) != 0;
-    const float skip    = ggml_get_op_params_f32(dst, 5);
     const int n_used    = (int) sel->ne[0];
     const int n_tokens  = (int) sel->ne[1];
     const int n_rows    = n_used*n_blocks;
@@ -61,10 +44,10 @@ void ggml_cuda_op_q4e_route(ggml_backend_cuda_context & ctx, ggml_tensor * dst) 
     cudaStream_t stream = ctx.stream();
     if (weights) {
         q4e_route_kernel<true><<<grid, block, 0, stream>>>((const char *) sel->data, (const char *) w->data, (const float *) table->data, dst->data,
-            sel->nb[0], sel->nb[1], w->nb[1], w->nb[2], n_used, n_blocks, zero_slot, ggml_nelements(table), n_rows, n_tokens, neg_miss, rest, skip);
+            sel->nb[0], sel->nb[1], w->nb[1], w->nb[2], n_used, n_blocks, zero_slot, ggml_nelements(table), n_rows, n_tokens, neg_miss);
     } else {
         q4e_route_kernel<false><<<grid, block, 0, stream>>>((const char *) sel->data, (const char *) w->data, (const float *) table->data, dst->data,
-            sel->nb[0], sel->nb[1], w->nb[1], w->nb[2], n_used, n_blocks, zero_slot, ggml_nelements(table), n_rows, n_tokens, neg_miss, rest, skip);
+            sel->nb[0], sel->nb[1], w->nb[1], w->nb[2], n_used, n_blocks, zero_slot, ggml_nelements(table), n_rows, n_tokens, neg_miss);
     }
 }
 

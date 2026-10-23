@@ -1,21 +1,13 @@
-# 可再生產物（不進版控）
+# build output
+engine-v7/build*/
+engine-v7/*.log
+
+# python caches
 __pycache__/
 *.pyc
 .pytest_cache/
-_testtmp/
 
-# 沙箱殘留/探查目錄（top-level 底線開頭＝temp 產物）
-/_*
-
-# 未來 P0.2 之後：q4e C++ build 輸出（build/ 等）
-engine/build/
-engine/build*/
-
-# 除錯/應力/證據工作區（保留在磁碟，不進版控）
-/v6_work/
-
-# v7 build output
-engine-v7/build-cuda/
-engine-v7/build.log
-
-engine-v7/build-clang/
+# runtime files written next to the models
+*.q4e-profile
+*.q4e-profile.ref
+*.q4e-down.bin

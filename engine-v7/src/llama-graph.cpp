@@ -2359,8 +2359,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         if (gate_exps && up_exps && down_exps && !gate_up_exps && type_op == LLM_FFN_SILU && !weight_before_ffn &&
             !up_exps_b && !gate_exps_b && !down_exps_b && !up_exps_s && !gate_exps_s && !down_exps_s && !post_exp_norm &&
             (loras == nullptr || loras->empty()) && !rotated && hparams.n_expert_used(il) == (uint32_t) n_expert_used &&
-            // the host views are of this layer's experts (the iGPU tier has its own copies of them in their place)
-            (qt->backend_tier2 || (qt->gate_host->view_src == gate_exps && qt->up_host->view_src == up_exps))) {
+            qt->gate_host->view_src == gate_exps && qt->up_host->view_src == up_exps) {
             return build_moe_ffn_q4e(cur, selected_experts, weights, il);
         }
     }
@@ -2676,17 +2675,11 @@ static float q4e_skip_frac() {
     return v;
 }
 
-static bool q4e_tier2_all(const llama_q4e::layer_tensors & t, int64_t n_tokens) {
-    return t.backend_tier2 != nullptr && n_tokens > 8;
-}
-
 template <typename F>
 static void q4e_route_each(const ggml_tensor * sel, const ggml_tensor * w, const llama_q4e::layer_tensors & t, F && f) {
     const int64_t n_used   = sel->ne[0];
     const int64_t n_tokens = sel->ne[1];
-    // an iGPU tier above 8 tokens computes every block: its MoE matmul cannot skip ids (see build_moe_ffn_q4e)
-    const bool    t2_all   = q4e_tier2_all(t, n_tokens);
-    const float   skip     = t2_all ? 0.0f : q4e_skip_frac();
+    const float   skip     = q4e_skip_frac();
     for (int64_t tok = 0; tok < n_tokens; ++tok) {
         const int32_t * s  = (const int32_t *) ((const char *) sel->data + tok*sel->nb[1]);
         const char    * wt = (const char *) w->data + tok*w->nb[2];
@@ -2701,7 +2694,7 @@ static void q4e_route_each(const ggml_tensor * sel, const ggml_tensor * w, const
             for (int32_t b = 0; b < t.n_blocks; ++b) {
                 const int64_t r = k*t.n_blocks + b;
                 const int32_t v = e*t.n_blocks + b;
-                const float slot = (e >= 0 && e < t.n_expert && !t2_all) ? t.table_host[v] : -1.0f;
+                const float slot = (e >= 0 && e < t.n_expert) ? t.table_host[v] : -1.0f;
                 f(tok, k, e, r, v, slot, keep, wk);
             }
         }
@@ -2807,33 +2800,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
         ids_gpu = ggml_cast(ctx0, ggml_add(ctx0, slot, ggml_mul(ctx0, miss, zero_row)), GGML_TYPE_I32);
         w_gpu   = ggml_mul(ctx0, w, ggml_reshape_3d(ctx0, hit, 1, n_rows, n_tokens));
     }
-
-    // the iGPU tier up to 8 tokens: its ids and weights from the device table as well, and the selections copied to
-    // the device's sel_all (read after the ubatch), so the layer has no CPU split between the GPU and the iGPU
-    // (Q4E_T2_ROUTE_GPU=0 keeps the routing ops)
-    static const bool t2_route_gpu = [] { const char * e = getenv("Q4E_T2_ROUTE_GPU"); return e == nullptr || atoi(e) != 0; }();
-    bool sel_on_device = false;
-    if (t.backend_tier2 && !q4e_tier2_all(t, n_tokens) && t2_route_gpu && t.sel_all && ids_gpu == fused_ids && fused_ids) {
-        ggml_tensor * rest_ids = ggml_q4e_route_rest(ctx0, selected_experts, weights, t.table, (int) n_blocks, q4e_skip_frac(), false);
-        ggml_tensor * rest_w   = ggml_q4e_route_rest(ctx0, selected_experts, weights, t.table, (int) n_blocks, q4e_skip_frac(), true);
-        if (ggml_backend_supports_op(t.backend_gpu, rest_ids)) {
-            ggml_tensor * sel_dst = ggml_view_2d(ctx0, t.sel_all, n_used, n_tokens, n_used*sizeof(int32_t),
-                (size_t) il*n_used*n_tokens*sizeof(int32_t));
-            ggml_tensor * sel_cpy = ggml_cpy(ctx0, selected_experts, sel_dst);
-            if (ggml_backend_supports_op(t.backend_gpu, sel_cpy)) {
-                ids_cpu = rest_ids;
-                // the weights move to the iGPU with its first split (their copy from the GPU then does not wait for
-                // the GPU blocks, which are queued before the weighted sum)
-                w_cpu   = ggml_cont(ctx0, ggml_view_3d(ctx0, rest_w, 1, n_rows, n_tokens, rest_w->nb[1], rest_w->nb[2], 0));
-                ggml_backend_sched_set_tensor_backend(sched, w_cpu, t.backend_tier2);
-                ggml_build_forward_expand(gf, sel_cpy);
-                ggml_build_forward_expand(gf, rest_ids);
-                ggml_build_forward_expand(gf, w_cpu);
-                sel_on_device = true;
-                q4e->set_selection(il, true);
-            }
-        }
-    }
     ggml_tensor * x = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
 
     const float limit = hparams.swiglu_clamp_exp[il];
@@ -2920,34 +2886,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn_q4e(
     };
 
     // CPU first: its inputs are ready right after the router, the GPU blocks follow in the next split
-    // (or the iGPU tier: its copies of the blocks, computed by the iGPU)
-    ggml_tensor * y_cpu = experts(t.gate_host, t.up_host, t.down_host, ids_cpu, w_cpu, t.backend_tier2 ? t.backend_tier2 : backend_cpu,
-        t.backend_tier2 ? "ffn_moe_q4e_igpu" : "ffn_moe_q4e_cpu");
-    if (q4e_tier2_all(t, n_tokens)) {
-        // the iGPU tier computed every block (the routing ops gave it all of them)
-        ggml_build_forward_expand(gf, y_cpu);
-        cb(y_cpu, "ffn_moe_out", il);
-        return y_cpu;
-    }
-    // the iGPU tier: its blocks up to the down projection, then the GPU blocks, then its weighted sum. The scheduler
-    // starts a split when the backend changes, so the GPU blocks no longer share a split with the add that waits for
-    // the iGPU: they run while the iGPU computes. The routing ops are added first: their copies from the GPU must
-    // not wait for the GPU blocks
-    const bool interleave = t.backend_tier2 && y_cpu->op == GGML_OP_Q4E_WSUM;
-    if (interleave) {
-        if (!sel_on_device) {
-            ggml_build_forward_expand(gf, rids);
-            ggml_build_forward_expand(gf, rw);
-        }
-        ggml_build_forward_expand(gf, y_cpu->src[0]);
-    } else {
-        ggml_build_forward_expand(gf, y_cpu);
-    }
+    ggml_tensor * y_cpu = experts(t.gate_host, t.up_host, t.down_host, ids_cpu, w_cpu, backend_cpu,   "ffn_moe_q4e_cpu");
+    ggml_build_forward_expand(gf, y_cpu);
     ggml_tensor * y_gpu = experts(t.gate_pool, t.up_pool, t.down_pool, ids_gpu, w_gpu, t.backend_gpu, "ffn_moe_q4e_gpu");
-    if (interleave) {
-        ggml_build_forward_expand(gf, y_gpu);
-        ggml_build_forward_expand(gf, y_cpu);
-    }
 
     ggml_tensor * moe_out = ggml_add(ctx0, y_gpu, y_cpu);
     cb(moe_out, "ffn_moe_out", il);

@@ -54,8 +54,6 @@ public:
         int32_t *     sel_host   = nullptr; // [n_used*max_batch]: the routing op writes the selections here
 
         ggml_backend_t backend_gpu = nullptr;
-        // the iGPU that computes the *_host blocks (their copies in its memory), nullptr: the CPU
-        ggml_backend_t backend_tier2 = nullptr;
     };
 
     // the tensors of layer il if the tiers compute it for ubatches of n_tokens, nullptr otherwise
@@ -69,8 +67,7 @@ public:
     void set_timing_lane(ggml_backend_sched_t sched);
 
     // the current graph copies the selected experts of layer il to sel_all, they are read after each ubatch
-    // (on_device: a copy op writes them to sel_all at il*n_used*n_tokens, else the routing op to sel_host)
-    void set_selection(int32_t il, bool on_device = false) const;
+    void set_selection(int32_t il) const;
 
     // a new graph is about to be built: the selections of the old one are gone
     void new_graph();
